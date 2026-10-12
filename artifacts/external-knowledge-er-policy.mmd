@@ -1,0 +1,64 @@
+erDiagram
+  direction LR
+  VISA_POLICY {
+    uuid policy_id PK
+    text country
+    text policy_type
+    text title
+    date effective_from
+    date effective_to
+    bool cas_required
+    bool i20_required
+    numeric funds_tuition_unpaid
+    text funds_tuition_currency
+    numeric funds_living_monthly
+    text funds_living_currency
+    int funds_living_months
+    int funds_holding_days
+    int funds_doc_max_age_days
+    text funds_owner_allowed
+    text english_level
+    bool tb_test_required
+    numeric health_surcharge
+    int apply_window_days
+    int processing_days
+    numeric visa_fee
+    text applies_to_city
+    text remark
+  }
+
+  FX_POLICY {
+    uuid policy_id PK
+    text country
+    text policy_type
+    text title
+    date effective_from
+    date effective_to
+    numeric annual_quota_amount
+    text annual_quota_currency
+    text quota_reset
+    bool over_quota_allowed
+    text purpose_code
+    bool tuition_direct_to_school
+    text remitter_relation
+    bool can_use_family_quota
+    text remark
+  }
+
+  DOCUMENT {
+    uuid doc_id PK
+    text code
+    text name_zh
+  }
+
+  POLICY_DOCUMENT {
+    uuid policy_id FK
+    text policy_domain
+    uuid doc_id FK
+    bool required
+    jsonb condition
+  }
+
+  VISA_POLICY ||--o{ POLICY_DOCUMENT : "needs"
+  FX_POLICY ||--o{ POLICY_DOCUMENT : "needs"
+  DOCUMENT ||--o{ POLICY_DOCUMENT : "used_by"

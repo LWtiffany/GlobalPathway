@@ -1,0 +1,27 @@
+erDiagram
+  direction LR
+  SCHOOL {
+    uuid school_id PK
+    text name
+    text country
+    text city
+  }
+
+  PROGRAM {
+    uuid program_id PK
+    uuid school_id FK
+    text name
+    text level
+  }
+
+  TUITION {
+    uuid tuition_id PK
+    uuid program_id FK
+    text academic_year
+    numeric amount
+    text currency
+  }
+
+  SCHOOL ||--o{ PROGRAM : "offers"
+  PROGRAM ||--o{ TUITION : "priced"
+

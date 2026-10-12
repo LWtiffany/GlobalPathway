@@ -1,0 +1,40 @@
+erDiagram
+  direction LR
+  ACCOUNT_THRESHOLD {
+    uuid threshold_id PK
+    text bank_code
+    text product_code
+    text country
+    int min_age
+    numeric min_deposit
+    text min_deposit_currency
+    text residency_note
+  }
+
+  ACCOUNT_DOC {
+    uuid threshold_id FK
+    uuid doc_id FK
+    bool required
+  }
+
+  DOCUMENT {
+    uuid doc_id PK
+    text code
+    text name_zh
+  }
+
+  CREDIT_CARD {
+    uuid card_id PK
+    text issuer
+    text product_name
+    numeric annual_fee
+    text fee_waiver_condition
+    text target_audience
+    numeric overseas_cashback_rate
+    numeric fx_markup_rate
+    text eligibility
+    jsonb perks
+  }
+
+  ACCOUNT_THRESHOLD ||--o{ ACCOUNT_DOC : "needs"
+  DOCUMENT ||--o{ ACCOUNT_DOC : "used_by"
