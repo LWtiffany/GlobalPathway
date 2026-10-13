@@ -45,8 +45,40 @@ def normalize(text):
     return " ".join(text.split())
 
 
+# 证据引用的比对归一化。
+# 模型按页面语义返回「纯文本」，而快照里保留着 Markdown 语法与印刷体标点，
+# 两者直接做子串比较会把忠实引用误判为不逐字（实测：’ vs '、[文字](url) vs 文字）。
+# 因此比对前对称地做：剥离 Markdown 链接/强调标记 -> 还原 HTML 实体 -> 折叠印刷体标点。
+# 必须同时作用于引用与正文两侧，保持比对对称，否则会破坏逐字可追溯性。
+_PUNCT_FOLD = {
+    "\u2018": "'", "\u2019": "'",          # ‘ ’
+    "\u201c": '"', "\u201d": '"',          # “ ”
+    "\u2013": "-", "\u2014": "-",          # – —
+    "\u2010": "-", "\u2011": "-", "\u2212": "-",
+    "\u2026": "...",                        # …
+    "\u00a0": " ",                          # 不换行空格
+}
+_HTML_ENTITIES = {
+    "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
+    "&#39;": "'", "&apos;": "'", "&nbsp;": " ",
+}
+_MD_LINK = re.compile(r"\[([^\[\]]*)\]\([^()]*\)")   # [文字](url) -> 文字
+_MD_EMPHASIS = re.compile(r"[*_`]+")
+
+
+def comparable(text):
+    """把引用/正文归一化为可直接子串比较的形式（两侧必须一致调用）。"""
+    text = _MD_LINK.sub(r"\1", text)
+    for source, target in _HTML_ENTITIES.items():
+        text = text.replace(source, target)
+    for source, target in _PUNCT_FOLD.items():
+        text = text.replace(source, target)
+    text = _MD_EMPHASIS.sub("", text)
+    return normalize(text).casefold()
+
+
 def quote_in_markdown(quote, markdown):
-    return len(normalize(quote)) >= 12 and normalize(quote).casefold() in normalize(markdown).casefold()
+    return len(comparable(quote)) >= 12 and comparable(quote) in comparable(markdown)
 
 
 def number_in_quote(value, quote):
