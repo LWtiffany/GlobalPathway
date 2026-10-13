@@ -21,6 +21,9 @@ HIGH_RISK_KEYWORDS = [
     "利率", "门槛", "材料", "签证", "入境", "官方", "入口", "条款", "退款", "限额", "持有",
 ]
 CURRENCY_SYMBOLS = {"£": "GBP", "$": "USD", "€": "EUR", "¥": "CNY"}
+# 合并后的材料条件（any_of）保留每条条件各自的逐字引用，以此分隔，门控逐条核对。
+CONDITION_QUOTE_SEPARATOR = " | "
+STALE_EFFECTIVE_FROM_DAYS = 365
 ISO_CURRENCY = re.compile(r"^[A-Z]{3}$")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -62,7 +65,8 @@ _HTML_ENTITIES = {
     "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
     "&#39;": "'", "&apos;": "'", "&nbsp;": " ",
 }
-_MD_LINK = re.compile(r"\[([^\[\]]*)\]\([^()]*\)")   # [文字](url) -> 文字
+# [文字](url) 或 [文字](url "标题") -> 文字；标题可含转义括号，如 "\(opens in a new window\)"
+_MD_LINK = re.compile(r'\[([^\[\]]*)\]\(\S*?(?:\s+"(?:[^"\\]|\\.)*")?\)')
 _MD_EMPHASIS = re.compile(r"[*_`]+")
 
 
@@ -81,16 +85,78 @@ def quote_in_markdown(quote, markdown):
     return len(comparable(quote)) >= 12 and comparable(quote) in comparable(markdown)
 
 
-def number_in_quote(value, quote):
-    """数值必须能在其证据引用中找到（允许千分位差异）。"""
+# 时长类字段：页面常以「周/月/年」表述，而字段以「天」（或月）存。
+# 例：引用 "within 3 weeks" -> processing_days=21，「3 × 7」是确定性单位折算，
+# 不是模型凭空推断，因此允许通过，但会记一条 warning 以保持可追溯。
+_FIELD_BASE_UNIT = {
+    "processing_days": "day",
+    "apply_window_days": "day",
+    "funds_holding_days": "day",
+    "funds_doc_max_age_days": "day",
+    "funds_living_months": "month",
+}
+_TIME_UNIT_DAYS = {
+    "day": 1, "days": 1, "week": 7, "weeks": 7, "fortnight": 14, "fortnights": 14,
+    "month": 30, "months": 30, "year": 365, "years": 365,
+}
+# 英文拼写数字：官方页面常写 "six weeks" 而非 "6 weeks"（香港入境处实测），
+# 与阿拉伯数字一样参与确定性折算。
+_WORD_NUMBERS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+_DURATION = re.compile(
+    r"(?<![\d.])(\d+(?:\.\d+)?|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*"
+    r"(day|days|week|weeks|fortnight|fortnights|month|months|year|years)\b", re.I)
+
+
+def _literal_number_in_quote(rendered, quote):
+    return re.search(rf"(?<![\d.]){re.escape(rendered)}(?![\d.])",
+                     normalize(quote).replace(",", "")) is not None
+
+
+def number_conversion_note(value, quote, field=None):
+    """若取值与引用一致但依赖确定性单位换算，返回可读说明；否则 None。
+    引用中出现多个不同时长量级（如 "held 28 days ... within 31 days"）时视为歧义，
+    不自动折算——由人工判断，符合"不得由模型换算或推断"的设计底线。"""
+    base = _FIELD_BASE_UNIT.get(field)
+    if base is None:
+        return None
+    try:
+        target = float(value)
+    except (TypeError, ValueError):
+        return None
+    base_days = _TIME_UNIT_DAYS[base]
+    converted = {}
+    for match in _DURATION.finditer(normalize(quote).replace(",", "")):
+        raw, unit = match.group(1).lower(), match.group(2).lower()
+        amount = _WORD_NUMBERS.get(raw)
+        if amount is None:
+            try:
+                amount = float(raw)
+            except ValueError:
+                return None
+        converted[amount * _TIME_UNIT_DAYS[unit]] = (amount, unit, match.group(0))
+    if len(converted) != 1:
+        return None
+    only_days = next(iter(converted))
+    amount, _unit, fragment = converted[only_days]
+    if abs(target * base_days - only_days) < 1e-9 and abs(amount - target) > 1e-9:
+        return f'引用写 "{fragment}"，折算为 {target:g} {base}'
+    return None
+
+
+def number_in_quote(value, quote, field=None):
+    """数值必须能在其证据引用中找到（允许千分位差异或确定性单位换算）。"""
     if value is None:
         return True
     try:
         rendered = f"{float(value):g}"
     except (TypeError, ValueError):
         return True
-    return re.search(rf"(?<![\d.]){re.escape(rendered)}(?![\d.])",
-                     normalize(quote).replace(",", "")) is not None
+    if _literal_number_in_quote(rendered, quote):
+        return True
+    return number_conversion_note(value, quote, field=field) is not None
 
 
 def is_high_risk_text(text):
@@ -214,37 +280,65 @@ def load_problems():
 
 # ---------- 签证政策门控 ----------
 
-def _check_visa_entry(report, entry, markdown, scope_label):
+def _evidence_verdict(field, value, evidence, markdown):
+    """Why one evidence item fails to support a value ("quote" / "number"); None when it does."""
+    if not quote_in_markdown(evidence.evidence_quote, markdown):
+        return "quote"
+    if isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and not number_in_quote(value, evidence.evidence_quote, field=field):
+        return "number"
+    return None
+
+
+def _check_visa_entry(report, entry, markdown, scope):
+    scope_label = f"[{scope}]"
     policy = entry.policy
-    evidence_by_field = {ev.field: ev for ev in entry.evidence}
+    evidence_by_field = {}
+    for ev in entry.evidence:
+        evidence_by_field.setdefault(ev.field, []).append(ev)
     fields = policy.model_dump(exclude_none=True)
 
     for field, value in fields.items():
         if field not in VISA_FIELDS:
             report.problem("structure", "error", f"字段 {field} 不在签证 Schema 内",
-                           "检查抽取提示词与 Schema 对齐", field=field)
+                           "检查抽取提示词与 Schema 对齐", field=field, scope=scope)
             continue
-        evidence = evidence_by_field.get(field)
-        if evidence is None:
+        candidates = evidence_by_field.get(field)
+        if not candidates:
             report.problem("evidence", "error", f"{scope_label} 字段 {field} 缺少字段级证据",
-                           "要求模型为每个非空字段提供逐字引用，否则不得采用", field=field, value=str(value))
+                           "要求模型为每个非空字段提供逐字引用，否则不得采用",
+                           field=field, value=str(value), scope=scope)
             continue
         # remark 是模型的补充说明（自由文本），不要求逐字命中页面——
         # 它不参与 business_hash（NOISE_FIELDS），也无需值-引用一致性校验。
         if field == "remark":
             continue
-        if not quote_in_markdown(evidence.evidence_quote, markdown):
-            report.problem("evidence", "error",
-                           f"{scope_label} 字段 {field} 的引用未在快照中逐字找到",
-                           "核对引用与页面原文；不一致则拒绝该字段",
-                           field=field, quote=evidence.evidence_quote)
+        # 同一字段可能有多条引用（多个章节/页面重复陈述同一取值）：任一条能支撑即通过。
+        verdicts = [(ev, _evidence_verdict(field, value, ev, markdown)) for ev in candidates]
+        evidence = next((ev for ev, verdict in verdicts if verdict is None), None)
+        if evidence is None:
+            first, verdict = verdicts[0]
+            if verdict == "quote" and all(v == "quote" for _, v in verdicts):
+                report.problem("evidence", "error",
+                               f"{scope_label} 字段 {field} 的引用未在快照中逐字找到",
+                               "核对引用与页面原文；不一致则拒绝该字段",
+                               field=field, quote=first.evidence_quote, scope=scope)
+            else:
+                first = next(ev for ev, v in verdicts if v == "number")
+                report.problem("applicability", "error",
+                               f"{scope_label} 字段 {field} 的取值未出现在其引用中",
+                               "值必须由引用直接支撑，不得由模型换算或推断",
+                               field=field, value=str(value), quote=first.evidence_quote,
+                               scope=scope)
             continue
-        if isinstance(value, (int, float)) and not isinstance(value, bool) \
-                and not number_in_quote(value, evidence.evidence_quote):
-            report.problem("applicability", "error",
-                           f"{scope_label} 字段 {field} 的取值未出现在其引用中",
-                           "值必须由引用直接支撑，不得由模型换算或推断",
-                           field=field, value=str(value), quote=evidence.evidence_quote)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            note = number_conversion_note(value, evidence.evidence_quote, field=field)
+            if note:
+                report.problem("applicability", "warning",
+                               f"{scope_label} 字段 {field} 的取值由确定性单位换算得到",
+                               f"{note}；确定性归一化，非模型推断，如与页面口径不符请人工核对",
+                               field=field, value=str(value), quote=evidence.evidence_quote,
+                               scope=scope)
 
     # 格式与范围
     if fields.get("funds_living_currency") and not ISO_CURRENCY.match(fields["funds_living_currency"]):
@@ -254,6 +348,13 @@ def _check_visa_entry(report, entry, markdown, scope_label):
         if fields.get(field) and not ISO_DATE.match(str(fields[field])):
             report.problem("structure", "error", f"{field} 不是 ISO 日期格式",
                            "使用 YYYY-MM-DD", field=field, value=str(fields[field]))
+    if fields.get("effective_from") and ISO_DATE.match(str(fields["effective_from"])):
+        started = datetime.strptime(str(fields["effective_from"])[:10], "%Y-%m-%d").date()
+        if (datetime.now(timezone.utc).date() - started).days > STALE_EFFECTIVE_FROM_DAYS:
+            report.problem("applicability", "error",
+                           f"{scope_label} effective_from 是一年以前的历史日期，不是当前政策的生效日",
+                           "页面上的历史日期（表格改版、旧规生效等）不填 effective_from",
+                           field="effective_from", value=str(fields["effective_from"]), scope=scope)
     for field, (low, high) in NUMERIC_RANGES.items():
         if field in fields and not (low <= float(fields[field]) <= high):
             report.problem("structure", "error", f"{field} 取值超出合理范围 [{low}, {high}]",
@@ -293,7 +394,9 @@ def _check_visa_documents(report, patch, markdown):
                            f"文档 {document.code} 的 condition 缺少逐字引用（condition_quote）",
                            "condition 必须有原文支撑，无法支撑时删除 condition 并将该条转人工",
                            field=f"document:{document.code}")
-        elif document.condition and not quote_in_markdown(document.condition_quote or "", markdown):
+        elif document.condition and not all(
+                quote_in_markdown(part, markdown)
+                for part in (document.condition_quote or "").split(CONDITION_QUOTE_SEPARATOR)):
             report.problem("evidence", "error",
                            f"文档 {document.code} 的 condition_quote 未在快照中逐字找到",
                            "condition 的适用条件必须由引用直接支撑",
@@ -318,13 +421,20 @@ def _check_visa_scoping(report, patch, markdown):
                        field="applies_to_city")
 
 
+def verify_visa_evidence(patch, markdown, report=None):
+    """Field/document evidence checks only (no page-level scoping), for one section patch."""
+    report = report or GateReport()
+    for index, entry in enumerate(patch.policies, start=1):
+        city = entry.policy.applies_to_city or f"条目{index}"
+        _check_visa_entry(report, entry, markdown, city)
+    _check_visa_documents(report, patch, markdown)
+    return report
+
+
 def run_gate_visa(patch, markdown, source, meta):
     report = GateReport()
     report.risk_level = "high"  # 签证政策整体按高风险治理（ADR-002）
-    for index, entry in enumerate(patch.policies, start=1):
-        city = entry.policy.applies_to_city or f"条目{index}"
-        _check_visa_entry(report, entry, markdown, f"[{city}]")
-    _check_visa_documents(report, patch, markdown)
+    verify_visa_evidence(patch, markdown, report)
     _check_visa_scoping(report, patch, markdown)
     # excerpt_chars=0 表示规则降级路径（未调用模型），不应报截断
     if meta.get("excerpt_chars") and len(normalize(markdown)) > meta["excerpt_chars"] + 500:
