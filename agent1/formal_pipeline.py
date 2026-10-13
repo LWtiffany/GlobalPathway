@@ -277,16 +277,20 @@ def _scan_started(source, state, previous, paths, run_id, profile, epoch, full):
     old_file = (_snapshot_file(paths, previous["markdown_path"]) if previous else None)
     can_reuse = bool(previous and previous["capture_config_hash"] == config_hash
                      and old_file.is_file())
-    probe = None
-    if can_reuse and not full:
-        probe = incremental.conditional_probe(source, state)
-        if probe.result in ("NOT_MODIFIED", "BODY_UNCHANGED"):
-            if state.get("last_extraction_profile") == profile:
-                return _record_unchanged(paths, source, run_id, state, previous, probe.result,
-                                         probe, "HTTP validation / raw body hash")
-            markdown = old_file.read_text(encoding="utf-8")
-            return _process_markdown(source, state, previous, markdown, paths, run_id,
-                                     profile, epoch, probe, full=False, crawled=False)
+    # Always run the cheap conditional GET, even on a cold or forced full check.
+    # It is the only source of validators a later conditional request can match:
+    # the browser negotiates a different representation (different Accept header)
+    # and therefore reports a different ETag, which the server never accepts on
+    # the lightweight probe. Recording the worker's own validators also populates
+    # raw_body_hash, which powers the body-hash fallback when no ETag is honoured.
+    probe = incremental.conditional_probe(source, state)
+    if can_reuse and not full and probe.result in ("NOT_MODIFIED", "BODY_UNCHANGED"):
+        if state.get("last_extraction_profile") == profile:
+            return _record_unchanged(paths, source, run_id, state, previous, probe.result,
+                                     probe, "HTTP validation / raw body hash")
+        markdown = old_file.read_text(encoding="utf-8")
+        return _process_markdown(source, state, previous, markdown, paths, run_id,
+                                 profile, epoch, probe, full=False)
     result = asyncio.run(crawl.fetch_page(source))
     if not result.success:
         raise crawl.CrawlError("upstream_error", result.error_message or "Crawl4AI 抓取失败")
@@ -294,14 +298,6 @@ def _scan_started(source, state, previous, paths, run_id, profile, epoch, full):
     if urlparse(final_url).scheme != "https" or urlparse(final_url).hostname != source["allowed_host"]:
         raise ValueError("浏览器被重定向到未登记的主机")
     markdown = crawl.extract_markdown(result)
-    headers = {key.lower(): value for key, value in
-               (getattr(result, "response_headers", None) or {}).items()}
-    if probe is None:
-        probe = incremental.Probe("CHANGED", headers.get("etag"),
-                                  headers.get("last-modified"))
-    elif headers.get("etag") and probe.etag and headers["etag"] != probe.etag:
-        # The page changed between HTTP preflight and browser capture.
-        probe = incremental.Probe("CHANGED", headers["etag"], headers.get("last-modified"))
     if len(" ".join(markdown.split())) < 200 or crawl.detect_blocked_page(markdown):
         raise ValueError("浏览器内容为空、过短或疑似拦截页")
     content_hash = incremental.normalized_hash(markdown)
@@ -332,11 +328,11 @@ def _scan_started(source, state, previous, paths, run_id, profile, epoch, full):
         return _record_unchanged(paths, source, run_id, state, snapshot, "BODY_UNCHANGED",
                                  probe, "Crawl4AI Markdown hash")
     return _process_markdown(source, state, snapshot, markdown, paths, run_id,
-                             profile, epoch, probe, full=full, crawled=True)
+                             profile, epoch, probe, full=full)
 
 
 def _process_markdown(source, state, snapshot, markdown, paths, run_id,
-                      profile, epoch, probe, *, full, crawled):
+                      profile, epoch, probe, *, full):
     source_id = source["source_id"]
     sections = incremental.split_sections(markdown)
     with storage.session(paths) as connection:
@@ -413,10 +409,16 @@ def _process_markdown(source, state, snapshot, markdown, paths, run_id,
         candidates = _save_candidates(connection, source, merged, extraction_id, report)
         _finish_run(connection, run_id, "SUCCEEDED", snapshot["snapshot_id"])
         now = datetime.now(timezone.utc)
-        # HTTP validators are trusted only for the representation that was checked.
-        response_etag = probe.etag if probe else state.get("etag") if not crawled else None
-        response_modified = probe.last_modified if probe else state.get("last_modified") if not crawled else None
-        response_hash = probe.raw_body_hash if probe else state.get("raw_body_hash") if not crawled else None
+        # Persist only validators the HTTP probe itself observed. They describe the
+        # exact representation the next conditional request will ask about, so they
+        # are the ones that can yield a 304. Fall back to the previous values when
+        # this run had no probe (dynamic source, network failure) or the probe
+        # returned no validators.
+        response_etag = probe.etag if probe and probe.etag else state.get("etag")
+        response_modified = (probe.last_modified if probe and probe.last_modified
+                             else state.get("last_modified"))
+        response_hash = (probe.raw_body_hash if probe and probe.raw_body_hash
+                         else state.get("raw_body_hash"))
         connection.execute("""INSERT INTO source_check_state
             (source_id,etag,last_modified,raw_body_hash,cache_epoch,last_extraction_profile,
              snapshot_id,last_checked_at,last_complete_at,last_full_at,next_check_at,last_result)
