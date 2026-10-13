@@ -9,6 +9,10 @@ from unittest.mock import patch
 from agent1 import config, db, storage
 from agent1.environment import cleanup_test_storage, paths_for
 
+DOMAIN_TABLES = {"DOCUMENT", "VISA_POLICY", "FX_POLICY", "POLICY_DOCUMENT",
+                 "ACCOUNT_THRESHOLD", "ACCOUNT_DOC", "CREDIT_CARD",
+                 "SCHOOL", "PROGRAM", "TUITION", "REVIEW_QUEUE", "GATE_ISSUE"}
+
 
 class DatabaseFoundationTests(unittest.TestCase):
     def setUp(self):
@@ -21,18 +25,19 @@ class DatabaseFoundationTests(unittest.TestCase):
         self.assertFalse(storage.status(self.paths)["initialized"])
         self.assertFalse(self.paths.data.exists())
 
-    def test_init_is_idempotent_and_has_no_legacy_tables(self):
+    def test_init_is_idempotent_and_creates_domain_schema(self):
         first = storage.initialize(self.paths)
         second = storage.initialize(self.paths)
         self.assertEqual(first["migrations"], second["migrations"])
-        self.assertIn("visa_policy_revision", first["tables"])
-        self.assertIn("fx_policy", first["tables"])
-        self.assertIn("tuition", first["tables"])
-        self.assertNotIn("knowledge_versions", first["tables"])
-        self.assertNotIn("runs", first["tables"])
+        self.assertTrue(DOMAIN_TABLES.issubset(set(first["tables"])))
+        # No pipeline/audit tables may come back.
+        for gone in ("visa_policy_revision", "change_candidates", "review_tasks",
+                     "quality_issues", "sources", "crawl_runs", "source_snapshots",
+                     "policy_evidence", "policy_publication", "audit_events"):
+            self.assertNotIn(gone, first["tables"])
         with storage.session(self.paths) as connection:
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
-            self.assertEqual(connection.execute("SELECT count(*) FROM sources").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT count(*) FROM VISA_POLICY").fetchone()[0], 0)
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_development_and_production_are_separate(self):
@@ -49,16 +54,6 @@ class DatabaseFoundationTests(unittest.TestCase):
         storage.initialize(paths)
         cleanup_test_storage()
         self.assertFalse(paths.data.exists())
-
-    def test_wrong_environment_marker_is_rejected(self):
-        storage.initialize(self.paths)
-        with closing(sqlite3.connect(self.paths.database)) as connection:
-            connection.execute("UPDATE database_identity SET environment='production'")
-            connection.commit()
-        with self.assertRaises(RuntimeError):
-            storage.initialize(self.paths)
-        with self.assertRaises(RuntimeError):
-            storage.status(self.paths)
 
     def test_existing_mixed_database_is_not_upgraded(self):
         self.paths.data.mkdir(parents=True)
@@ -83,7 +78,7 @@ class DatabaseFoundationTests(unittest.TestCase):
         storage.initialize(self.paths)
         with storage.session(self.paths) as connection:
             with self.assertRaises(sqlite3.OperationalError):
-                connection.execute("DELETE FROM database_identity")
+                connection.execute("DELETE FROM schema_migrations")
 
     def test_partial_migration_is_rolled_back(self):
         migrations = self.root / "migrations"
@@ -96,13 +91,31 @@ class DatabaseFoundationTests(unittest.TestCase):
         with closing(sqlite3.connect(self.paths.database)) as connection:
             self.assertEqual(connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), [])
 
-    def test_dangling_review_is_rejected(self):
+    def test_review_queue_domain_is_constrained(self):
         storage.initialize(self.paths)
         with storage.session(self.paths, readonly=False) as connection:
             with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute("""INSERT INTO review_tasks
-                    (review_id,candidate_id,reason,status,created_at)
-                    VALUES('review','missing','test','OPEN','2026-10-13T00:00:00+00:00')""")
+                connection.execute("""INSERT INTO REVIEW_QUEUE
+                    (review_id, domain_table, record_key, action, reason, status, created_at)
+                    VALUES('review','NOT_A_TABLE','key','CREATE','test','OPEN','2026-10-13T00:00:00+00:00')""")
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("""INSERT INTO REVIEW_QUEUE
+                    (review_id, domain_table, record_key, action, reason, status, created_at)
+                    VALUES('review','VISA_POLICY','key','DELETE','test','OPEN','2026-10-13T00:00:00+00:00')""")
+
+    def test_gate_issue_severity_is_constrained(self):
+        storage.initialize(self.paths)
+        with storage.session(self.paths, readonly=False) as connection:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("""INSERT INTO GATE_ISSUE
+                    (issue_id, source_id, check_name, severity, reason, issue_key,
+                     status, first_seen_at, last_seen_at)
+                    VALUES('i','s','applicability','fatal','r','k','OPEN','t','t')""")
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("""INSERT INTO GATE_ISSUE
+                    (issue_id, source_id, check_name, severity, reason, issue_key,
+                     status, first_seen_at, last_seen_at)
+                    VALUES('i','s','applicability','error','r','k','DONE','t','t')""")
 
     def test_mutated_applied_migration_is_rejected(self):
         storage.initialize(self.paths)
@@ -114,16 +127,12 @@ class DatabaseFoundationTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 storage.initialize(self.paths)
 
-    def test_audit_is_append_only(self):
+    def test_policy_document_requires_known_document(self):
         storage.initialize(self.paths)
         with storage.session(self.paths, readonly=False) as connection:
-            connection.execute("""INSERT INTO audit_events
-                (event_id,transaction_id,actor,action,reason,detail_json,occurred_at)
-                VALUES('event','tx','tester','test','constraint check','{}','2026-10-13T00:00:00+00:00')""")
             with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute("UPDATE audit_events SET reason='changed'")
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute("DELETE FROM audit_events")
+                connection.execute("""INSERT INTO POLICY_DOCUMENT
+                    (policy_id, policy_domain, doc_id, required) VALUES('p1','visa_policy','nope',1)""")
 
 
 if __name__ == "__main__":

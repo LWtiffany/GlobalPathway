@@ -1,13 +1,16 @@
 """Agent1 本地管理 CLI。
 
 命令：
+  scan ID [--full]            新库：检查一个来源并重写其区域的 VISA_POLICY
+  scan-region R [--full|--reapply]  新库：检查区域 R（UK / US / CN-HK / all）的全部签证来源
   sources sync|list|set      来源登记（设计 2.4 / A1.1）
   run ID [ID...] [--force]    手动触发完整管道
   schedule [--once] [--source ID...]   进程内定时调度
   runs [--limit N]            运行记录与失败原因
   gate [--all] [--json]       门控问题清单（problems.json）
   gate resolve ID [ID...]     结算问题条目
-  review list|approve|reject  人工审核（ADR-002：高风险人工批准后发布）
+  review list|show|approve|reject  人工审核队列（REVIEW_QUEUE）
+  review issues [--status S] [--source ID]   门控问题清单（GATE_ISSUE）
   withdraw TARGET --reason    紧急撤回
   rollback SOURCE --to VERSION --reason   回滚旧版本
   knowledge [--schema S] [--source ID] [--include-stale]   Agent2 只读知识接口
@@ -46,6 +49,11 @@ def cmd_database(args):
 
 def cmd_scan(args):
     _print_json(formal_pipeline.scan(args.source_id, full=args.full))
+    return 0
+
+
+def cmd_scan_region(args):
+    _print_json(formal_pipeline.scan_region(args.region, full=args.full, reapply=args.reapply))
     return 0
 
 
@@ -181,39 +189,86 @@ def cmd_gate(args):
     return 0
 
 
-# ---------- review ----------
+# ---------- review (REVIEW_QUEUE in the formal database) ----------
 
 def cmd_review(args):
-    with db_mod.session() as db:
-        if args.review_command == "list":
-            reviews = db_mod.list_reviews(db, status=args.status)
-            if args.json:
-                _print_json(reviews)
-                return 0
-            if not reviews:
-                print("没有审核任务")
-                return 0
-            for review in reviews:
-                print(f"{review['review_id']}  {review['source_id']:<28} {review['reason']:<18} "
-                      f"risk={review['risk_level']}  version={review['version_id']}  "
-                      f"at={review['created_at'][:19]}")
+    paths = config.PATHS
+    if args.review_command == "issues":
+        sql = "SELECT * FROM GATE_ISSUE WHERE status=?"
+        parameters = [args.status]
+        if args.source:
+            sql += " AND source_id=?"
+            parameters.append(args.source)
+        sql += " ORDER BY source_id, severity, scope, check_name"
+        with storage.session(paths) as db:
+            rows = [dict(r) for r in db.execute(sql, parameters)]
+        if args.json:
+            _print_json(rows)
             return 0
-        if not args.review_id:
-            print(f"{args.review_command} 需要 review_id", file=sys.stderr)
+        if not rows:
+            print(f"没有 {args.status} 状态的门控问题")
+            return 0
+        for row in rows:
+            print(f"[{row['severity']:<7}] {row['check_name']:<13} {row['source_id']:<24} "
+                  f"scope={row['scope'] or '-'}  field={row['field'] or '-'}")
+            print(f"    原因：{row['reason']}")
+            if row.get("value"):
+                print(f"    取值：{row['value']}")
+            if row.get("quote"):
+                print(f"    引用：{row['quote']}")
+            if row.get("suggested_action"):
+                print(f"    建议：{row['suggested_action']}")
+            print(f"    条目：{row['issue_id']}  first={row['first_seen_at'][:19]}")
+        print(f"\n共 {len(rows)} 条（{args.status}）")
+        return 0
+    if args.review_command == "list":
+        with storage.session(paths) as db:
+            rows = [dict(r) for r in db.execute(
+                "SELECT * FROM REVIEW_QUEUE WHERE status=? ORDER BY created_at", (args.status,))]
+            open_issues = db.execute(
+                "SELECT COUNT(*) FROM GATE_ISSUE WHERE status='OPEN'").fetchone()[0]
+        if args.json:
+            _print_json(rows)
+            return 0
+        if not rows:
+            print(f"没有 {args.status} 状态的审核项")
+            return 0
+        for row in rows:
+            print(f"{row['review_id']}  {row['domain_table']}.{row['record_key'][:13]}…  "
+                  f"{row['action']:<6} {row['status']:<8} at={row['created_at'][:19]}")
+            print(f"    原因：{row['reason'][:160]}")
+        if open_issues:
+            print(f"\n另：当前有 {open_issues} 条未解决的门控问题，用 `review issues` 查看。")
+        return 0
+    if not args.review_id:
+        print(f"{args.review_command} 需要 review_id", file=sys.stderr)
+        return 2
+    if args.review_command == "show":
+        with storage.session(paths) as db:
+            row = db.execute("SELECT * FROM REVIEW_QUEUE WHERE review_id=?",
+                             (args.review_id,)).fetchone()
+        if not row:
+            print(f"没有审核项：{args.review_id}", file=sys.stderr)
+            return 1
+        _print_json(dict(row))
+        return 0
+    if args.review_command == "approve":
+        with storage.session(paths, readonly=False) as db:
+            result = formal_pipeline.apply_review(db, args.review_id,
+                                                  decided_by=_actor(args.actor),
+                                                  note=args.note)
+        _print_json(result)
+        print(f"已批准并写入 {result['policy_id']}（{len(result['applied_fields'])} 个字段）")
+        return 0
+    if args.review_command == "reject":
+        if not args.note:
+            print("退回必须填写理由（--note）", file=sys.stderr)
             return 2
-        if args.review_command == "approve":
-            version_id = versions.decide_review(db, args.review_id, "approve",
-                                                _actor(args.actor), args.note or "批准发布")
-            print(f"已批准并发布：{version_id}")
-            return 0
-        if args.review_command == "reject":
-            if not args.note:
-                print("退回必须填写理由（--note）", file=sys.stderr)
-                return 2
-            version_id = versions.decide_review(db, args.review_id, "reject",
-                                                _actor(args.actor), args.note)
-            print(f"已退回：{version_id}")
-            return 0
+        with storage.session(paths, readonly=False) as db:
+            result = formal_pipeline.reject_review(db, args.review_id,
+                                                   decided_by=_actor(args.actor), note=args.note)
+        _print_json(result)
+        return 0
     return 0
 
 
@@ -296,9 +351,15 @@ def build_parser():
     p.add_argument("db_command", choices=["init", "status", "sync-sources"])
     p.add_argument("--file", help="sync-sources 使用的来源模板文件")
 
-    p = sub.add_parser("scan", help="新库：增量检查并生成候选；不发布")
+    p = sub.add_parser("scan", help="新库：增量检查一个来源并重写其所属区域的签证政策；不发布")
     p.add_argument("source_id")
     p.add_argument("--full", action="store_true", help="强制整页抓取和完整重新抽取")
+
+    p = sub.add_parser("scan-region", help="新库：检查一个区域的全部签证来源（UK / US / CN-HK / all）")
+    p.add_argument("region")
+    p.add_argument("--full", action="store_true", help="强制整页抓取和完整重新抽取")
+    p.add_argument("--reapply", action="store_true",
+                   help="不联网：用已存快照和缓存抽取，按当前合并/门控规则重新入库")
 
     p = sub.add_parser("sources", help="来源登记管理")
     p.add_argument("sources_command", choices=["sync", "list", "set"])
@@ -337,11 +398,12 @@ def build_parser():
     p.add_argument("--json", action="store_true")
     p.add_argument("--actor")
 
-    p = sub.add_parser("review", help="人工审核")
-    p.add_argument("review_command", choices=["list", "approve", "reject"])
-    p.add_argument("review_id", nargs="?", help="approve/reject 时必填")
+    p = sub.add_parser("review", help="人工审核（REVIEW_QUEUE）与门控问题（GATE_ISSUE）")
+    p.add_argument("review_command", choices=["list", "show", "approve", "reject", "issues"])
+    p.add_argument("review_id", nargs="?", help="show/approve/reject 时必填")
     p.add_argument("--note")
     p.add_argument("--status", default="OPEN")
+    p.add_argument("--source", help="issues 时按来源过滤")
     p.add_argument("--json", action="store_true")
     p.add_argument("--actor")
 
@@ -378,16 +440,21 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         config.configure_environment(args.env)
-        target = config.DB_PATH if args.command in ("db", "scan") else config.LEGACY_DB_PATH
+        target = (config.DB_PATH if args.command in ("db", "scan", "scan-region", "review")
+                  else config.LEGACY_DB_PATH)
         print(f"[agent1] environment={config.ENVIRONMENT} database={target}", file=sys.stderr)
         if args.command == "db":
             return cmd_database(args)
         if args.command == "scan":
             return cmd_scan(args)
+        if args.command == "scan-region":
+            return cmd_scan_region(args)
+        if args.command == "review":
+            return cmd_review(args)
         config.require_legacy_environment()
         print("[agent1] 兼容管道：使用独立 legacy 库，尚未接入新正式表结构。", file=sys.stderr)
         return _dispatch(args)
-    except (ValueError, RuntimeError, sqlite3.Error) as exc:
+    except (ValueError, KeyError, RuntimeError, sqlite3.Error) as exc:
         print(f"[agent1] {exc}", file=sys.stderr)
         return 2
     finally:

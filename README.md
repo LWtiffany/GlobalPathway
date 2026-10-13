@@ -28,9 +28,18 @@
 ```powershell
 .\.venv\Scripts\python.exe agent1.py --env development db init
 .\.venv\Scripts\python.exe agent1.py --env development db sync-sources --file sources.json
+.\.venv\Scripts\python.exe agent1.py --env development scan-region all          # UK / US / CN-HK 全部签证来源
+.\.venv\Scripts\python.exe agent1.py --env development scan-region UK --full    # 单个区域强制全量重抽
 .\.venv\Scripts\python.exe agent1.py --env development scan uk_student_visa_money
-.\.venv\Scripts\python.exe agent1.py --env development scan uk_student_visa_money --full
 ```
+
+macOS / Linux：`./run-agent1.sh`（= `scan-region all`）、`./run-agent1.sh UK --force`、`./run-agent1.sh uk_student_visa_money`。
+
+签证政策按区域合并：同一目的地的所有官方页面（概览、资金、英语、材料、医疗附加费、TB、费用表等，
+见 `sources.json`）合并进同一组 `VISA_POLICY` 行（按 国家 + 就读地范围 唯一），字段级门控，
+规则详见 [正式数据库方案](docs/agent1-database.md) 的「按区域合并」。
+来源可用 `extraction_notes` 给抽取模型补充该页面的口径说明（如通用收费表中哪一项是学生签证费）。
+修改合并/门控规则后，`scan-region all --reapply` 不联网、不调用模型，用已存快照与缓存抽取重新入库。
 
 `scan` 仅产生候选、审核任务与问题记录，不发布到 Agent2。默认按来源检查周期到期执行；
 `--full` 强制整页重新抽取。正式环境的扫描入口在发布服务接入前保持关闭。
@@ -65,12 +74,13 @@ LLM 接入（阿里云 MaaS 工作区，key 放 `local_secrets.py`，已被 .git
 
 ```powershell
 $env:AGENT1_LLM_PROVIDER = 'openai/deepseek-v4.1-flash'
-$env:AGENT1_LLM_BASE_URL = 'https://ws-6noevvymaytxig7l.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
+$env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
 ```
 
 可调参数：`AGENT1_LLM_TIMEOUT`（默认 300s）、`AGENT1_LLM_MAX_RETRIES`（默认 2）、`AGENT1_LLM_EXCERPT_CHARS`（默认 2500）、`AGENT1_LLM_EXTRA_BODY`（JSON，模型级额外参数）。
 
 **模型选择经验（2026-10-12 实测）**：
+
 - `deepseek-v4.1-flash`：默认是推理模型，token 全耗在 `reasoning_content`、正文为空（finish_reason=length）。代码对 deepseek 系自动传 `enable_thinking=False`，关闭后 5-25s 返回完整 JSON。换其他推理模型时需自行确认关闭方式。
 - `qwen3.8-flash`：可用但极慢——抽取请求首 token 80-190s，480s 超时仍可能失败，只适合没有其他选择时。
 - 该工作区多数其他模型返回 403 Model access denied（未授权），可用 `client.models.list()` 查列表。
@@ -106,10 +116,10 @@ $env:AGENT1_LLM_BASE_URL = 'https://ws-6noevvymaytxig7l.cn-beijing.maas.aliyuncs
 
 门控执行四类检查（设计 4.4），问题分级：
 
-| 级别 | 含义 | 路由 |
-|---|---|---|
-| error | 结构/证据/适用性硬失败 | 隔离：版本 `REJECTED`，不发布 |
-| warning | 需人工判断 | 转 `PENDING_REVIEW`，不自动发布 |
+| 级别    | 含义                   | 路由                            |
+| ------- | ---------------------- | ------------------------------- |
+| error   | 结构/证据/适用性硬失败 | 隔离：版本 `REJECTED`，不发布   |
+| warning | 需人工判断             | 转 `PENDING_REVIEW`，不自动发布 |
 
 检查项：Schema 与类型/范围/日期格式；每个非空字段必须有逐字证据且**取值必须出现在引用中**；币种 ISO 代码；`document.condition` 必须附带逐字引用；金额必须标注适用范围（伦敦/非伦敦拆分）；正文超出模型截取范围时提示未核对部分。
 
