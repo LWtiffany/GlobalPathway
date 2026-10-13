@@ -170,6 +170,12 @@ VISA_POLICY 行，`policy_id = uuid5("visa_policy:<country>:student:<scope>")`�
   同一材料条件不同时：无条件要求覆盖有条件的；否则合并为 `{"any_of": [条件1, 条件2]}`，
   condition_quote 以 ` | ` 连接各自的逐字引用，门控逐条核对。
   未关联过的材料直接关联，已关联材料的必需性/条件变化进入审核。
+  材料不随就读地变化，但每个 scope 行都关联完整材料清单：区域有多个 scope 时（如英国
+  London / Outside London），同一 doc_id 会以相同 required/condition 出现在每个 policy_id 下，
+  这是按政策行存放的预期冗余，不是重复数据。
+- `doc_id = uuid5("document:<code>:<name_zh>")`（小写），由材料文字确定而不是每份真实文件一个编号：
+  标准代码的 name_zh 由提示词固定，ID 稳定；`other_document` 的 name_zh 由模型给出，
+  措辞不同会得到不同的 doc_id。
 - 必须提供、无条件的 `cas` / `form_i20` 材料会推导出 `cas_required` / `i20_required`，
   证据为该材料的逐字引用，仍过门控。
 - `scan <来源>` 只重新检查该页面，同区域其他页面沿用上次快照（不联网，命中缓存时不调用模型）。
