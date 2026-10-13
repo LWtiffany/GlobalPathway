@@ -1,13 +1,17 @@
-"""Formal schema lifecycle. No legacy data is copied or implicitly migrated."""
+"""Formal schema lifecycle for the clean domain schema (db-er-diagram.mmd).
+
+The database holds only the domain tables plus schema_migrations and REVIEW_QUEUE;
+pipeline mechanics live in JSON files under the environment data directory.
+"""
 import hashlib
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
 
 MIGRATIONS = Path(__file__).with_name("migrations")
+REQUIRED_MIGRATIONS = ("001_domain_schema", "002_review_queue", "003_gate_issue")
 
 
 def _open(paths, mode):
@@ -19,15 +23,16 @@ def _open(paths, mode):
     return connection
 
 
-def _check_identity(connection, paths, allow_empty=False):
+def _check_schema(connection, allow_empty=False):
     tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not tables and allow_empty:
         return
-    if "database_identity" not in tables:
-        raise RuntimeError("目标不是新结构数据库，禁止原地升级旧库；请先归档并按迁移方案处理。")
-    row = connection.execute("SELECT environment, schema_family FROM database_identity WHERE id=1").fetchone()
-    if not row or row["environment"] != paths.environment or row["schema_family"] != "agent1-formal":
-        raise RuntimeError("数据库环境标记不匹配，拒绝跨环境使用或复制后直接使用。")
+    if "schema_migrations" not in tables:
+        raise RuntimeError("目标不是新结构数据库（缺少 schema_migrations）；请先 db init。")
+    applied = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
+    missing = set(REQUIRED_MIGRATIONS) - applied
+    if missing:
+        raise RuntimeError(f"数据库缺少迁移：{', '.join(sorted(missing))}；请先 db init。")
 
 
 def initialize(paths=None):
@@ -38,19 +43,16 @@ def initialize(paths=None):
     connection = _open(paths, "rwc")
     try:
         connection.execute("BEGIN IMMEDIATE")
-        _check_identity(connection, paths, allow_empty=True)
-        connection.execute("""CREATE TABLE IF NOT EXISTS database_identity (
-            id INTEGER PRIMARY KEY CHECK(id=1), environment TEXT NOT NULL
-            CHECK(environment IN ('development','production','test')),
-            schema_family TEXT NOT NULL CHECK(schema_family='agent1-formal'), created_at TEXT NOT NULL)""")
+        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if tables and "schema_migrations" not in tables:
+            raise RuntimeError("目标库存在旧结构残留，拒绝原地升级；请归档后重新 db init。")
         connection.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)""")
-        now = datetime.now(timezone.utc).isoformat()
-        connection.execute("INSERT OR IGNORE INTO database_identity VALUES (1,?,'agent1-formal',?)",
-                           (paths.environment, now))
         files = sorted(MIGRATIONS.glob("[0-9]*.sql"))
         if not files:
             raise RuntimeError("缺少数据库结构迁移文件")
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         applied = {row["version"]: row["checksum"] for row in connection.execute("SELECT * FROM schema_migrations")}
         if set(applied) - {file.stem for file in files}:
             raise RuntimeError("数据库包含当前代码未知的迁移，拒绝降级使用")
@@ -87,7 +89,7 @@ def session(paths=None, readonly=True):
     paths = paths or config.PATHS
     connection = _open(paths, "ro" if readonly else "rw")
     try:
-        _check_identity(connection, paths)
+        _check_schema(connection)
         if readonly:
             connection.execute("PRAGMA query_only=ON")
         else:
@@ -107,7 +109,7 @@ def status(paths=None):
     paths = paths or config.PATHS
     paths.validate()
     result = {"environment": paths.environment, "database": str(paths.database),
-              "initialized": False, "legacy_mixed_database": str(config.LEGACY_MIXED_DB)}
+              "initialized": False}
     if not paths.database.exists():
         return result
     with session(paths) as connection:
@@ -115,4 +117,8 @@ def status(paths=None):
         result["migrations"] = [dict(row) for row in connection.execute("SELECT * FROM schema_migrations ORDER BY version")]
         result["tables"] = [row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        result["open_reviews"] = connection.execute(
+            "SELECT COUNT(*) FROM REVIEW_QUEUE WHERE status='OPEN'").fetchone()[0]
+        result["open_gate_issues"] = connection.execute(
+            "SELECT COUNT(*) FROM GATE_ISSUE WHERE status='OPEN'").fetchone()[0]
     return result

@@ -1,7 +1,7 @@
 """Complete section extraction for the formal visa candidate pipeline."""
 import json
 
-from . import config, extract as legacy_extract
+from . import config, extract as legacy_extract, gate
 from .incremental import fingerprint
 from .models import VisaDocument, VisaPatch, VisaPolicyData, VisaPolicyEntry, VisaEvidence
 
@@ -13,46 +13,135 @@ mean the full page removed it. For document requirements beginning with if/unles
 set condition to a concrete object (for example {"has_student_loan": true}); do
 not mark a conditional document unconditional. Never convert a requirement to
 funds_tuition_unpaid: that field is an AMOUNT. Use funds_tuition_required instead.
+Operator notes for this source, when present, narrow what to extract from it.
 """
-SECTION_EXTRACTOR_VERSION = "sections-1"
+SECTION_EXTRACTOR_VERSION = "sections-2"
+
+# A scope naming the destination itself is not a narrower scope: it is the universal rule.
+DESTINATION_SCOPES = {
+    "UK": {"uk", "the uk", "united kingdom", "the united kingdom", "great britain", "england"},
+    "US": {"us", "usa", "u.s.", "the us", "the u.s.", "united states", "the united states",
+           "united states of america"},
+    "CN-HK": {"hong kong", "hksar", "the hksar", "hong kong sar", "hong kong special administrative region"},
+}
+
+# Documents whose unconditional requirement is exactly a boolean policy column.
+DOCUMENT_FLAGS = {"cas": "cas_required", "form_i20": "i20_required"}
+REQUIREMENT_FLAGS = {"cas_required", "i20_required", "tb_test_required", "funds_tuition_required"}
 
 
-def extraction_profile(settings, cache_epoch="initial"):
+def extraction_profile(settings, cache_epoch="initial", source_notes=None):
     body = {"model": settings["model"], "base_url": settings["base_url"],
             "extra_body": settings.get("extra_body"), "schema": config.SCHEMA_VERSION,
             "prompt": config.PROMPT_VERSIONS["visa_policy"], "section_prompt": SECTION_PROMPT,
             "chunk_limit": 3500, "extractor": SECTION_EXTRACTOR_VERSION,
-            "cache_epoch": cache_epoch}
+            "cache_epoch": cache_epoch, "source_notes": source_notes}
     return fingerprint(json.dumps(body, sort_keys=True, ensure_ascii=False))
+
+
+def _normalize_entries(content):
+    """归一化 LLM 输出结构：条目偶尔被写扁成平铺字段（缺 policy 键）。
+    凡缺少 policy 但含 Schema 字段的条目，按 {"policy": 条目, "evidence": []} 包回。"""
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+    if not isinstance(data, dict) or not isinstance(data.get("policies"), list):
+        return content
+    changed = False
+    for index, entry in enumerate(data["policies"]):
+        if not isinstance(entry, dict) or "policy" in entry:
+            continue
+        if set(entry) & set(VisaPolicyData.model_fields):
+            evidence = entry.pop("evidence", None)
+            data["policies"][index] = {"policy": entry, "evidence": evidence or []}
+            changed = True
+    return json.dumps(data, ensure_ascii=False) if changed else content
 
 
 def extract_section(section, source, client=None, settings=None):
     if client is None:
         client, settings = legacy_extract._client()
+    notes = source.get("extraction_notes")
+    header = f"Source: {source['url']}\n"
+    if notes:
+        header += f"Operator notes: {notes}\n"
     response = legacy_extract._call(
         client, settings, SECTION_PROMPT,
-        f"Source: {source['url']}\nSection: {section.heading}\n\n{section.text}",
+        f"{header}Section: {section.heading}\n\n{section.text}",
         max_tokens=4000,
     )
     content = response.choices[0].message.content or ""
     if not content.strip():
         raise legacy_extract.ExtractionError("extraction_invalid", "章节抽取返回空 JSON")
     try:
-        patch = VisaPatch.model_validate_json(content)
+        patch = VisaPatch.model_validate_json(_normalize_entries(content))
     except Exception as exc:
         raise legacy_extract.ExtractionError("extraction_invalid", f"章节抽取结构错误：{exc}") from exc
     return patch, legacy_extract._usage(response)
 
 
-def merge_sections(section_patches):
-    """Merge scoped facts; conflicting values are failures, never last-write-wins."""
+def _scope_key(city, region):
+    scope = (city or "*").strip().casefold()
+    if scope in DESTINATION_SCOPES.get(region, ()):
+        return "*"
+    return scope
+
+
+def _conflict(conflicts, message, **details):
+    if conflicts is None:
+        raise legacy_extract.ExtractionError("extraction_invalid", message)
+    conflicts.append({"reason": message, **details})
+
+
+def _condition_alternatives(document):
+    condition = document.condition or {}
+    return list(condition["any_of"]) if set(condition) == {"any_of"} else [condition]
+
+
+def _combine_documents(prior, document):
+    """Same document, same required-ness, different conditions (lenient merge only).
+
+    An unconditional requirement subsumes conditional ones; otherwise the document
+    is required when ANY of the stated conditions holds. Each condition keeps its own
+    verbatim quote, joined by gate.CONDITION_QUOTE_SEPARATOR.
+    """
+    if prior.condition == document.condition:
+        return prior
+    if not prior.condition or not document.condition:
+        return prior if not prior.condition else document
+    alternatives = _condition_alternatives(prior)
+    alternatives += [c for c in _condition_alternatives(document) if c not in alternatives]
+    quotes = []
+    for doc in (prior, document):
+        for part in (doc.condition_quote or "").split(gate.CONDITION_QUOTE_SEPARATOR):
+            if part and part not in quotes:
+                quotes.append(part)
+    return prior.model_copy(update={
+        "condition": {"any_of": alternatives},
+        "condition_quote": gate.CONDITION_QUOTE_SEPARATOR.join(quotes) or None,
+    })
+
+
+def merge_sections(section_patches, conflicts=None, region=None):
+    """Merge scoped facts; conflicting values are failures, never last-write-wins.
+
+    With ``conflicts`` (a list) the merge does not raise: the first value is kept,
+    each conflict is appended as {"reason", "scope", "field", "values"} and the
+    caller must route the field to human review. Documents then resolve a
+    required/not-required disagreement to required (required=false only means the
+    page mentions the item without demanding it).
+    """
     scoped = {}
     documents = {}
     for patch in section_patches:
         for entry in patch.policies:
             data = entry.policy.model_dump(exclude_none=True)
-            scope = (data.get("applies_to_city") or "*").strip().casefold()
-            bucket = scoped.setdefault(scope, {"fields": {}, "evidence": {}})
+            scope = _scope_key(data.get("applies_to_city"), region)
+            if scope == "*":
+                data.pop("applies_to_city", None)
+            bucket = scoped.setdefault(scope, {"fields": {}, "evidence": {}, "conflicted": set()})
+            rejected = set()
             for field, value in data.items():
                 if field == "remark":
                     prior = bucket["fields"].get(field)
@@ -64,21 +153,61 @@ def merge_sections(section_patches):
                         if condition not in existing:
                             existing.append(condition)
                     continue
-                if field in bucket["fields"] and bucket["fields"][field] != value:
-                    raise legacy_extract.ExtractionError(
-                        "extraction_invalid", f"同一适用范围的 {field} 在章节间取值冲突")
+                if (conflicts is not None and field in REQUIREMENT_FLAGS
+                        and {bucket["fields"].get(field), value} == {True, False}):
+                    # 一处陈述要求、另一处因豁免写成 false：要求成立，豁免已在 conditions
+                    if value is False:
+                        rejected.add(field)
+                        continue
+                    bucket["evidence"].pop(field, None)
+                elif field in bucket["fields"] and bucket["fields"][field] != value:
+                    _conflict(conflicts, f"同一适用范围的 {field} 在章节间取值冲突",
+                              scope=data.get("applies_to_city"), field=field,
+                              values=[bucket["fields"][field], value])
+                    bucket["conflicted"].add(field)
+                    rejected.add(field)
+                    continue
                 bucket["fields"][field] = value
             for ev in entry.evidence:
+                if ev.field in rejected or (ev.field == "applies_to_city" and scope == "*"):
+                    continue
                 bucket["evidence"].setdefault(ev.field, {})[ev.evidence_quote] = ev
         for document in patch.documents:
-            key = document.code.strip().casefold()
-            if key in documents:
-                prior = documents[key]
-                if prior.required != document.required or prior.condition != document.condition:
-                    raise legacy_extract.ExtractionError(
-                        "extraction_invalid", f"材料 {key} 在章节间必需性或条件冲突")
-            else:
+            # other_document 是兜底码：同一页面多种不同材料会共用它（如香港页的
+            # 录取通知书/ID 995A/旅行证件）。标识必须是 (code, name_zh)，
+            # 否则不同材料被误判为冲突；同码同名的分歧按下面分级处理。
+            key = (document.code.strip().casefold(), (document.name_zh or "").strip().casefold())
+            prior = documents.get(key)
+            if prior is None:
                 documents[key] = document
+                continue
+            if prior.required != document.required:
+                if conflicts is None:
+                    raise legacy_extract.ExtractionError(
+                        "extraction_invalid",
+                        f"材料 {key[0]}/{key[1]} 在章节间必需性冲突"
+                        f"（{prior.required} vs {document.required}）")
+                documents[key] = prior if prior.required else document
+                continue
+            if conflicts is not None:
+                documents[key] = _combine_documents(prior, document)
+                continue
+            if prior.condition == document.condition:
+                continue  # 完全重复
+            # 条件表述不同：若一条引用是另一条的子串，是同一要求的详略写法
+            # （模型换了个 condition key 拼写），保留更具体的那条；
+            # 否则视为真实分歧——按设计拒绝整页，不得静默取舍。
+            shorter, longer = ((prior, document)
+                               if len(prior.evidence_quote) <= len(document.evidence_quote)
+                               else (document, prior))
+            if shorter.evidence_quote and shorter.evidence_quote in longer.evidence_quote:
+                documents[key] = longer
+                continue
+            _conflict(conflicts,
+                      f"材料 {key[0]}/{key[1]} 在章节间条件冲突且无法判定详略"
+                      f"（{prior.condition} vs {document.condition}）",
+                      scope=None, field=f"document:{key[0]}",
+                      values=[prior.condition, document.condition])
     universal = scoped.pop("*", None)
     if universal and scoped:
         for bucket in scoped.values():
@@ -100,8 +229,17 @@ def merge_sections(section_patches):
                         bucket["evidence"].setdefault(field, {}).update(universal["evidence"][field])
                     continue
                 if field in bucket["fields"] and bucket["fields"][field] != value:
-                    raise legacy_extract.ExtractionError("extraction_invalid", f"通用规则 {field} 与区域规则冲突")
+                    # 通用规则与范围规则不一致：范围特定的值更具体，优先保留；
+                    # 被覆盖的通用值记入 remark 保持可追溯（remark 不参与 business_hash）。
+                    # 典型场景：页面同时存在"例行申请 21 天"与"内地生申请 42 天"，
+                    # 模型未给后者打范围标签时落入通用桶——不应因此整页失败。
+                    note = f"通用规则 {field}={value} 被本范围取值 {bucket['fields'][field]} 覆盖"
+                    prior = bucket["fields"].get("remark")
+                    bucket["fields"]["remark"] = f"{prior}\n{note}" if prior else note
+                    continue
                 bucket["fields"].setdefault(field, value)
+                if field in universal["conflicted"]:
+                    bucket["conflicted"].add(field)
                 if field in universal["evidence"]:
                     bucket["evidence"].setdefault(field, {}).update(universal["evidence"][field])
     elif universal:
@@ -117,3 +255,31 @@ def merge_sections(section_patches):
     if not entries and not documents:
         raise legacy_extract.ExtractionError("extraction_invalid", "整页没有抽取到签证要求")
     return VisaPatch(policies=entries, documents=list(documents.values()))
+
+
+def derive_document_flags(patch):
+    """An unconditional required CAS / I-20 document sets cas_required / i20_required.
+
+    The document's verbatim quote becomes the field evidence, so the gate still
+    checks it against the snapshot. Values the model already extracted win.
+    """
+    additions = {}
+    for document in patch.documents:
+        field = DOCUMENT_FLAGS.get(document.code.strip().casefold())
+        if field and document.required and not document.condition and document.evidence_quote:
+            additions.setdefault(field, document.evidence_quote)
+    if not additions:
+        return patch
+    entries = list(patch.policies) or [VisaPolicyEntry(policy=VisaPolicyData(), evidence=[])]
+    derived = []
+    for entry in entries:
+        fields = entry.policy.model_dump(exclude_none=True)
+        evidence = list(entry.evidence)
+        for field, quote in additions.items():
+            if field in fields:
+                continue
+            fields[field] = True
+            evidence.append(VisaEvidence(field=field, evidence_quote=quote,
+                                         note="derived from required document"))
+        derived.append(VisaPolicyEntry(policy=VisaPolicyData.model_validate(fields), evidence=evidence))
+    return VisaPatch(policies=derived, documents=patch.documents)
