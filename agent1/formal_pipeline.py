@@ -101,7 +101,7 @@ def register_sources(path=None, paths=None):
     """校验 sources.json（兼容旧 CLI 名称；不再写库）。返回来源数量。"""
     sources = load_sources(path)
     for source in sources.values():
-        if not source.get("schema_type") or source.get("schema_type") not in ("visa_policy", "generic_facts"):
+        if source.get("schema_type") not in ("visa_policy", "fx_policy", "generic_facts"):
             raise ValueError(f"来源 {source['id']} 的 schema_type 未知")
     return len(sources)
 
@@ -581,6 +581,9 @@ def apply_review(connection, review_id, *, decided_by, note=None):
     row = _row(connection, "SELECT * FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'", (review_id,))
     if not row:
         raise ValueError(f"没有待处理的审核项：{review_id}")
+    if row["domain_table"] == "FX_POLICY":
+        from . import fx_pipeline
+        return fx_pipeline.apply_review(connection, row, decided_by=decided_by, note=note)
     if row["domain_table"] != "VISA_POLICY":
         raise ValueError(f"暂不支持审核域表：{row['domain_table']}")
     payload = json.loads(row["proposed_value"])
@@ -621,7 +624,10 @@ def reject_review(connection, review_id, *, decided_by, note):
 
 # ---------- per-page capture ----------
 
-def _extract_sections(source, paths, markdown, previous_md, profile, full, settings, client_box):
+def _extract_sections(source, paths, markdown, previous_md, profile, full, settings, client_box,
+                      extractor=None):
+    extractor = extractor or formal_extract
+    patch_class = getattr(extractor, "PATCH", VisaPatch)
     sections = incremental.split_sections(markdown)
     old_sections = []
     if previous_md:
@@ -636,12 +642,12 @@ def _extract_sections(source, paths, markdown, previous_md, profile, full, setti
     for section in sections:
         cache_key = f"{section.content_hash}:{profile}"
         if section.key not in affected and cache_key in cache:
-            patches.append(VisaPatch.model_validate_json(cache[cache_key]))
+            patches.append(patch_class.model_validate_json(cache[cache_key]))
             reused.append(section.key)
             continue
         if client_box[0] is None:
             client_box[0], client_box[1] = formal_extract.legacy_extract._client()
-        patch, usage = formal_extract.extract_section(section, source, client_box[0], client_box[1])
+        patch, usage = extractor.extract_section(section, source, client_box[0], client_box[1])
         model_calls += 1
         tokens[0] += usage[0] or 0
         tokens[1] += usage[1] or 0
@@ -652,12 +658,14 @@ def _extract_sections(source, paths, markdown, previous_md, profile, full, setti
     return patches, len(reused), model_calls, tokens
 
 
-def _capture(source, paths, settings, client_box, *, fresh, full):
+def _capture(source, paths, settings, client_box, *, fresh, full, extractor=None):
     """Snapshot + extraction for one page. Returns a capture dict.
 
     fresh=False reuses the last snapshot without touching the network (sibling
-    pages of the region that were not asked to be re-checked).
+    pages of the region that were not asked to be re-checked). extractor is a
+    module with extraction_profile / extract_section / PATCH (default: visa).
     """
+    extractor = extractor or formal_extract
     source_id = source["id"]
     state = _load_state(paths, source_id)
     notes = source.get("extraction_notes")
@@ -675,7 +683,7 @@ def _capture(source, paths, settings, client_box, *, fresh, full):
         if full or last_full is None or now - last_full >= timedelta(days=7):
             full = True
             epoch = _id("epoch")
-        profile = formal_extract.extraction_profile(settings, epoch, notes)
+        profile = extractor.extraction_profile(settings, epoch, notes)
         due = storage_timestamp(state.get("next_check_at"))
         if not full and due and now < due and state.get("last_extraction_profile") == profile:
             fresh, status = False, "NOT_DUE"
@@ -683,7 +691,7 @@ def _capture(source, paths, settings, client_box, *, fresh, full):
         if not can_reuse:
             return None
         full = False
-        profile = formal_extract.extraction_profile(settings, epoch, notes)
+        profile = extractor.extraction_profile(settings, epoch, notes)
         markdown = _snapshot_file(paths, previous_md).read_text(encoding="utf-8")
         snapshot_id, new_md = state["snapshot_id"], previous_md
     else:
@@ -722,7 +730,7 @@ def _capture(source, paths, settings, client_box, *, fresh, full):
                "markdown": markdown, "patches": [], "reused_sections": 0,
                "model_calls": 0, "tokens": [0, 0], "fresh": fresh}
     patches, reused, calls, tokens = _extract_sections(
-        source, paths, markdown, previous_md, profile, full, settings, client_box)
+        source, paths, markdown, previous_md, profile, full, settings, client_box, extractor)
     capture.update(patches=patches, reused_sections=reused, model_calls=calls, tokens=tokens)
 
     if fresh:
@@ -909,8 +917,11 @@ def scan(source_id, *, paths=None, full=False):
     if source_id not in sources:
         raise KeyError(f"sources.json 中没有来源：{source_id}")
     source = sources[source_id]
+    if source.get("schema_type") == "fx_policy":
+        from . import fx_pipeline
+        return fx_pipeline.scan(source_id, paths=paths, full=full)
     if source.get("schema_type") != "visa_policy":
-        raise ValueError("新管道目前只支持 visa_policy；其他领域待专用抽取器接入")
+        raise ValueError("新管道目前只支持 visa_policy / fx_policy；其他领域待专用抽取器接入")
     crawl.validate_source(source)
     region = source.get("region") or "unknown"
     outcome = _scan_region(region, paths=paths, fresh_ids={source_id}, full=full, sources=sources)

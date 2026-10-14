@@ -147,7 +147,7 @@ remark 只承载说明；如何从说明拆条件是后续抽取与门控服务�
 已发布内容与新结果的比较忽略 remark 措辞和材料顺序，保留条件变化；
 字段/材料本次漏抽不会自动删除。疑似资格/豁免只留在 remark 时进入待解决候选。
 所有候选都不自动发布；完整的变化进入审核，质量问题需解决后才能进入后续发布阶段。
-当前没有后台定时服务接入新入口，须显式调用 `scan <来源>` 或 `scan-region <区域>`。
+当前没有后台定时服务接入新入口，须显式调用 `scan <来源>`、`scan-region <区域>` 或 `scan-fx <国家>`。
 
 #### 按区域合并（当前 VISA_POLICY 实现）
 
@@ -187,6 +187,32 @@ VISA_POLICY 行，`policy_id = uuid5("visa_policy:<country>:student:<scope>")`�
 - 材料适用条件三态：`required=1`（有/无条件）、`required=0`（仅提及）、`required=NULL`（原文带条件但未能确认）。
   原文带 if/unless 却没抽出条件、或条件引用在快照中找不到时，材料记为条件未知，不能退化成无条件必需；
   条件引用是模型用分号拼接的多条列表项时逐项核对。
+
+#### 外汇政策（FX_POLICY，迁移 005_fx_evidence，当前实现）
+
+`sources.json` 中 `schema_type: fx_policy` 的来源（外汇局总局细则、分局问答、银行办理口径页）由
+`scan-fx <国家>`（或 `scan <来源>`）处理，抓取/快照/章节缓存与签证相同（`agent1/fx_pipeline.py`、
+`agent1/fx_extract.py`）。
+
+- 每国两行：`policy_id = uuid5("fx_policy:<country>:study_abroad:<tuition|living>")`，
+  `purpose_code` 为 tuition / living；模型给出 `purpose=null` 的事实与材料同时适用于两行。
+- 可抽字段：年度便利化额度（金额 + ISO 币种）、`quota_reset=calendar_year`、`over_quota_allowed`、
+  `tuition_direct_to_school`、`remitter_relation`（self_only / immediate_family / close_relatives /
+  anyone_authorized）、`can_use_family_quota`、`effective_from/to`。
+- 门控（中文页面）：引用两侧对称去空白、折叠全角标点后逐字比对；金额允许「5万」「五万」换算，
+  且引用须表述年度（排除「当日累计」等单日限额）；币种须在引用中出现对应币种词；日期年份须在引用中。
+  未通过的章节取值丢弃并记 warning 级 GATE_ISSUE。
+- 合并：用途特定取值覆盖通用取值（记 warning）；同一层级取值不同即冲突，字段进 REVIEW_QUEUE
+  （`domain_table='FX_POLICY'`），另记 `source_id = region:fx:<国家>` 的 GATE_ISSUE。
+  典型冲突：总局细则「直系亲属」代办 vs 天津分局「近亲属」代办 vs 工行超额「凭授权委托」。
+- 材料：标准代码（id_document、passport_with_visa、admission_letter、tuition_fee_proof、
+  living_cost_proof、enrolment_proof、kinship_proof、proxy_id_document、authorization_letter、
+  fx_purchase_application）的 name_zh 固定，页面措辞保留在证据引用中；`other_document` 用页面名称。
+  条件键只有 `over_quota`、`by_proxy`、`study_year`（first/subsequent）、`visa_deposit`；其他条件记为
+  条件未知。`any_of` 中被更宽条件蕴含的分支会去掉，同一布尔键 true/false 都出现视为无条件。
+- 写入策略与 VISA_POLICY 相同：空列直接补齐，已有值变化/材料变化/材料消失进入 UPDATE 审核，
+  `review approve` 写回 FX_POLICY 并刷新 FX_EVIDENCE。
+- `FX_EVIDENCE` 与 POLICY_EVIDENCE 同结构（外键指向 FX_POLICY）。外汇知识尚未接入发布面。
 
 #### 发布面（迁移 004_publication，当前实现）
 

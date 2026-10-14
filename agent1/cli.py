@@ -3,6 +3,7 @@
 命令：
   scan ID [--full]            新库：检查一个来源并重写其区域的 VISA_POLICY
   scan-region R [--full|--reapply]  新库：检查区域 R（UK / US / CN-HK / all）的全部签证来源
+  scan-fx [C] [--full|--reapply]    新库：检查国家 C（默认 all）的全部外汇（留学购汇）来源，写 FX_POLICY
   sources sync|list|set      来源登记（设计 2.4 / A1.1）
   run ID [ID...] [--force]    手动触发完整管道
   schedule [--once] [--source ID...]   进程内定时调度
@@ -27,7 +28,7 @@ import sys
 
 from . import config, db as db_mod, gate as gate_mod, knowledge as knowledge_mod, pipeline, scheduler, versions
 from . import storage
-from . import formal_pipeline, publication
+from . import formal_pipeline, fx_pipeline, publication
 from .environment import ENVIRONMENTS, cleanup_test_storage
 
 
@@ -56,6 +57,11 @@ def cmd_scan(args):
 
 def cmd_scan_region(args):
     _print_json(formal_pipeline.scan_region(args.region, full=args.full, reapply=args.reapply))
+    return 0
+
+
+def cmd_scan_fx(args):
+    _print_json(fx_pipeline.scan_all(args.country, full=args.full, reapply=args.reapply))
     return 0
 
 
@@ -379,12 +385,18 @@ def build_parser():
     p.add_argument("db_command", choices=["init", "status", "sync-sources"])
     p.add_argument("--file", help="sync-sources 使用的来源模板文件")
 
-    p = sub.add_parser("scan", help="新库：增量检查一个来源并重写其所属区域的签证政策；不发布")
+    p = sub.add_parser("scan", help="新库：增量检查一个来源并重写其所属区域的签证/外汇政策；不发布")
     p.add_argument("source_id")
     p.add_argument("--full", action="store_true", help="强制整页抓取和完整重新抽取")
 
     p = sub.add_parser("scan-region", help="新库：检查一个区域的全部签证来源（UK / US / CN-HK / all）")
     p.add_argument("region")
+    p.add_argument("--full", action="store_true", help="强制整页抓取和完整重新抽取")
+    p.add_argument("--reapply", action="store_true",
+                   help="不联网：用已存快照和缓存抽取，按当前合并/门控规则重新入库")
+
+    p = sub.add_parser("scan-fx", help="新库：检查外汇（留学购汇）来源并重写 FX_POLICY；不发布")
+    p.add_argument("country", nargs="?", default="all", help="国家（sources.json region，如 CN）；默认 all")
     p.add_argument("--full", action="store_true", help="强制整页抓取和完整重新抽取")
     p.add_argument("--reapply", action="store_true",
                    help="不联网：用已存快照和缓存抽取，按当前合并/门控规则重新入库")
@@ -480,7 +492,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         config.configure_environment(args.env)
-        formal = ("db", "scan", "scan-region", "review", "publish", "publication")
+        formal = ("db", "scan", "scan-region", "scan-fx", "review", "publish", "publication")
         target = config.DB_PATH if args.command in formal else config.LEGACY_DB_PATH
         print(f"[agent1] environment={config.ENVIRONMENT} database={target}", file=sys.stderr)
         if args.command == "db":
@@ -489,6 +501,8 @@ def main(argv=None):
             return cmd_scan(args)
         if args.command == "scan-region":
             return cmd_scan_region(args)
+        if args.command == "scan-fx":
+            return cmd_scan_fx(args)
         if args.command == "review":
             return cmd_review(args)
         if args.command == "publish":

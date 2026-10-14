@@ -1,4 +1,6 @@
 """业务 Schema：签证政策（多适用范围）与通用事实。模型输出仅作为候选知识。"""
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 VISA_FIELDS = {
@@ -91,6 +93,40 @@ class VisaPatch(BaseModel):
     documents: list[VisaDocument] = []
 
 
+# ---------- 外汇（留学购汇 / 汇款）政策：FX_POLICY ----------
+
+# 模型可抽取的 FX_POLICY 列（remark / title 等由管道生成）
+FX_FIELDS = (
+    "effective_from", "effective_to", "annual_quota_amount", "annual_quota_currency",
+    "quota_reset", "over_quota_allowed", "tuition_direct_to_school",
+    "remitter_relation", "can_use_family_quota",
+)
+# 一条 FX_POLICY 行对应一个留学用途；purpose 为空的事实/材料适用于全部用途
+FX_PURPOSES = ("tuition", "living")
+FxField = Literal[FX_FIELDS]
+FxPurpose = Literal[FX_PURPOSES]
+
+
+class FxFact(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    field: FxField
+    value: int | float | bool | str
+    purpose: FxPurpose | None = None
+    evidence_quote: str
+    source_id: str | None = None
+    snapshot_id: str | None = None
+
+
+class FxDocument(VisaDocument):
+    purpose: FxPurpose | None = None
+
+
+class FxPatch(BaseModel):
+    facts: list[FxFact] = []
+    documents: list[FxDocument] = []
+
+
 class GateProblem(BaseModel):
     """兼容管道门控问题，写入当前环境 legacy/gate/problems.json。"""
     problem_id: str
@@ -128,6 +164,6 @@ class SourceConfig(BaseModel):
     freshness_sla_hours: int | None = None
     content_selector: str | None = None
     dynamic: bool = False
-    schema_type: str = "generic_facts"  # visa_policy / generic_facts
+    schema_type: str = "generic_facts"  # visa_policy / fx_policy / generic_facts
     max_retries: int = 2
     notes: str = ""
