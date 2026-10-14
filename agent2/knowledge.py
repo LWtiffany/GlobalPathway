@@ -38,8 +38,9 @@ def availability(record: KnowledgeRecord, now):
     sla = FRESHNESS_SLA.get(record.topic, timedelta(days=7))
     if now - record.verified_at > sla:
         return "stale"
-    if any(not r.evidence_quote.strip() or r.evidence_quote not in record.snapshot
-           for r in record.requirements):
+    if record.snapshot is not None and any(
+            not r.evidence_quote.strip() or r.evidence_quote not in record.snapshot
+            for r in record.requirements):
         return "missing_evidence"
     return "available"
 

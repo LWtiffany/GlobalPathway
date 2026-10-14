@@ -1,6 +1,7 @@
 """Agent 2 命令行。
 
-  serve [--host H] [--port P] [--db PATH]   启动 S1 HTTP API（Demo 模拟身份 + 合成知识夹具）
+  serve [--host H] [--port P] [--db PATH] [--knowledge agent1|fixture] [--agent1-env ENV]
+                                            启动 S1 HTTP API（默认读 Agent1 已发布政策）
   eval-m06 [--repeat N] [--out PATH]        跑 M06 分模块测试指标，保存逐条记录
 """
 import argparse
@@ -16,13 +17,18 @@ DATA = ROOT / "data" / "agent2"
 
 def cmd_serve(args):
     from .api import serve
-    from .knowledge import FixtureKnowledgeRead
     from .service import Agent2Service
     from .store import Store
 
+    if args.knowledge == "agent1":
+        from .agent1_read import Agent1KnowledgeRead
+        knowledge = Agent1KnowledgeRead.for_environment(args.agent1_env)
+    else:
+        from .knowledge import FixtureKnowledgeRead
+        knowledge = FixtureKnowledgeRead.from_file()
     db = Path(args.db)
     db.parent.mkdir(parents=True, exist_ok=True)
-    service = Agent2Service(Store(db), FixtureKnowledgeRead.from_file(),
+    service = Agent2Service(Store(db), knowledge,
                             demo_enabled=os.environ.get("AGENT2_DEMO", "1") == "1")
     serve(service, args.host, args.port)
     return 0
@@ -49,6 +55,9 @@ def main(argv=None):
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--db", default=str(DATA / "agent2.sqlite3"))
+    p.add_argument("--knowledge", choices=("agent1", "fixture"), default="agent1",
+                   help="agent1：读 Agent1 已发布政策；fixture：合成知识夹具")
+    p.add_argument("--agent1-env", default=os.environ.get("AGENT1_ENV", "development"))
     p = sub.add_parser("eval-m06", help="M06 缺失条件判断与追问的测试指标")
     p.add_argument("--repeat", type=int, default=20, help="计时重复次数（P95 样本）")
     p.add_argument("--out")

@@ -50,6 +50,13 @@ class Condition(BaseModel):
     text: str
 
 
+class Source(BaseModel):
+    source_id: str
+    name: str
+    url: str
+    authority: Literal["official", "third_party", "synthetic"]
+
+
 class Requirement(BaseModel):
     requirement_key: str
     document_code: str
@@ -58,15 +65,19 @@ class Requirement(BaseModel):
     required: bool
     applicability_status: Literal["unconditional", "conditional", "unknown"]
     condition: list[Condition] | None = None
+    # 任一组条件全部成立即适用；与 condition 二选一
+    any_of: list[list[Condition]] | None = None
     evidence_id: str
     evidence_quote: str
+    condition_quote: str | None = None
+    # 证据所在页面；为空时用记录的 source
+    source: Source | None = None
 
+    def alternatives(self):
+        return self.any_of or ([self.condition] if self.condition else [])
 
-class Source(BaseModel):
-    source_id: str
-    name: str
-    url: str
-    authority: Literal["official", "third_party", "synthetic"]
+    def condition_text(self):
+        return "，或".join("且".join(c.text for c in group) for group in self.alternatives()) or None
 
 
 class KnowledgeRecord(BaseModel):
@@ -84,7 +95,8 @@ class KnowledgeRecord(BaseModel):
     effective_from: date | None = None
     effective_to: date | None = None
     source: Source
-    snapshot: str
+    # 夹具记录自带快照供证据核对；Agent1 记录由发布方按快照 sha256 核对后给出可用性
+    snapshot: str | None = None
     requirements: list[Requirement]
 
 
@@ -92,7 +104,7 @@ class ReadRecord(BaseModel):
     """A record as returned by KnowledgeRead, with its availability decided for `now`."""
     record: KnowledgeRecord
     available: bool
-    availability_reason: Literal["available", "pending_review", "withdrawn", "stale",
+    availability_reason: Literal["available", "pending_review", "withdrawn", "superseded", "stale",
                                  "not_yet_effective", "expired", "missing_evidence"]
 
 
@@ -121,6 +133,7 @@ class Citation(BaseModel):
     source_name: str
     source_url: str | None
     quote: str
+    condition_quote: str | None = None
     verified_at: datetime
     synthetic: bool
 

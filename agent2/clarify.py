@@ -71,7 +71,10 @@ FIELDS = {
                        "ask_funding_source",
                        "学费和生活费的资金来自哪里？本人或父母存款、学生贷款，还是机构资助/奖学金？"),
     "tb_listed_country_resident": ("是否居住在需做肺结核检测的国家", _bool, "ask_tb_listed_country_resident",
-                                   "申请前你是否在需要做肺结核（TB）检测的国家或地区（如中国大陆）居住？"),
+                                   "你是否在需要做肺结核（TB）检测的国家或地区（如中国大陆）住满 6 个月，"
+                                   "且最近 6 个月内仍住在那里？"),
+    "stay_over_6_months": ("是否在目的地停留 6 个月或以上", _bool, "ask_stay_over_6_months",
+                           "这次去英国是否停留 6 个月或以上？"),
     "remittance_purpose": ("汇款用途", _enum("tuition", "living"), "ask_remittance_purpose",
                            "这笔汇款是交学费还是生活费？"),
     "payment_deadline": ("付款期限", _iso_date, "ask_payment_deadline", "学校要求的付款截止日期是哪天？"),

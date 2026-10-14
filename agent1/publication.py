@@ -421,13 +421,17 @@ def search(country=None, policy_type="student", *, now=None, paths=None):
 
 
 def get(policy_id, revision_id, *, now=None, paths=None):
-    """One revision as it was published, with its availability right now (None if unknown)."""
+    """One revision as it was published, with its availability right now (None if unknown).
+
+    policy_id=None looks the revision up by its id alone.
+    """
     paths = paths or config.PATHS
     now = now or _now()
     with storage.session(paths) as connection:
-        revision = _row(connection, "SELECT * FROM POLICY_REVISION WHERE revision_id=? AND policy_id=?",
-                        (revision_id, policy_id))
-        pub = _row(connection, "SELECT * FROM POLICY_PUBLICATION WHERE policy_id=?", (policy_id,))
+        revision = _row(connection, """SELECT * FROM POLICY_REVISION
+            WHERE revision_id=? AND (? IS NULL OR policy_id=?)""", (revision_id, policy_id, policy_id))
+        pub = revision and _row(connection, "SELECT * FROM POLICY_PUBLICATION WHERE policy_id=?",
+                                (revision["policy_id"],))
     if revision is None or pub is None:
         return None
     return _envelope(pub, revision, now, paths)

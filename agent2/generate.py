@@ -32,7 +32,7 @@ class Generator(Protocol):
 
 
 def _claim_text(material):
-    name = f"{material.name_zh}（{material.name_en}）"
+    name = f"{material.name_zh}（{material.name_en}）" if material.name_en else material.name_zh
     if material.applicability == "required":
         return f"需要提供{name}。"
     if material.applicability == "conditional":
@@ -53,7 +53,7 @@ class TemplateGenerator:
                 requirement_key=requirement.requirement_key, document_code=requirement.document_code,
                 name_zh=requirement.name_zh, name_en=requirement.name_en,
                 applicability=item.applicability,
-                condition_text="且".join(c.text for c in requirement.condition or []) or None,
+                condition_text=requirement.condition_text(),
                 pending_fields=item.pending_fields, citation_id=item.citation.citation_id)
             materials.append(material)
             claims.append(Claim(claim_id=f"c{len(claims) + 1}", text=_claim_text(material),

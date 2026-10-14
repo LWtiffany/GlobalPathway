@@ -61,15 +61,32 @@ def display_url(url):
 
 def _citation(read, requirement, citation_id):
     record = read.record
+    source = requirement.source or record.source
     return Citation(citation_id=citation_id, record_id=record.record_id, revision_id=record.revision_id,
-                    evidence_id=requirement.evidence_id, source_name=record.source.name,
-                    source_url=display_url(record.source.url), quote=requirement.evidence_quote,
+                    evidence_id=requirement.evidence_id, source_name=source.name,
+                    source_url=display_url(source.url), quote=requirement.evidence_quote,
+                    condition_quote=requirement.condition_quote,
                     verified_at=record.verified_at, synthetic=record.synthetic)
 
 
 def _signature(requirement):
-    condition = [c.model_dump(exclude={"text"}) for c in requirement.condition or []]
-    return requirement.required, requirement.applicability_status, condition
+    groups = [[c.model_dump(exclude={"text"}) for c in group] for group in requirement.alternatives()]
+    return requirement.required, requirement.applicability_status, groups
+
+
+def _evaluate(requirement, facts):
+    """(holds, pending_fields): True if any group holds, False if every group fails, else None."""
+    pending, undecided = [], False
+    for group in requirement.alternatives():
+        results = [(c, condition_holds(c, facts)) for c in group]
+        if any(r is False for _, r in results):
+            continue
+        missing = [c.field for c, r in results if r is None]
+        if not missing:
+            return True, []
+        undecided = True
+        pending += [f for f in missing if f not in pending]
+    return (None, pending) if undecided else (False, [])
 
 
 def retrieve(read_records, facts):
@@ -95,7 +112,7 @@ def retrieve(read_records, facts):
                 conflict_variants.append({
                     "required": requirement.required,
                     "applicability_status": requirement.applicability_status,
-                    "condition": [c.text for c in requirement.condition or []],
+                    "condition": requirement.condition_text(),
                     "citation_id": citation.citation_id, "source_name": citation.source_name})
             package.conflicts.append(Conflict(document_code=code, name_zh=variants[0][1].name_zh,
                                               variants=conflict_variants))
@@ -104,15 +121,14 @@ def retrieve(read_records, facts):
         if not requirement.required:
             continue
         if requirement.applicability_status == "unknown" or (
-                requirement.applicability_status == "conditional" and not requirement.condition):
+                requirement.applicability_status == "conditional" and not requirement.alternatives()):
             applicability, pending = "unverified", []
         elif requirement.applicability_status == "unconditional":
             applicability, pending = "required", []
         else:
-            results = [(c, condition_holds(c, facts)) for c in requirement.condition]
-            if any(r is False for _, r in results):
+            holds, pending = _evaluate(requirement, facts)
+            if holds is False:
                 continue
-            pending = [c.field for c, r in results if r is None]
             applicability = "conditional" if pending else "required"
         seq += 1
         package.items.append(Item(read, requirement, applicability, pending,
