@@ -11,6 +11,8 @@
   gate resolve ID [ID...]     结算问题条目
   review list|show|approve|reject  人工审核队列（REVIEW_QUEUE）
   review issues [--status S] [--source ID]   门控问题清单（GATE_ISSUE）
+  publish TARGET [--ack-warnings] [--reason R]   新库：人工发布签证政策（区域 / all / policy_id）
+  publication list|preview|read|withdraw   新库：发布面查看、发布前预览、Agent2 视角读取、撤回
   withdraw TARGET --reason    紧急撤回
   rollback SOURCE --to VERSION --reason   回滚旧版本
   knowledge [--schema S] [--source ID] [--include-stale]   Agent2 只读知识接口
@@ -25,7 +27,7 @@ import sys
 
 from . import config, db as db_mod, gate as gate_mod, knowledge as knowledge_mod, pipeline, scheduler, versions
 from . import storage
-from . import formal_pipeline
+from . import formal_pipeline, publication
 from .environment import ENVIRONMENTS, cleanup_test_storage
 
 
@@ -272,6 +274,32 @@ def cmd_review(args):
     return 0
 
 
+# ---------- publication (formal database) ----------
+
+def cmd_publish(args):
+    results = publication.publish(args.target, actor=_actor(args.actor), reason=args.reason,
+                                  ack_warnings=args.ack_warnings)
+    _print_json(results)
+    return 1 if any(r["result"] == "refused" for r in results) else 0
+
+
+def cmd_publication(args):
+    if args.publication_command == "list":
+        _print_json(publication.list_publications())
+        return 0
+    if args.publication_command == "read":
+        _print_json(publication.search(args.target))
+        return 0
+    if not args.target:
+        print(f"publication {args.publication_command} 需要目标", file=sys.stderr)
+        return 2
+    if args.publication_command == "preview":
+        _print_json(publication.preview(args.target))
+        return 0
+    _print_json(publication.withdraw(args.target, actor=_actor(args.actor), reason=args.reason))
+    return 0
+
+
 # ---------- withdraw / rollback ----------
 
 def cmd_withdraw(args):
@@ -407,6 +435,18 @@ def build_parser():
     p.add_argument("--json", action="store_true")
     p.add_argument("--actor")
 
+    p = sub.add_parser("publish", help="新库：发布前检查通过后封存修订并发布（人工操作）")
+    p.add_argument("target", help="区域（UK / US / CN-HK）、all 或 policy_id")
+    p.add_argument("--ack-warnings", action="store_true", help="已逐条核对未解决的门控警告")
+    p.add_argument("--reason")
+    p.add_argument("--actor")
+
+    p = sub.add_parser("publication", help="新库：发布面")
+    p.add_argument("publication_command", choices=["list", "preview", "read", "withdraw"])
+    p.add_argument("target", nargs="?", help="preview：区域/all/policy_id；read：国家；withdraw：policy_id")
+    p.add_argument("--reason")
+    p.add_argument("--actor")
+
     p = sub.add_parser("withdraw", help="紧急撤回已发布知识")
     p.add_argument("target", help="version_id 或 source_id")
     p.add_argument("--reason", required=True)
@@ -440,8 +480,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         config.configure_environment(args.env)
-        target = (config.DB_PATH if args.command in ("db", "scan", "scan-region", "review")
-                  else config.LEGACY_DB_PATH)
+        formal = ("db", "scan", "scan-region", "review", "publish", "publication")
+        target = config.DB_PATH if args.command in formal else config.LEGACY_DB_PATH
         print(f"[agent1] environment={config.ENVIRONMENT} database={target}", file=sys.stderr)
         if args.command == "db":
             return cmd_database(args)
@@ -451,6 +491,10 @@ def main(argv=None):
             return cmd_scan_region(args)
         if args.command == "review":
             return cmd_review(args)
+        if args.command == "publish":
+            return cmd_publish(args)
+        if args.command == "publication":
+            return cmd_publication(args)
         config.require_legacy_environment()
         print("[agent1] 兼容管道：使用独立 legacy 库，尚未接入新正式表结构。", file=sys.stderr)
         return _dispatch(args)

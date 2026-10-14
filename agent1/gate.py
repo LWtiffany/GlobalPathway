@@ -23,6 +23,7 @@ HIGH_RISK_KEYWORDS = [
 CURRENCY_SYMBOLS = {"£": "GBP", "$": "USD", "€": "EUR", "¥": "CNY"}
 # 合并后的材料条件（any_of）保留每条条件各自的逐字引用，以此分隔，门控逐条核对。
 CONDITION_QUOTE_SEPARATOR = " | "
+CONDITION_WORDS = re.compile(r"\b(if|unless|only when)\b|如果|除非", re.I)
 STALE_EFFECTIVE_FROM_DAYS = 365
 ISO_CURRENCY = re.compile(r"^[A-Z]{3}$")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -83,6 +84,21 @@ def comparable(text):
 
 def quote_in_markdown(quote, markdown):
     return len(comparable(quote)) >= 12 and comparable(quote) in comparable(markdown)
+
+
+def condition_quote_in_markdown(quote, markdown):
+    """每段条件引用逐字命中；模型把原文列表项用分号拼成一段时，逐项核对。"""
+    for part in (quote or "").split(CONDITION_QUOTE_SEPARATOR):
+        if quote_in_markdown(part, markdown):
+            continue
+        items = [item for item in re.split(r";\s*", part) if item.strip()]
+        if len(items) < 2 or not all(quote_in_markdown(item, markdown) for item in items):
+            return False
+    return True
+
+
+def document_key(document):
+    return f"{document.code.strip().casefold()}|{(document.name_zh or '').strip().casefold()}"
 
 
 # 时长类字段：页面常以「周/月/年」表述，而字段以「天」（或月）存。
@@ -385,24 +401,23 @@ def _check_visa_documents(report, patch, markdown):
             report.problem("structure", "error", "文档条目缺少 code 或 name_zh",
                            "补齐文档编码与中文名", field=f"document:{document.code}")
             continue
+        key = document_key(document)
         if not quote_in_markdown(document.evidence_quote, markdown):
             report.problem("evidence", "error", f"文档 {document.code} 的引用未在快照中逐字找到",
                            "核对引用与页面原文", field=f"document:{document.code}",
-                           quote=document.evidence_quote)
+                           quote=document.evidence_quote, document=key, part="evidence")
         if document.condition and not document.condition_quote:
             report.problem("evidence", "error",
                            f"文档 {document.code} 的 condition 缺少逐字引用（condition_quote）",
                            "condition 必须有原文支撑，无法支撑时删除 condition 并将该条转人工",
-                           field=f"document:{document.code}")
-        elif document.condition and not all(
-                quote_in_markdown(part, markdown)
-                for part in (document.condition_quote or "").split(CONDITION_QUOTE_SEPARATOR)):
+                           field=f"document:{document.code}", document=key, part="condition")
+        elif document.condition and not condition_quote_in_markdown(document.condition_quote, markdown):
             report.problem("evidence", "error",
                            f"文档 {document.code} 的 condition_quote 未在快照中逐字找到",
                            "condition 的适用条件必须由引用直接支撑",
-                           field=f"document:{document.code}", quote=document.condition_quote)
-        if not document.condition and re.search(r"\b(if|unless|only when)\b|如果|除非",
-                                                document.evidence_quote, re.I):
+                           field=f"document:{document.code}", quote=document.condition_quote,
+                           document=key, part="condition")
+        if not document.condition and CONDITION_WORDS.search(document.evidence_quote):
             report.problem("applicability", "warning",
                            f"文档 {document.code} 的引用包含条件，但抽取结果缺少 condition",
                            "从原文提取适用条件并复核", field=f"document:{document.code}")

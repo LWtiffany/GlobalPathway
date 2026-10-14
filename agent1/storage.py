@@ -11,7 +11,7 @@ from pathlib import Path
 from . import config
 
 MIGRATIONS = Path(__file__).with_name("migrations")
-REQUIRED_MIGRATIONS = ("001_domain_schema", "002_review_queue", "003_gate_issue")
+REQUIRED_MIGRATIONS = ("001_domain_schema", "002_review_queue", "003_gate_issue", "004_publication")
 
 
 def _open(paths, mode):
@@ -121,4 +121,6 @@ def status(paths=None):
             "SELECT COUNT(*) FROM REVIEW_QUEUE WHERE status='OPEN'").fetchone()[0]
         result["open_gate_issues"] = connection.execute(
             "SELECT COUNT(*) FROM GATE_ISSUE WHERE status='OPEN'").fetchone()[0]
+        result["publications"] = dict(connection.execute(
+            "SELECT status, COUNT(*) FROM POLICY_PUBLICATION GROUP BY status").fetchall())
     return result

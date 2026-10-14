@@ -32,7 +32,7 @@ export CRAWL4_AI_BASE_DIRECTORY="${CRAWL4_AI_BASE_DIRECTORY:-$PWD/data/_crawl4ai
 
 # 第一个参数若是已知子命令则原样转发；否则视为「来源 ID」，自动补 `scan`
 # （新 schema 管道：抽取结果直写 domain 表；变更/门控失败进 REVIEW_QUEUE 人工审核）
-KNOWN_COMMANDS="db scan scan-region review sources run schedule runs gate knowledge status visa show"
+KNOWN_COMMANDS="db scan scan-region review publish publication sources run schedule runs gate knowledge status visa show"
 REGIONS="all UK US CN-HK"
 
 if [ "$#" -eq 0 ]; then

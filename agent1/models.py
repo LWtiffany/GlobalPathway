@@ -28,16 +28,29 @@ class VisaEvidence(BaseModel):
     field: str
     evidence_quote: str
     note: str | None = None
+    # 由管道在页面门控后写入（模型不输出）；跨页面合并后仍能追溯到快照
+    source_id: str | None = None
+    snapshot_id: str | None = None
+
+
+class DocumentSupport(BaseModel):
+    """一条材料要求在某个页面快照上的逐字支撑。"""
+    source_id: str
+    snapshot_id: str
+    evidence_quote: str
+    condition_quote: str | None = None
 
 
 class VisaDocument(BaseModel):
     code: str
     name_zh: str
+    # True 必需 / False 仅提及 / None 原文带条件但条件未能确认（不得当作无条件必需）
     required: bool | None = None
     condition: dict | None = None
     evidence_quote: str
     # condition 必须附带逐字引用，避免把模型推断当成原文条件（门控强制）
     condition_quote: str | None = None
+    support: list[DocumentSupport] = []
 
 
 class VisaPolicyData(BaseModel):

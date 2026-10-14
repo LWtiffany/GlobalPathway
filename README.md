@@ -2,10 +2,9 @@
 
 ## 数据库重构进度（2026-10-13）
 
-已实现环境隔离、新数据库结构及增量扫描至候选的开发入口。
-新库仅在离线测试的临时目录初始化；实际开发/正式数据库尚未初始化，也未迁移旧数据。
-正式审核、发布服务尚未接入新结构。
-下方原使用说明描述的是兼容管道，不代表新正式环境已可端到端运行。
+已实现环境隔离、新数据库结构、按区域增量扫描、人工审核以及签证政策的发布面（迁移 `004_publication`）。
+开发库已初始化并抓取 UK / US / CN-HK 学生签证；正式库未初始化，也未迁移旧数据。
+下方「日常使用」之后的原使用说明描述的是兼容管道。
 
 - 默认环境为 `development`；可用 `AGENT1_ENV` 或全局 `--env` 选择。
 - 新库：`data/<environment>/agent1.sqlite3`；新快照：`data/<environment>/snapshots/`。
@@ -41,8 +40,22 @@ macOS / Linux：`./run-agent1.sh`（= `scan-region all`）、`./run-agent1.sh UK
 来源可用 `extraction_notes` 给抽取模型补充该页面的口径说明（如通用收费表中哪一项是学生签证费）。
 修改合并/门控规则后，`scan-region all --reapply` 不联网、不调用模型，用已存快照与缓存抽取重新入库。
 
-`scan` 仅产生候选、审核任务与问题记录，不发布到 Agent2。默认按来源检查周期到期执行；
-`--full` 强制整页重新抽取。正式环境的扫描入口在发布服务接入前保持关闭。
+`scan` 只写工作表（`VISA_POLICY` / `POLICY_DOCUMENT` / `POLICY_EVIDENCE`）、审核项与门控问题，不发布到 Agent2。
+默认按来源检查周期到期执行；`--full` 强制整页重新抽取。正式环境的扫描入口保持关闭。
+
+发布是人工操作：发布前检查要求每个字段和材料都有能在快照中逐字找到的证据、没有待审核项和门控错误，
+未解决的门控警告需逐条核对后用 `--ack-warnings` 确认。通过后封存为不可修改的修订：
+
+```bash
+./run-agent1.sh publication preview UK          # 预览将封存的字段、材料与拒绝原因（只读）
+./run-agent1.sh publish UK --ack-warnings --reason "核对 GOV.UK 原文"
+./run-agent1.sh publication list                # 发布指针、修订号、核验时间
+./run-agent1.sh publication read UK             # Agent2 视角：统一信封 + 可用性
+./run-agent1.sh publication withdraw <policy_id> --reason "官方页面更正"
+```
+
+之后的扫描若确认已发布事实未变，自动刷新核验时间；事实变化时旧修订保持不变，等待重新发布。
+Agent2 只通过 `agent1.publication.search / get` 读取已发布修订。
 
 `db status` 为只读操作；未初始化时只报告状态，不创建文件。
 `db init` 只接受空库或同环境的新结构库，不能直接升级混合旧库。

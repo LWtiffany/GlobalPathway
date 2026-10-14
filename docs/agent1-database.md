@@ -130,7 +130,7 @@ remark 只承载说明；如何从说明拆条件是后续抽取与门控服务�
 
 不再同时维护 knowledge_versions.status、knowledge_index.availability 和 published_knowledge
 三套发布状态；新结构由 publication 指针表达当前发布状态。
-尚未提供正式知识查询接口；后续需验证发布状态、来源状态、SLA、核验成功和业务有效期。
+当前实现见下文「发布面」：签证政策用 `POLICY_REVISION` / `POLICY_PUBLICATION` / `PUBLICATION_EVENT`。
 
 ### D. 增量检查与变化规则（开发入口已接入）
 
@@ -179,6 +179,32 @@ VISA_POLICY 行，`policy_id = uuid5("visa_policy:<country>:student:<scope>")`�
 - 必须提供、无条件的 `cas` / `form_i20` 材料会推导出 `cas_required` / `i20_required`，
   证据为该材料的逐字引用，仍过门控。
 - `scan <来源>` 只重新检查该页面，同区域其他页面沿用上次快照（不联网，命中缓存时不调用模型）。
+- 材料适用条件三态：`required=1`（有/无条件）、`required=0`（仅提及）、`required=NULL`（原文带条件但未能确认）。
+  原文带 if/unless 却没抽出条件、或条件引用在快照中找不到时，材料记为条件未知，不能退化成无条件必需；
+  条件引用是模型用分号拼接的多条列表项时逐项核对。
+
+#### 发布面（迁移 004_publication，当前实现）
+
+工作表由扫描写入，Agent2 不读。每次入库时，行里当前保存的取值若与本次门控通过的取值相同，
+其逐字证据（来源、快照、引用；材料另有条件引用）写入 `POLICY_EVIDENCE`。
+
+| 表 | 内容 | 约束 |
+| --- | --- | --- |
+| POLICY_EVIDENCE | policy_id、target（`field:<列>` / `document:<doc_id>`）、kind（value/condition）、source_id、snapshot_id、quote | 按目标整体替换为最新支撑 |
+| POLICY_REVISION | revision_id、policy_id、revision_no、facts_hash、payload_json | 触发器禁止更新/删除；payload 封存字段、材料、证据、来源及快照 sha256 |
+| POLICY_PUBLICATION | 每政策一个指针：revision_id、ACTIVE/WITHDRAWN、发布人、verified_at、撤回人与理由 | 触发器保证指向本政策自己的修订 |
+| PUBLICATION_EVENT | PUBLISH / REVERIFY / WITHDRAW、前后修订、操作者、理由、确认过的警告 | 触发器禁止更新/删除 |
+
+- `publish` 前检查：每个非空字段和每项材料都有证据；证据快照存在且引用逐字命中（条件引用逐段）；
+  无该政策的待审核项；区域来源无未解决门控错误；未解决警告须 `--ack-warnings`；证据来源都有成功核验记录。
+- `verified_at` = 证据来源中最早的一次成功检查时间。`facts_hash` 只计算字段与材料（不含证据），
+  事实未变时再次发布只刷新核验时间，不产生新修订。
+- 扫描结束后自动复核已发布政策：事实未变且检查全部通过时刷新 `verified_at`（REVERIFY）；
+  事实变化或有待审核项时不刷新，旧修订保持发布，超过来源 SLA 后读取方看到 `stale`。
+- 只读接口 `agent1.publication.search(country)` / `get(policy_id, revision_id)` 返回统一信封：
+  record_id、revision_id、scope、payload（字段与带证据的材料）、evidence（含 source_url）、verified_at、
+  effective_from/to、availability（available / stale / withdrawn / superseded / not_yet_effective /
+  expired / missing_evidence）、schema_version、`synthetic=false`。快照文件缺失或 sha256 不符即 `missing_evidence`。
 
 ## 4. 关系图
 
@@ -217,8 +243,9 @@ erDiagram
 显式初始化、只读状态查询、迁移校验和、增量检查、章节复用、完整输入及候选比较。
 实际开发/正式库均未初始化，真实网页和模型未调用。
 
-未做：其他业务领域的专用抽取、正式审核决定、原子发布、材料/证据集合封存、
-回滚准入规则、正式知识查询、新入口的后台调度与异常运行接管、数据保留/归档策略和旧库迁移。
+签证政策已有人工审核、证据入库、封存发布、撤回和只读查询（见「发布面」）。
+未做：其他业务领域的专用抽取与发布、回滚到旧修订的准入规则、审核时编辑取值、
+新入口的后台调度与异常运行接管、数据保留/归档策略和旧库迁移。
 当前字段及条件门控只能拦截已知结构问题，原文语义仍需审核人员核对。
 不能仅凭外键或模型的引用匹配就认为政策已完成验证。
 

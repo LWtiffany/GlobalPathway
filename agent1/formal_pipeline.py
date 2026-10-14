@@ -207,9 +207,10 @@ def _document_link(document):
     # 只按 code 推导会把它们全部塌缩成同一行（后写覆盖先写）。
     name = (document.get("name_zh") or code).strip()
     doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"document:{code.casefold()}:{name.casefold()}"))
-    condition = document.get("condition")
+    required = document.get("required")
+    condition = document.get("condition") if required is not None else None
     return {"doc_id": doc_id, "code": code, "name_zh": name,
-            "required": 1 if document.get("required") else 0,
+            "required": None if required is None else (1 if required else 0),
             "condition": _json(condition) if condition else None}
 
 
@@ -243,6 +244,56 @@ def _sync_documents(connection, policy_id, documents):
             changed.append(document)
     _apply_documents(connection, policy_id, new)
     return new, changed
+
+
+def _replace_evidence(connection, policy_id, target, items):
+    """items: (kind, source_id, snapshot_id, quote)；没有可追溯来源的引用不入库。"""
+    items = list(dict.fromkeys(i for i in items if all(i)))
+    if not items:
+        return
+    connection.execute("DELETE FROM POLICY_EVIDENCE WHERE policy_id=? AND target=?",
+                       (policy_id, target))
+    now = _now()
+    for kind, source_id, snapshot_id, quote in items:
+        evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "|".join(
+            ("evidence", policy_id, target, kind, source_id, snapshot_id, quote))))
+        connection.execute("""INSERT OR IGNORE INTO POLICY_EVIDENCE
+            (evidence_id, policy_id, target, kind, source_id, snapshot_id, quote, recorded_at)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (evidence_id, policy_id, target, kind, source_id, snapshot_id, quote, now))
+
+
+def _record_evidence(connection, policy_id, values, evidence, documents):
+    """为行里当前保存的取值（与本次支撑的取值相同）刷新逐字证据。"""
+    row = _row(connection, "SELECT * FROM VISA_POLICY WHERE policy_id=?", (policy_id,))
+    if row is None:
+        return
+    by_field = {}
+    for ev in evidence:
+        ev = ev if isinstance(ev, dict) else ev.model_dump()
+        by_field.setdefault(ev["field"], []).append(
+            ("value", ev.get("source_id"), ev.get("snapshot_id"), ev["evidence_quote"]))
+    for column, value in values.items():
+        if column != "remark" and column in by_field and row.get(column) is not None \
+                and row[column] == value:
+            _replace_evidence(connection, policy_id, f"field:{column}", by_field[column])
+    for document in documents or []:
+        document = document if isinstance(document, dict) else document.model_dump()
+        if not document["code"].strip():
+            continue
+        link = _document_link(document)
+        current = _row(connection, """SELECT required, "condition" FROM POLICY_DOCUMENT
+            WHERE policy_id=? AND policy_domain='visa_policy' AND doc_id=?""",
+            (policy_id, link["doc_id"]))
+        if current is None or (current["required"], current["condition"]) != (link["required"], link["condition"]):
+            continue
+        items = []
+        for support in document.get("support") or []:
+            items.append(("value", support["source_id"], support["snapshot_id"], support["evidence_quote"]))
+            for part in (support.get("condition_quote") or "").split(gate.CONDITION_QUOTE_SEPARATOR):
+                if part.strip() and link["condition"]:
+                    items.append(("condition", support["source_id"], support["snapshot_id"], part))
+        _replace_evidence(connection, policy_id, f"document:{link['doc_id']}", items)
 
 
 def _enqueue_review(connection, *, table, key, action, payload, evidence, reason):
@@ -351,9 +402,23 @@ def split_blocked(patch, report, source_id=None):
             clean_entries.append(VisaPolicyEntry(
                 policy=VisaPolicyData.model_validate(kept),
                 evidence=[ev for ev in entry.evidence if ev.field in kept]))
-    bad_documents = {p["field"].removeprefix("document:") for p in errors
-                     if (p.get("field") or "").startswith("document:")}
-    documents = [d for d in patch.documents if d.code not in bad_documents]
+    # 材料引用不成立 -> 丢弃；只是条件引用不成立 -> 材料保留，但适用条件记为未知
+    drop, unknown = set(), set()
+    for problem in errors:
+        field = problem.get("field") or ""
+        if field.startswith("document:"):
+            target = problem.get("document") or field.removeprefix("document:")
+            (unknown if problem.get("part") == "condition" else drop).add(target)
+    documents = []
+    for document in patch.documents:
+        keys = {gate.document_key(document), document.code}
+        if keys & drop:
+            continue
+        if keys & unknown:
+            document = document.model_copy(update={
+                "required": None if document.required else document.required,
+                "condition": None, "condition_quote": None})
+        documents.append(document)
     return VisaPatch(policies=clean_entries, documents=documents), blocked
 
 
@@ -416,6 +481,7 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=()):
                     VALUES (?,?,?,?,{', '.join('?' for _ in columns)})""",
                     [policy_id, country, "student", header["title"]] + [clean[c] for c in columns])
                 _apply_documents(connection, policy_id, documents)
+                _record_evidence(connection, policy_id, clean, entry.evidence, documents)
                 result.update(result="inserted", fields=sorted(clean))
                 if set(blocked_row) - {"applies_to_city"}:
                     result["review_id"] = _enqueue_review(
@@ -439,6 +505,7 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=()):
             connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=?' for c in fill)}
                 WHERE policy_id=?""", [*fill.values(), policy_id])
         new_docs, changed_docs = _sync_documents(connection, policy_id, documents)
+        _record_evidence(connection, policy_id, clean, entry.evidence, documents)
         result.update(filled=sorted(fill), linked_documents=len(new_docs))
         review_row = {**{c: after for c, (_, after) in changed.items()},
                       **{c: v for c, v in blocked_row.items()
@@ -487,6 +554,8 @@ def apply_review(connection, review_id, *, decided_by, note=None):
         connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=?' for c in field_columns)}
             WHERE policy_id=?""", [policy[c] for c in field_columns] + [policy_id])
     _apply_documents(connection, policy_id, payload.get("documents"))
+    _record_evidence(connection, policy_id, {c: policy[c] for c in field_columns},
+                     json.loads(row["evidence_json"] or "[]"), payload.get("documents"))
     connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
         decision_note=? WHERE review_id=?""",
         (decided_by, _now(), note, review_id))
@@ -649,7 +718,7 @@ def _page_patch(capture, region):
     for section_patch in capture["patches"]:
         section_report = gate.verify_visa_evidence(section_patch, markdown)
         clean, _ = split_blocked(section_patch, section_report)
-        verified.append(clean)
+        verified.append(formal_extract.mark_unstated_conditions(clean))
         discarded += [p for p in section_report.problems if p["severity"] == "error"]
     conflicts = []
     try:
@@ -657,6 +726,7 @@ def _page_patch(capture, region):
     except ExtractionError:
         patch = VisaPatch(policies=[], documents=[])
     patch = formal_extract.derive_document_flags(patch)
+    patch = formal_extract.attribute(patch, source["id"], capture.get("snapshot_id"))
     report = gate.run_gate_visa(patch, markdown, source, {"excerpt_chars": len(markdown)})
     for problem in discarded:
         report.problem(problem["check"], "warning", f"已丢弃无原文支撑的章节取值：{problem['reason']}",
@@ -711,9 +781,13 @@ def _scan_region(region, *, paths, fresh_ids, full, sources=None, reapply=False)
         for capture in captures:
             if "state" in capture:
                 _save_state(paths, capture["source"]["id"], capture["state"])
+        from . import publication
+        with storage.session(paths, readonly=False) as connection:
+            publications = publication.reverify_region(connection, paths, region, sources)
         return {"result": "no_change", "region": region, "applied": False,
                 "pages": page_results + [{"source_id": c["source"]["id"], "status": c["status"]}
-                                         for c in captures], **totals}
+                                         for c in captures], **totals,
+                "publications": publications}
 
     clean_patches, blocked, reports = [], [], []
     for capture in captures:
@@ -755,9 +829,13 @@ def _scan_region(region, *, paths, fresh_ids, full, sources=None, reapply=False)
     for capture in captures:
         if "state" in capture:
             _save_state(paths, capture["source"]["id"], capture["state"])
+    from . import publication
+    with storage.session(paths, readonly=False) as connection:
+        publications = publication.reverify_region(connection, paths, region, sources)
     all_problems = [p for _, r in reports for p in r.problems] + region_report.problems
     return {"result": "applied", "region": region, "applied": True, "pages": page_results,
             **totals, "policies": applied, "gate_issue_ids": gate_issue_ids,
+            "publications": publications,
             "gate": {"errors": [p["reason"] for p in all_problems if p["severity"] == "error"],
                      "warnings": [p["reason"] for p in all_problems if p["severity"] == "warning"]}}
 

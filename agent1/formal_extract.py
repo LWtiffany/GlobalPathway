@@ -3,7 +3,7 @@ import json
 
 from . import config, extract as legacy_extract, gate
 from .incremental import fingerprint
-from .models import VisaDocument, VisaPatch, VisaPolicyData, VisaPolicyEntry, VisaEvidence
+from .models import DocumentSupport, VisaDocument, VisaPatch, VisaPolicyData, VisaPolicyEntry, VisaEvidence
 
 
 SECTION_PROMPT = legacy_extract.VISA_PROMPT + """
@@ -99,6 +99,22 @@ def _condition_alternatives(document):
     return list(condition["any_of"]) if set(condition) == {"any_of"} else [condition]
 
 
+def _union_support(*documents):
+    seen, support = set(), []
+    for document in documents:
+        for item in document.support:
+            key = (item.source_id, item.snapshot_id, item.evidence_quote, item.condition_quote)
+            if key not in seen:
+                seen.add(key)
+                support.append(item)
+    return support
+
+
+def _required_rank(required):
+    """必需 > 条件未知 > 仅提及。"""
+    return {True: 2, None: 1, False: 0}[required]
+
+
 def _combine_documents(prior, document):
     """Same document, same required-ness, different conditions (lenient merge only).
 
@@ -107,7 +123,7 @@ def _combine_documents(prior, document):
     verbatim quote, joined by gate.CONDITION_QUOTE_SEPARATOR.
     """
     if prior.condition == document.condition:
-        return prior
+        return prior.model_copy(update={"support": _union_support(prior, document)})
     if not prior.condition or not document.condition:
         return prior if not prior.condition else document
     alternatives = _condition_alternatives(prior)
@@ -120,7 +136,34 @@ def _combine_documents(prior, document):
     return prior.model_copy(update={
         "condition": {"any_of": alternatives},
         "condition_quote": gate.CONDITION_QUOTE_SEPARATOR.join(quotes) or None,
+        "support": _union_support(prior, document),
     })
+
+
+def mark_unstated_conditions(patch):
+    """原文带 if/unless 但没抽出条件的“必需”材料改为条件未知，不能当作无条件必需。"""
+    documents = [
+        d.model_copy(update={"required": None})
+        if d.required and not d.condition and gate.CONDITION_WORDS.search(d.evidence_quote or "")
+        else d
+        for d in patch.documents]
+    return patch.model_copy(update={"documents": documents})
+
+
+def attribute(patch, source_id, snapshot_id):
+    """给页面门控后的字段证据与材料打上来源与快照。"""
+    if not (source_id and snapshot_id):
+        return patch
+    entries = [VisaPolicyEntry(
+        policy=entry.policy,
+        evidence=[ev if ev.source_id else ev.model_copy(update={"source_id": source_id,
+                                                                "snapshot_id": snapshot_id})
+                  for ev in entry.evidence])
+        for entry in patch.policies]
+    documents = [d if d.support else d.model_copy(update={"support": [DocumentSupport(
+        source_id=source_id, snapshot_id=snapshot_id, evidence_quote=d.evidence_quote,
+        condition_quote=d.condition_quote)]}) for d in patch.documents]
+    return VisaPatch(policies=entries, documents=documents)
 
 
 def merge_sections(section_patches, conflicts=None, region=None):
@@ -187,7 +230,8 @@ def merge_sections(section_patches, conflicts=None, region=None):
                         "extraction_invalid",
                         f"材料 {key[0]}/{key[1]} 在章节间必需性冲突"
                         f"（{prior.required} vs {document.required}）")
-                documents[key] = prior if prior.required else document
+                documents[key] = (prior if _required_rank(prior.required)
+                                  >= _required_rank(document.required) else document)
                 continue
             if conflicts is not None:
                 documents[key] = _combine_documents(prior, document)
