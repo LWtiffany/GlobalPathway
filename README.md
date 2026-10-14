@@ -153,6 +153,19 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 
 仅返回已发布且当前可用的知识：适用范围、字段级证据、`version_id`、`verified_at`（最近成功核验时间）、可用性。超过来源新鲜度 SLA 的数据默认不作为确定事实返回（PRD 7.4）。Python 内调用：`from agent1 import knowledge; knowledge.query(...)`。
 
+## Agent2 S1（英国 Student visa 最小闭环）
+
+设计见 `docs/agent2-module-design.md` 与 `docs/agent2-s1-uk-student-visa.md`，M06 指标见 `docs/agent2-m06-metrics.md`。
+
+```bash
+.venv/bin/python agent2.py serve --port 8787      # 本地 HTTP 服务，Demo 登录（AGENT2_DEMO=0 关闭）
+.venv/bin/python agent2.py eval-m06 --repeat 50   # M06 固定回归集，报告写入 data/agent2/eval/
+```
+
+- S1 只读 `agent2/fixtures/knowledge_uk_student_visa.json` 合成知识夹具（`synthetic=true`，来源地址为 `example.invalid`），不连 Agent1 数据库，回答一律带【模拟资料】标识，不能当作真实签证规定。
+- 回答生成目前用模板（M09 `template-v1`），没有接 LLM；M06 的模型追问建议是可选钩子，模型给出的字段仍要过条件表复核。
+- 只有 HTTP API，没有前端页面。
+
 ## 设计要点与已知边界
 
 - **NO_CHANGE 短路**：页面指纹、Schema 版本、提示词版本均未变化时不重复调用模型，仅刷新 `verified_at`（设计 4.3-2）。
@@ -169,6 +182,9 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 agent1/            # 兼容管道与新结构的环境、存储入口
   migrations/     # 新结构 SQL 迁移文件
 agent1.py          # CLI 入口
+agent2/            # Agent2 S1：意图、M06 追问、M07 知识读取、M08 证据、M09 生成、M10 门控、HTTP API
+  fixtures/       # 合成知识夹具与 M06 固定案例
+agent2.py          # Agent2 CLI 入口（serve / eval-m06）
 sources.json       # 来源登记（含权威等级、负责人、检查周期、SLA、Schema 类型）
 data/
   agent1.sqlite3   # 历史混合库，保留原位
