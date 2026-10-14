@@ -154,7 +154,7 @@
     "content_selector": "main .govuk-grid-column-two-thirds",
     "schema_type": "visa_policy",
     "max_retries": 2,
-    "extraction_notes": "This page covers every UK visa type. A Student visa applicant comes to the UK for more than 6 months, so only the general rule for stays of 6 months or more applies: set tb_test_required=true with that rule (and the listed-countries residence requirement) in conditions. Never set tb_test_required=false because of exemptions or short-stay rules, and do not list documents for short stays, returning residents, family, BNO or child cases.",
+    "extraction_notes": "This page covers every UK visa type. A Student visa applicant comes to the UK for more than 6 months, so only the general rule for stays of 6 months or more applies: set tb_test_required=true with that rule (and the listed-countries residence requirement) in conditions. Never set tb_test_required=false because of exemptions or short-stay rules, and do not list documents for short stays, returning residents, family, BNO or child cases. The tuberculosis_test_certificate condition is exactly that general rule (coming for 6 months or more, lived in a listed country for 6 months or more, living there within the last 6 months); the paragraph about children seeing a clinician or having a chest x-ray describes the test procedure and is never a document condition.",
     "notes": "TB 检测：赴英超过 6 个月且居住在名单国家（含中国大陆、香港）须检测"
   },
   {
