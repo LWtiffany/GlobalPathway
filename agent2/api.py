@@ -7,9 +7,11 @@ import json
 import re
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from pydantic import BaseModel
 
+from . import clarify
 from .service import ServiceError
 
 MAX_BODY_BYTES = 64 * 1024
@@ -29,6 +31,8 @@ def _dump(value):
         return value.model_dump(mode="json")
     if isinstance(value, list):
         return [_dump(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _dump(v) for k, v in value.items()}
     return value
 
 
@@ -110,6 +114,80 @@ def snapshot(service, user_id, body, query, revision_id):
     return 200, service.knowledge_snapshot(revision_id)
 
 
+@route("GET", r"/v1/fields", auth=False)
+def fields(service, user_id, body, query):
+    return 200, {"fields": clarify.field_catalog()}
+
+
+@route("GET", r"/v1/profiles")
+def list_profiles(service, user_id, body, query):
+    return 200, service.list_profiles(user_id)
+
+
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/conversation")
+def profile_conversation(service, user_id, body, query, profile_id):
+    return 200, service.profile_conversation(user_id, profile_id)
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/advice")
+def list_advice(service, user_id, body, query, profile_id):
+    return 200, service.list_advice(user_id, profile_id)
+
+
+@route("POST", r"/v1/messages/(?P<message_id>[\w-]+)/feedback")
+def submit_feedback(service, user_id, body, query, message_id):
+    return 200, service.submit_feedback(user_id, message_id, body.get("kind"), body.get("note") or "")
+
+
+@route("GET", r"/v1/feedback")
+def list_feedback(service, user_id, body, query):
+    return 200, service.list_feedback(user_id)
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/plan")
+def list_plan(service, user_id, body, query, profile_id):
+    return 200, service.list_plan(user_id, profile_id)
+
+
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/plan")
+def add_plan_item(service, user_id, body, query, profile_id):
+    return 201, service.add_plan_item(user_id, profile_id, body.get("text"))
+
+
+@route("PATCH", r"/v1/plan-items/(?P<item_id>[\w-]+)")
+def update_plan_item(service, user_id, body, query, item_id):
+    return 200, service.update_plan_item(user_id, item_id, text=body.get("text"), done=body.get("done"))
+
+
+@route("DELETE", r"/v1/plan-items/(?P<item_id>[\w-]+)")
+def delete_plan_item(service, user_id, body, query, item_id):
+    return 200, service.delete_plan_item(user_id, item_id)
+
+
+WEB_ROOT = Path(__file__).resolve().parent / "web"
+STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+                ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
+STATIC_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+                               "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-cache",
+}
+
+
+def static_file(path):
+    """Resolve a GET path to a file under agent2/web (SPA: unknown paths fall back to index.html)."""
+    relative = path.partition("?")[0].lstrip("/") or "index.html"
+    candidate = (WEB_ROOT / relative).resolve()
+    if not candidate.is_relative_to(WEB_ROOT) or not candidate.is_file():
+        candidate = WEB_ROOT / "index.html"
+    content_type = STATIC_TYPES.get(candidate.suffix)
+    if not content_type or not candidate.is_file():
+        return None
+    return candidate.read_bytes(), content_type
+
+
 def dispatch(service, method, path, headers, raw_body):
     """Pure request handler (also used by tests): returns (status, payload dict)."""
     trace_id = str(uuid.uuid4())
@@ -162,13 +240,28 @@ def make_handler(service):
             self.wfile.write(data)
 
         def do_GET(self):
-            self._handle("GET")
+            if self.path.startswith("/v1/"):
+                return self._handle("GET")
+            found = static_file(self.path)
+            if not found:
+                return self._handle("GET")
+            data, content_type = found
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            for name, value in STATIC_HEADERS.items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(data)
 
         def do_POST(self):
             self._handle("POST")
 
         def do_PATCH(self):
             self._handle("PATCH")
+
+        def do_DELETE(self):
+            self._handle("DELETE")
 
         def log_message(self, fmt, *args):
             pass
@@ -178,5 +271,5 @@ def make_handler(service):
 
 def serve(service, host="127.0.0.1", port=8765):
     server = ThreadingHTTPServer((host, port), make_handler(service))
-    print(f"[agent2] listening on http://{host}:{port}  (Demo 模拟身份，资料为合成夹具)")
+    print(f"[agent2] listening on http://{host}:{port}  (Demo 模拟身份；前端页面同址打开)")
     server.serve_forever()

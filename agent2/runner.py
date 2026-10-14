@@ -185,6 +185,7 @@ class Agent2Runner:
             advice = {"topic": TOPIC_ADVICE[topic], "payload": {
                 "summary": out.answer.summary,
                 "materials": [m.model_dump() for m in out.answer.materials],
+                "citations": [c.model_dump(mode="json") for c in out.citations],
                 "revisions": sorted({(c.record_id, c.revision_id) for c in out.citations}),
                 "unconfirmed_fields": follow.pending_fields, "synthetic": synthetic}}
             out.advice_updates = [TOPIC_ADVICE[topic]]

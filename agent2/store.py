@@ -121,6 +121,22 @@ CREATE TABLE IF NOT EXISTS message_reactions (
     created_at TEXT NOT NULL,
     PRIMARY KEY (message_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS feedback_tickets (
+    feedback_id TEXT PRIMARY KEY,
+    message_id  TEXT NOT NULL REFERENCES message_index(message_id),
+    user_id     TEXT NOT NULL REFERENCES users(user_id),
+    note        TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('open','resolved')),
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plan_items (
+    item_id    TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    done       INTEGER NOT NULL CHECK (done IN (0,1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

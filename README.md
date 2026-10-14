@@ -180,7 +180,7 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 - 覆盖英国、美国、香港学生签证材料。Agent1 的适用条件按 `CONDITION_MAP` 映射到 Profile 字段：英国（年龄、资金来源、停留是否满 6 个月、是否居住在 TB 名单国家）、香港（本地保证人是院校还是个人、保证人是否永久性居民、申请人常住地、是否持有香港身份证）；任一条件键映射不了（如美国“面签前须缴签证费”），该材料整条显示为“待核实”，不当作无条件需要。
 - `--knowledge fixture` 与 `eval-m06` 使用 `agent2/fixtures/knowledge_uk_student_visa.json` 合成知识夹具（`synthetic=true`，来源地址为 `example.invalid`），回答带【模拟资料】标识。
 - 回答生成目前用模板（M09 `template-v1`），没有接 LLM；M06 的模型追问建议是可选钩子，模型给出的字段仍要过条件表复核。
-- 只有 HTTP API，没有前端页面。
+- 前端（`agent2/web/`，原生 HTML/CSS/JS，无构建）由 `serve` 同址托管，浏览器打开 `http://127.0.0.1:8787/` 即可：模拟登录（学生/家长 × 英/港/美预设）→ 上方案表（基本信息 9 格、汇款/开户/签证/信用卡四类建议、用户待办）· 下对话（进度、追问选项、引用抽屉、质量状态、有帮助/信息有误/继续补充）；另有 `#/onboarding` 建档、`#/report/<profile_id>` 打印报告、`#/feedback` 纠错记录。四类建议里目前只有签证有已发布资料，汇款/开户/信用卡显示「待补充」；管理端页面未做。
 
 ## 设计要点与已知边界
 
@@ -200,6 +200,7 @@ agent1/            # 兼容管道与新结构的环境、存储入口
 agent1.py          # CLI 入口
 agent2/            # Agent2 S1：意图、M06 追问、M07 知识读取、M08 证据、M09 生成、M10 门控、HTTP API
   fixtures/       # 合成知识夹具与 M06 固定案例
+  web/            # 用户端前端（serve 同址托管）
 agent2.py          # Agent2 CLI 入口（serve / eval-m06）
 sources.json       # 来源登记（含权威等级、负责人、检查周期、SLA、Schema 类型）
 data/

@@ -21,7 +21,10 @@ MAX_QUESTIONS_PER_ROUND = 2
 
 
 def _enum(*values):
-    return lambda v: None if v in values else f"取值必须是 {' / '.join(values)} 之一"
+    def check(v):
+        return None if v in values else f"取值必须是 {' / '.join(values)} 之一"
+    check.values = values
+    return check
 
 
 def _text(v):
@@ -58,6 +61,8 @@ def _currency(v):
 # field_code -> (中文名, 校验, question_code, 追问文本)
 FIELDS = {
     "role": ("角色", _enum("student", "parent"), "ask_role", "你是学生本人还是家长？"),
+    "beneficiary": ("服务对象", _text, "ask_beneficiary", "这份方案是为谁准备的？（学生姓名）"),
+    "course": ("课程 / 学位", _text, "ask_course", "就读什么课程或学位？"),
     "destination_country": ("留学目的地", _enum("UK", "US", "CN-HK"), "ask_destination_country",
                             "你计划去哪个国家/地区留学？（英国 / 美国 / 香港）"),
     "visa_category": ("签证类别", _enum("student_visa", "visitor_visa", "graduate_visa", "dependant_visa"),
@@ -100,6 +105,37 @@ FIELDS = {
 
 
 BOOLEAN_FIELDS = frozenset(code for code, spec in FIELDS.items() if spec[1] is _bool)
+
+OPTION_LABELS = {
+    "role": {"student": "学生本人", "parent": "家长"},
+    "destination_country": {"UK": "英国", "US": "美国", "CN-HK": "中国香港"},
+    "visa_category": {"student_visa": "学生签证", "visitor_visa": "访问签证", "graduate_visa": "毕业生签证",
+                      "dependant_visa": "陪读 / 家属签证"},
+    "offer_status": {"none": "还没有 offer", "conditional": "有条件 offer", "unconditional": "无条件 offer"},
+    "funding_source": {"own_or_parents": "本人或父母存款", "student_loan": "学生贷款", "sponsor": "机构资助",
+                       "scholarship": "奖学金"},
+    "remittance_purpose": {"tuition": "学费", "living": "生活费"},
+    "payer": {"self": "本人", "parent": "父母", "other": "其他"},
+    "account_region": {"UK": "英国", "US": "美国", "CN-HK": "中国香港", "CN": "中国内地"},
+    "applicant_identity": {"student": "学生本人", "parent": "家长", "other": "其他"},
+    "application_region": {"UK": "英国", "US": "美国", "CN-HK": "中国香港", "CN": "中国内地"},
+    "applicant_residence": {"CN": "中国内地", "MO": "澳门", "TW": "台湾", "other": "其他地区"},
+    "hk_sponsor": {"institution": "录取院校", "individual": "个人"},
+}
+
+
+def field_catalog():
+    """Field metadata for clients: label, input kind, options and the follow-up question."""
+    kinds = {_text: "text", _iso_date: "date", _age: "age", _bool: "bool", _amount: "amount",
+             _currency: "currency"}
+    catalog = {}
+    for code, (label_zh, check, question_code, question) in FIELDS.items():
+        values = getattr(check, "values", None)
+        options = [{"value": v, "label": OPTION_LABELS.get(code, {}).get(v, v)} for v in values] if values else \
+            [{"value": True, "label": "是"}, {"value": False, "label": "否"}] if check is _bool else []
+        catalog[code] = {"label": label_zh, "kind": "enum" if values else kinds.get(check, "text"),
+                         "options": options, "question": question}
+    return catalog
 
 
 @dataclass(frozen=True)

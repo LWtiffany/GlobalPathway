@@ -98,6 +98,11 @@ class Agent2Service:
         return Profile(profile_id=profile_id, user_id=user_id, version=row["version"],
                        synthetic=bool(row["synthetic"]), fields=fields)
 
+    def list_profiles(self, user_id):
+        rows = self.store.all("SELECT profile_id FROM profiles WHERE user_id=? ORDER BY created_at, rowid",
+                              (user_id,))
+        return {"profiles": [self.get_profile(user_id, r["profile_id"]) for r in rows]}
+
     @staticmethod
     def _check_values(values):
         if not isinstance(values, dict):
@@ -203,6 +208,13 @@ class Agent2Service:
                        (conversation_id, user_id, profile_id, profile["version"], self._ts()))
         return {"conversation_id": conversation_id, "profile_id": profile_id,
                 "profile_version": profile["version"]}
+
+    def profile_conversation(self, user_id, profile_id):
+        """每个档案一条主会话：已有则返回最早那条，否则新建。"""
+        self._owned_profile_row(user_id, profile_id)
+        row = self.store.one("SELECT conversation_id, profile_id, profile_version FROM conversations "
+                             "WHERE user_id=? AND profile_id=? ORDER BY created_at LIMIT 1", (user_id, profile_id))
+        return row or self.create_conversation(user_id, profile_id)
 
     def list_conversations(self, user_id):
         return self.store.all("SELECT conversation_id, profile_id, profile_version, created_at "
@@ -346,6 +358,87 @@ class Agent2Service:
             raise not_found("建议")
         row["payload"] = json.loads(row.pop("payload_json"))
         return row
+
+    def list_advice(self, user_id, profile_id):
+        self._owned_profile_row(user_id, profile_id)
+        rows = self.store.all("SELECT * FROM advice_current WHERE profile_id=?", (profile_id,))
+        for row in rows:
+            row["payload"] = json.loads(row.pop("payload_json"))
+        return {"profile_id": profile_id, "advice": {r["topic"]: r for r in rows}}
+
+    # ---------- feedback ----------
+
+    def submit_feedback(self, user_id, message_id, kind, note=""):
+        """helpful → like；wrong → dislike 并开纠错工单（返回编号）。"""
+        if kind not in ("helpful", "wrong"):
+            raise bad_request("kind 只能是 helpful / wrong")
+        self.react(user_id, message_id, "like" if kind == "helpful" else "dislike")
+        if kind == "helpful":
+            return {"message_id": message_id, "kind": kind, "feedback_id": None}
+        note = (note or "").strip()[:2000] or "（用户未填写说明）"
+        now = self.clock()
+        feedback_id = f"FB-{now:%Y%m%d}-{secrets.token_hex(3).upper()}"
+        with self.store.transaction() as db:
+            db.execute("INSERT INTO feedback_tickets VALUES (?,?,?,?, 'open', ?)",
+                       (feedback_id, message_id, user_id, note, now.isoformat()))
+        return {"message_id": message_id, "kind": kind, "feedback_id": feedback_id, "status": "open"}
+
+    def list_feedback(self, user_id):
+        rows = self.store.all("""SELECT f.feedback_id, f.message_id, f.note, f.status, f.created_at, m.body_json
+            FROM feedback_tickets f JOIN message_index m USING(message_id)
+            WHERE f.user_id=? ORDER BY f.created_at DESC""", (user_id,))
+        for row in rows:
+            body = json.loads(row.pop("body_json"))
+            row["answer_status"] = body.get("status")
+            row["answer_summary"] = (body.get("answer") or {}).get("summary", "")
+            row["profile_id"] = body.get("profile_id")
+        return {"tickets": rows}
+
+    # ---------- Plan (用户可编辑待办，独立于 Advice) ----------
+
+    def list_plan(self, user_id, profile_id):
+        self._owned_profile_row(user_id, profile_id)
+        rows = self.store.all("SELECT item_id, text, done, created_at, updated_at FROM plan_items "
+                              "WHERE profile_id=? ORDER BY created_at, rowid", (profile_id,))
+        for row in rows:
+            row["done"] = bool(row["done"])
+        return {"profile_id": profile_id, "items": rows}
+
+    def add_plan_item(self, user_id, profile_id, text):
+        self._owned_profile_row(user_id, profile_id)
+        if not isinstance(text, str) or not text.strip():
+            raise bad_request("待办内容不能为空")
+        item_id, now = _new_id(), self._ts()
+        with self.store.transaction() as db:
+            db.execute("INSERT INTO plan_items VALUES (?,?,?,0,?,?)", (item_id, profile_id, text.strip()[:500],
+                                                                       now, now))
+        return {"item_id": item_id, "text": text.strip()[:500], "done": False}
+
+    def _owned_plan_item(self, user_id, item_id):
+        row = self.store.one("""SELECT i.* FROM plan_items i JOIN profiles p USING(profile_id)
+            WHERE i.item_id=? AND p.user_id=?""", (item_id, user_id))
+        if not row:
+            raise not_found("待办")
+        return row
+
+    def update_plan_item(self, user_id, item_id, *, text=None, done=None):
+        row = self._owned_plan_item(user_id, item_id)
+        if text is not None and (not isinstance(text, str) or not text.strip()):
+            raise bad_request("待办内容不能为空")
+        if done is not None and not isinstance(done, bool):
+            raise bad_request("done 必须是布尔值")
+        new_text = text.strip()[:500] if text is not None else row["text"]
+        new_done = bool(row["done"]) if done is None else done
+        with self.store.transaction() as db:
+            db.execute("UPDATE plan_items SET text=?, done=?, updated_at=? WHERE item_id=?",
+                       (new_text, int(new_done), self._ts(), item_id))
+        return {"item_id": item_id, "text": new_text, "done": new_done}
+
+    def delete_plan_item(self, user_id, item_id):
+        self._owned_plan_item(user_id, item_id)
+        with self.store.transaction() as db:
+            db.execute("DELETE FROM plan_items WHERE item_id=?", (item_id,))
+        return {"item_id": item_id, "deleted": True}
 
     def knowledge_snapshot(self, revision_id):
         snapshot = getattr(self.knowledge, "snapshot", lambda _: None)(revision_id)
