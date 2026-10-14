@@ -26,6 +26,17 @@ EN_NAMES = {
     "financial_sponsorship_evidence": "Financial sponsor's written consent",
     "atas": "Academic Technology Approval Scheme (ATAS) certificate",
     "english_test_result": "Proof of knowledge of English",
+    "form_i20": "Form I-20, Certificate of Eligibility for Nonimmigrant Student Status",
+    "sevis_fee_receipt": "I-901 SEVIS fee payment receipt",
+    "photo": "Photograph",
+    "admission_letter": "Letter of acceptance",
+}
+COUNTRY_EN_NAMES = {
+    ("US", "application_form"): "Form DS-160 confirmation page",
+    ("CN-HK", "application_form"): "Application for Entry for Study in Hong Kong (ID 995A)",
+    ("CN-HK", "proof_of_funds"): "Proof of the applicant's financial support",
+    ("CN-HK", "financial_sponsorship_evidence"): "Proof of the sponsor's financial standing and undertaking",
+    ("CN-HK", "parental_consent"): "Consent letter signed by the guardian and one parent",
 }
 
 
@@ -48,9 +59,35 @@ _STAY = _when_true("stay_over_6_months", "is_true", "在英国停留 6 个月或
 _TB_RESIDENT = _when_true("tb_listed_country_resident", "is_true",
                           "在需做肺结核检测的国家或地区住满 6 个月且最近 6 个月内仍住在那里")
 
+def _by_value(field, choices):
+    """choices: Agent1 value -> (op, Profile value, text)."""
+    def build(raw):
+        if not isinstance(raw, (bool, str)) or raw not in choices:
+            return None
+        op, value, text = choices[raw]
+        return [Condition(field=field, op=op, value=value, text=text)]
+    return build
+
+
+_HK_SPONSOR = _by_value("hk_sponsor", {
+    True: ("eq", "institution", "香港本地保证人是录取院校"),
+    False: ("eq", "individual", "香港本地保证人是个人")})
+_HK_SPONSOR_PR = _by_value("hk_sponsor_permanent_resident", {
+    True: ("is_true", None, "保证人是香港永久性居民"),
+    False: ("is_false", None, "保证人不是香港永久性居民")})
+_RESIDENCE = _by_value("applicant_residence", {
+    "Macao SAR": ("eq", "MO", "申请人是澳门居民"),
+    "Taiwan": ("eq", "TW", "申请人是台湾居民"),
+    "Mainland": ("eq", "CN", "申请人是中国内地居民"),
+    "Mainland China": ("eq", "CN", "申请人是中国内地居民")})
+
 CONDITION_MAP = {
     "under_18": _UNDER_18,
     "applicant_under_18": _UNDER_18,
+    "sponsor_is_educational_institution": _HK_SPONSOR,
+    "sponsor_is_hk_permanent_resident": _HK_SPONSOR_PR,
+    "applicant_residence": _RESIDENCE,
+    "holds_hk_identity_card": _when_true("has_hk_identity_card", "is_true", "申请人持有香港身份证"),
     "age": _age_16_or_17,
     "age_16_or_17": _age_16_or_17,
     "has_student_loan": _when_true("funding_source", "eq", "资金来自学生贷款", "student_loan"),
@@ -92,7 +129,7 @@ def _source(source_id, sources):
                   authority="official" if source.get("authority") == "official" else "third_party")
 
 
-def _requirement(document, sources):
+def _requirement(document, sources, country):
     if document["required"] is False and not document["condition"]:
         return None
     values = [e for e in document["evidence"] if e["kind"] == "value"]
@@ -105,7 +142,8 @@ def _requirement(document, sources):
     fields = dict(
         requirement_key=f"{code}:{short}",
         document_code=f"other_document:{short}" if code == "other_document" else code,
-        name_zh=document["name_zh"], name_en=EN_NAMES.get(code, ""), required=True,
+        name_zh=document["name_zh"], required=True,
+        name_en=COUNTRY_EN_NAMES.get((country, code)) or EN_NAMES.get(code, ""),
         evidence_id=evidence["evidence_id"], evidence_quote=evidence["quote"],
         condition_quote=" | ".join(e["quote"] for e in conditions) or None,
         source=_source(evidence["source_id"], sources),
@@ -124,7 +162,8 @@ def to_read_record(envelope, visa_category="student_visa", topic="documents"):
     sources = envelope["sources"]
     counts = Counter(e["source_id"] for e in envelope["evidence"] if e["target"].startswith("document:"))
     primary = counts.most_common(1)[0][0] if counts else next(iter(sources), "")
-    requirements = [r for d in envelope["payload"]["documents"] if (r := _requirement(d, sources))]
+    country = envelope["scope"]["country"]
+    requirements = [r for d in envelope["payload"]["documents"] if (r := _requirement(d, sources, country))]
     record = KnowledgeRecord(
         record_id=envelope["record_id"], revision_id=envelope["revision_id"],
         schema_version=envelope["schema_version"], country=envelope["scope"]["country"],

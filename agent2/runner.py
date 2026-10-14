@@ -1,4 +1,4 @@
-"""M05 编排：一次问答的显式状态机（S1：英国 Student visa 材料）。
+"""M05 编排：一次问答的显式状态机（英国 / 美国 / 香港学生签证材料）。
 
 received → classified → (M06) needs_input | knowledge_loaded → retrieved → draft_ready → gated。
 每个阶段单独计时（stage_ms），同一 trace_id 贯穿；规则阶段与模型阶段分开计时。
@@ -17,7 +17,12 @@ from .retrieve import retrieve
 MAX_MESSAGE_CHARS = 2000
 TOPIC_ADVICE = {"visa_documents": "visa"}
 KNOWLEDGE_TOPIC = {"visa_documents": "documents"}
-OFFICIAL_ENTRY = {("UK", "student_visa"): "GOV.UK Student visa 官方页面（https://www.gov.uk/student-visa）"}
+OFFICIAL_ENTRY = {
+    ("UK", "student_visa"): "GOV.UK Student visa 官方页面（https://www.gov.uk/student-visa）",
+    ("US", "student_visa"): "美国国务院学生签证页面（https://travel.state.gov/content/travel/en/us-visas/study/student-visa.html）"
+                            "及面签所在使领馆网站",
+    ("CN-HK", "student_visa"): "香港入境事务处来港就读页面（https://www.immd.gov.hk/eng/services/visas/study.html）",
+}
 SCOPE_BOUNDARY = ("这个问题超出了留学准备助手的服务范围（选校/申请代办、租房合同审查、投资理财等不在范围内）。"
                   "我可以帮你看签证材料、学费/生活费汇款、汇丰开户和信用卡相关的准备事项。")
 
@@ -112,7 +117,7 @@ class Agent2Runner:
 
         facts = {k: f.value for k, f in assessment.facts.items()}
         if topic not in KNOWLEDGE_TOPIC:
-            out = result("cannot_answer", "该主题的已发布资料尚未接入（S1 只覆盖英国 Student visa 材料），暂不作确定回答。",
+            out = result("cannot_answer", "该主题的已发布资料尚未接入（目前只覆盖英国、美国、香港学生签证材料），暂不作确定回答。",
                          notices=notices)
             return self._finish(out, timer, turn.facts, turn.basis, topic)
 

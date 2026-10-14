@@ -267,8 +267,31 @@
     "content_selector": "main",
     "schema_type": "visa_policy",
     "max_retries": 2,
-    "extraction_notes": "The I-901 SEVIS fee is NOT the visa application fee: never put it in visa_fee.",
+    "extraction_notes": "The I-901 SEVIS fee is NOT the visa application fee: never put it in visa_fee. Paying online, by mail with the paper Form I-901, or through Western Union are payment methods, not documents: never list the paper Form I-901 as a document. The only document is the I-901 payment receipt (sevis_fee_receipt); quote a sentence about the receipt or proof of payment as its evidence, not the mail-in instructions.",
     "notes": "签证面谈须出示 I-901 缴费凭证"
+  },
+  {
+    "id": "us_visa_interview",
+    "name": "Study in the States: Students: Prepare for Your Visa Interview",
+    "url": "https://studyinthestates.dhs.gov/2018/08/students-prepare-your-visa-interview",
+    "allowed_host": "studyinthestates.dhs.gov",
+    "category": "visa",
+    "region": "US",
+    "authority": "official",
+    "language": "en",
+    "access_basis": "公开官方网页（DHS）；robots 允许抓取",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "content_selector": "main",
+    "schema_type": "visa_policy",
+    "max_retries": 2,
+    "extraction_notes": "The documents the student 'must bring' to the visa interview are required documents of the student's own application: Form I-20 = form_i20; passport = passport; Form DS-160 confirmation page = application_form; photograph = photo; the Department of State visa application fee payment receipt = other_document named 签证申请费缴费收据, required with condition {\"visa_fee_paid_before_interview\": true} quoting 'if you are required to pay before your interview'. Items the consular officer MAY request (academic records, test scores, intent to depart, financial ability) are not required: set required=false. The 2018 article date and the Nov. 1, 2021 note are not effective dates: leave effective_from null.",
+    "notes": "DHS 面签必带材料清单（I-20、护照、DS-160 确认页、签证费收据、照片）。travel.state.gov 有 Cloudflare 防护，不绕过"
   },
   {
     "id": "us_visa_fee_ecfr",
@@ -313,7 +336,7 @@
     "content_selector": null,
     "schema_type": "visa_policy",
     "max_retries": 2,
-    "extraction_notes": "Only extract requirements for a NEW application for entry for study. Ignore extension-of-stay, dependant, internship and part-time work sections (their processing times and documents do not apply to a new student visa). Rules specific to Chinese residents of the Mainland belong in conditions, not in applies_to_city.",
+    "extraction_notes": "Only extract requirements for a NEW application for entry for study: the 'Checklist of Forms and Documents to be Submitted' has three tables - (1) documents submitted by the applicant, (2) documents submitted by the sponsor, (3) documents for each accompanying dependant. Extract every row of tables (1) and (2), including rows that continue after a chunk boundary; never extract table (3) or any row that mentions 'the dependant'. Ignore extension-of-stay, dependant, internship and part-time work sections (their processing times and documents do not apply to a new student visa); the applicant's Hong Kong identity card and the current school letter listed under extension of stay are NOT documents for a new application. Items used only after approval (the e-Visa, the Mainland Exit-entry Permit (EEP) and its exit endorsement) are not application documents: never list them. Codes: ID 995A = application_form; ID 995B = other_document named 保证人申请表（ID 995B）; letter of acceptance = admission_letter; the APPLICANT's valid travel document = passport, required=true with no condition, quoting only 'Copy of the applicant's valid travel document containing personal particulars, date of issue, date of expiry' (its '(if applicable)' qualifies the re-entry visa details, not the document; the PRC resident identity card is an alternative for this item, never a separate document); the SPONSOR's travel document = other_document named 保证人旅行证件副本 (never passport); proof of the applicant's financial support = proof_of_funds; proof of the sponsor's financial standing with the sponsor's undertaking = financial_sponsorship_evidence. Use exactly these other_document names: proof of the applicant's accommodation arrangement = 住宿安排证明; the sponsor's accommodation undertaking = 保证人住宿承诺书; the sponsor's Hong Kong identity card = 保证人香港身份证副本; the Macao Visit Permit and Macao identity card = 澳门居民来往香港旅游证及澳门身份证副本; the Taiwan household registration transcript and Taiwan identity card = 台湾户籍誊本及台湾身份证副本. Use exactly these condition keys: '[if the applicant is under the age of 18]' -> {\"applicant_under_18\": true}; '[if the sponsor is the educational institution]' -> {\"sponsor_is_educational_institution\": true}; items marked '#' (not required if the sponsor is the educational institution granting the acceptance) -> {\"sponsor_is_educational_institution\": false}, quoting that footnote as condition_quote, and for the sponsor's travel document also \"sponsor_is_hk_permanent_resident\": false; '[for Macao SAR residents only]' -> {\"applicant_residence\": \"Macao SAR\"}; '[for Taiwan residents only]' -> {\"applicant_residence\": \"Taiwan\"}; the applicant's Hong Kong identity card '(if any)' in the new-application checklist -> other_document named 申请人香港身份证副本, required=true with condition {\"holds_hk_identity_card\": true}. Every conditional item above is required=true with its condition, never required=false. Rules specific to Chinese residents of the Mainland belong in conditions, not in applies_to_city.",
     "notes": "中国香港入境事务处学生签证/进入许可：资格、申请材料（含经济状况证明）、审理时间；无统一生活费金额标准"
   },
   {

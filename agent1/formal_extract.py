@@ -140,12 +140,18 @@ def _combine_documents(prior, document):
     })
 
 
-def mark_unstated_conditions(patch):
-    """原文带 if/unless 但没抽出条件的“必需”材料改为条件未知，不能当作无条件必需。"""
+def mark_unstated_conditions(patch, markdown=None):
+    """原文带 if/unless 但没抽出条件的“必需”材料改为条件未知，不能当作无条件必需。
+
+    markdown 给出时，引用截掉了所在行方括号限定（如 “[if ...]”）的也算。
+    """
+    def unstated(d):
+        quote = d.evidence_quote or ""
+        return gate.CONDITION_WORDS.search(quote) or (
+            markdown is not None and gate.omits_bracketed_condition(quote, markdown))
+
     documents = [
-        d.model_copy(update={"required": None})
-        if d.required and not d.condition and gate.CONDITION_WORDS.search(d.evidence_quote or "")
-        else d
+        d.model_copy(update={"required": None}) if d.required and not d.condition and unstated(d) else d
         for d in patch.documents]
     return patch.model_copy(update={"documents": documents})
 

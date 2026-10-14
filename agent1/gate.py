@@ -86,6 +86,24 @@ def quote_in_markdown(quote, markdown):
     return len(comparable(quote)) >= 12 and comparable(quote) in comparable(markdown)
 
 
+_BRACKETED = re.compile(r"\[([^\[\]]+)\]")
+_QUALIFIER = re.compile(r"\b(if|unless|only)\b", re.I)
+
+
+def omits_bracketed_condition(quote, markdown):
+    """The quote's line carries a bracketed qualifier ("[if ...]", "[for ... only]") the quote cut off."""
+    target = comparable(quote or "")
+    if len(target) < 12:
+        return False
+    for line in markdown.splitlines():
+        line = _MD_LINK.sub(r"\1", line)
+        if target not in comparable(line):
+            continue
+        if any(_QUALIFIER.search(q) and comparable(q) not in target for q in _BRACKETED.findall(line)):
+            return True
+    return False
+
+
 def condition_quote_in_markdown(quote, markdown):
     """每段条件引用逐字命中；模型把原文列表项用分号拼成一段时，逐项核对。"""
     for part in (quote or "").split(CONDITION_QUOTE_SEPARATOR):

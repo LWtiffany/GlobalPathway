@@ -7,7 +7,7 @@ from urllib import error, parse, request, robotparser
 
 MAX_PROBE_BYTES = 5_000_000
 MAX_SECTION_CHARS = 3500
-_HEADING = re.compile(r"(?m)^#{1,4}\s+(.+?)\s*$")
+_HEADING = re.compile(r"(?m)^(#{1,4})\s+(.+?)\s*$")
 _CROSS_SECTION = re.compile(
     r"\b(unless|except|exemption|exempt|eligib\w*|do not need|without proof|"
     r"if you have|if you are|when you|financial sponsorship)\b|豁免|除非|条件|资格", re.I)
@@ -59,10 +59,19 @@ def _chunks(text, limit):
     return chunks
 
 
+def _is_table_footnote(markdown, match):
+    """A single-# line glued to a table row footnotes that table ("# ... not required if ...")."""
+    if match.group(1) != "#":
+        return False
+    before = markdown[:match.start()]
+    previous = before[:-1].rsplit("\n", 1)[-1] if before.endswith("\n") else ""
+    return previous.lstrip().startswith("|")
+
+
 def split_sections(markdown, limit=MAX_SECTION_CHARS):
     if not markdown.strip():
         raise ValueError("正文为空，不能标记抽取覆盖完整")
-    matches = list(_HEADING.finditer(markdown))
+    matches = [m for m in _HEADING.finditer(markdown) if not _is_table_footnote(markdown, m)]
     bounds = []
     if not matches:
         bounds.append(("page", 0, len(markdown)))
@@ -71,7 +80,7 @@ def split_sections(markdown, limit=MAX_SECTION_CHARS):
             bounds.append(("preamble", 0, matches[0].start()))
         for index, match in enumerate(matches):
             end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
-            bounds.append((match.group(1).strip(), match.start(), end))
+            bounds.append((match.group(2).strip(), match.start(), end))
     seen = {}
     sections = []
     for heading, start, end in bounds:

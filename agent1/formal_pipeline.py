@@ -246,6 +246,36 @@ def _sync_documents(connection, policy_id, documents):
     return new, changed
 
 
+def _vanished_documents(connection, policy_id, named, pages):
+    """Linked documents that no section of the region's pages names any more.
+
+    still_quoted: an earlier value quote is still verbatim on its page, so the extraction
+    may simply have missed it (the reviewer is told to check before approving removal).
+    """
+    rows = connection.execute("""SELECT d.doc_id, d.code, d.name_zh FROM POLICY_DOCUMENT pd
+        JOIN DOCUMENT d USING (doc_id) WHERE pd.policy_id=? AND pd.policy_domain='visa_policy'
+        ORDER BY d.code, d.name_zh""", (policy_id,))
+    vanished = []
+    for row in rows:
+        if row["doc_id"] in named:
+            continue
+        quotes = connection.execute("""SELECT source_id, quote FROM POLICY_EVIDENCE
+            WHERE policy_id=? AND target=? AND kind='value'""",
+            (policy_id, f"document:{row['doc_id']}")).fetchall()
+        vanished.append({**dict(row), "still_quoted": any(
+            gate.quote_in_markdown(q["quote"], pages.get(q["source_id"], "")) for q in quotes)})
+    return vanished
+
+
+def _remove_documents(connection, policy_id, documents):
+    for document in documents or []:
+        connection.execute("""DELETE FROM POLICY_DOCUMENT
+            WHERE policy_id=? AND policy_domain='visa_policy' AND doc_id=?""",
+                           (policy_id, document["doc_id"]))
+        connection.execute("DELETE FROM POLICY_EVIDENCE WHERE policy_id=? AND target=?",
+                           (policy_id, f"document:{document['doc_id']}"))
+
+
 def _replace_evidence(connection, policy_id, target, items):
     """items: (kind, source_id, snapshot_id, quote)；没有可追溯来源的引用不入库。"""
     items = list(dict.fromkeys(i for i in items if all(i)))
@@ -428,8 +458,14 @@ def _blocked_for_scope(blocked, scope_key, region):
             if formal_extract._scope_key(item["scope"], region) in (scope_key, "*")]
 
 
-def _apply_region(connection, region, merged, blocked, region_conflicts=()):
-    """Write the merged region patch to VISA_POLICY / POLICY_DOCUMENT / REVIEW_QUEUE."""
+def _apply_region(connection, region, merged, blocked, region_conflicts=(), named=None, pages=None):
+    """Write the merged region patch to VISA_POLICY / POLICY_DOCUMENT / REVIEW_QUEUE.
+
+    named: doc_ids that any section of the region's pages proposed before verification,
+    given only when every page was read; a linked document outside it has vanished from
+    the pages and its removal goes to review. A document whose quotes merely failed
+    verification is still named and keeps its link. pages: source_id -> current markdown.
+    """
     country = region
     documents = [doc.model_dump(exclude_none=True) for doc in merged.documents]
     entries = {}
@@ -504,13 +540,15 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=()):
         if fill:
             connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=?' for c in fill)}
                 WHERE policy_id=?""", [*fill.values(), policy_id])
+        vanished = _vanished_documents(connection, policy_id, named, pages or {}) \
+            if named is not None else []
         new_docs, changed_docs = _sync_documents(connection, policy_id, documents)
         _record_evidence(connection, policy_id, clean, entry.evidence, documents)
         result.update(filled=sorted(fill), linked_documents=len(new_docs))
         review_row = {**{c: after for c, (_, after) in changed.items()},
                       **{c: v for c, v in blocked_row.items()
                          if c != "applies_to_city" and existing[c] != v}}
-        if review_row or changed_docs:
+        if review_row or changed_docs or vanished:
             parts = []
             if blocked_reasons:
                 parts.append(f"门控 {len(blocked_reasons)} 个错误：" + "；".join(blocked_reasons))
@@ -519,9 +557,17 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=()):
                     f"{c}: {before!r} → {after!r}" for c, (before, after) in changed.items()))
             if changed_docs:
                 parts.append("材料要求变更：" + "、".join(d["name_zh"] for d in changed_docs))
+            gone = [d["name_zh"] for d in vanished if not d["still_quoted"]]
+            missed = [d["name_zh"] for d in vanished if d["still_quoted"]]
+            if gone:
+                parts.append("页面不再列出的材料（批准后移除）：" + "、".join(gone))
+            if missed:
+                parts.append("本次未抽到、但原引用仍在页面上的材料（批准后同样移除，请先核对是否漏抽）："
+                             + "、".join(missed))
             result.update(result="review", review_id=_enqueue_review(
                 connection, table="VISA_POLICY", key=policy_id, action="UPDATE",
-                payload={"policy": {**review_row, **header}, "documents": changed_docs},
+                payload={"policy": {**review_row, **header}, "documents": changed_docs,
+                         "removed_documents": vanished},
                 evidence=evidence, reason="；".join(parts)),
                 changed={c: {"before": b, "after": a} for c, (b, a) in changed.items()})
         else:
@@ -554,6 +600,7 @@ def apply_review(connection, review_id, *, decided_by, note=None):
         connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=?' for c in field_columns)}
             WHERE policy_id=?""", [policy[c] for c in field_columns] + [policy_id])
     _apply_documents(connection, policy_id, payload.get("documents"))
+    _remove_documents(connection, policy_id, payload.get("removed_documents"))
     _record_evidence(connection, policy_id, {c: policy[c] for c in field_columns},
                      json.loads(row["evidence_json"] or "[]"), payload.get("documents"))
     connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
@@ -718,7 +765,7 @@ def _page_patch(capture, region):
     for section_patch in capture["patches"]:
         section_report = gate.verify_visa_evidence(section_patch, markdown)
         clean, _ = split_blocked(section_patch, section_report)
-        verified.append(formal_extract.mark_unstated_conditions(clean))
+        verified.append(formal_extract.mark_unstated_conditions(clean, markdown))
         discarded += [p for p in section_report.problems if p["severity"] == "error"]
     conflicts = []
     try:
@@ -818,8 +865,12 @@ def _scan_region(region, *, paths, fresh_ids, full, sources=None, reapply=False)
                               field=conflict.get("field"), value=_json(conflict.get("values")),
                               scope=conflict.get("scope"))
 
+    named = {_document_link(d.model_dump())["doc_id"]
+             for c in captures for p in c["patches"] for d in p.documents if d.code.strip()} \
+        if len(captures) == len(members) else None
+    pages = {c["source"]["id"]: c["markdown"] for c in captures}
     with storage.session(paths, readonly=False) as connection:
-        applied = _apply_region(connection, region, merged, blocked, region_conflicts)
+        applied = _apply_region(connection, region, merged, blocked, region_conflicts, named, pages)
         gate_issue_ids = []
         for capture, report in reports:
             gate_issue_ids += _persist_gate_issues(connection, capture["source"],

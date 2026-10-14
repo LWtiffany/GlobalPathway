@@ -177,7 +177,7 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 ```
 
 - M07 默认读 Agent1 已发布政策（`agent2/agent1_read.py` 调 `agent1.publication.search/get`，`--agent1-env` 选环境，默认 development），引用给出官方页面地址；未发布、已撤回、过期（超过来源 SLA）或快照被改动的记录不作确定回答。
-- Agent1 的适用条件按 `CONDITION_MAP` 映射到 Profile 字段（年龄、资金来源、停留是否满 6 个月、是否居住在 TB 名单国家）；任一条件键映射不了，该材料整条显示为“待核实”，不当作无条件需要。
+- 覆盖英国、美国、香港学生签证材料。Agent1 的适用条件按 `CONDITION_MAP` 映射到 Profile 字段：英国（年龄、资金来源、停留是否满 6 个月、是否居住在 TB 名单国家）、香港（本地保证人是院校还是个人、保证人是否永久性居民、申请人常住地、是否持有香港身份证）；任一条件键映射不了（如美国“面签前须缴签证费”），该材料整条显示为“待核实”，不当作无条件需要。
 - `--knowledge fixture` 与 `eval-m06` 使用 `agent2/fixtures/knowledge_uk_student_visa.json` 合成知识夹具（`synthetic=true`，来源地址为 `example.invalid`），回答带【模拟资料】标识。
 - 回答生成目前用模板（M09 `template-v1`），没有接 LLM；M06 的模型追问建议是可选钩子，模型给出的字段仍要过条件表复核。
 - 只有 HTTP API，没有前端页面。

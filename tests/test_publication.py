@@ -77,6 +77,34 @@ class GateConditionTests(unittest.TestCase):
             self.assertEqual(set(tb.condition), {"stay_6_months_or_more", "lived_in_listed_country"})
 
 
+class FootnoteAndBracketTests(unittest.TestCase):
+    TABLE = ("## Checklist\n| Documents |\n| --- |\n| Copy of the sponsor's Hong Kong identity card #  |\n"
+             "# Submission of the documents is not required if the sponsor is the educational institution\n"
+             "| Proof of the applicant's financial support [if the sponsor is the educational institution] |\n"
+             "| Copy of the applicant's valid travel document and details of any re-entry visa (if applicable) |\n"
+             "\n### Next steps\nApply online.\n")
+
+    def test_single_hash_line_glued_to_a_table_is_a_footnote_not_a_heading(self):
+        sections = incremental.split_sections(self.TABLE)
+        self.assertEqual([s.heading for s in sections], ["Checklist", "Next steps"])
+        self.assertIn("# Submission of the documents", sections[0].text)
+        glued = incremental.split_sections("| a |\n| --- |\n## Real heading\ntext\n")
+        self.assertEqual([s.heading for s in glued], ["preamble", "Real heading"])
+
+    def test_quote_that_cuts_off_a_bracketed_condition_is_unstated(self):
+        self.assertTrue(gate.omits_bracketed_condition("Proof of the applicant's financial support", self.TABLE))
+        self.assertFalse(gate.omits_bracketed_condition(
+            "Proof of the applicant's financial support [if the sponsor is the educational institution]",
+            self.TABLE))
+        self.assertFalse(gate.omits_bracketed_condition("Copy of the applicant's valid travel document",
+                                                        self.TABLE))
+        cut = VisaPatch.model_validate({"policies": [], "documents": [
+            {"code": "proof_of_funds", "name_zh": "资金证明", "required": True,
+             "evidence_quote": "Proof of the applicant's financial support"}]})
+        self.assertIsNone(formal_extract.mark_unstated_conditions(cut, self.TABLE).documents[0].required)
+        self.assertTrue(formal_extract.mark_unstated_conditions(cut).documents[0].required)
+
+
 class PublicationFlowTests(unittest.TestCase):
     def setUp(self):
         directory = TemporaryDirectory(prefix="agent1-publication-")
@@ -200,6 +228,62 @@ class PublicationFlowTests(unittest.TestCase):
         self.assertEqual(result["publications"][0]["result"], "not_reverified")
         refused = self.publish(ack_warnings=True)[0]
         self.assertTrue(any("审核项" in p for p in refused["problems"]))
+
+    def open_reviews(self):
+        with storage.session(self.paths) as connection:
+            return [dict(r) for r in connection.execute(
+                "SELECT * FROM REVIEW_QUEUE WHERE status='OPEN'")]
+
+    def rescan_without_cas(self, cas_quote=None):
+        """Re-extract every section; CAS is omitted (or given an unverifiable quote)."""
+        original = extraction
+
+        def variant(section):
+            patch_ = original(section)
+            documents = [d for d in patch_.documents if d.code != "cas"]
+            if cas_quote and section.heading == "Documents":
+                documents.append(patch_.documents[0].model_copy(update={"evidence_quote": cas_quote}))
+            return patch_.model_copy(update={"documents": documents})
+
+        with patch(f"{__name__}.extraction", side_effect=variant):
+            return formal_pipeline.scan("official_visa", paths=self.paths, full=True)
+
+    def test_vanished_document_is_removed_only_after_review(self):
+        self.scan()
+        self.publish()
+        self.markdown = page(1000).replace(CAS + "\n", "")
+        result = self.rescan_without_cas()
+        self.assertEqual(result["policies"][0]["result"], "review")
+        review = self.open_reviews()[0]
+        removed = json.loads(review["proposed_value"])["removed_documents"]
+        self.assertEqual([(d["code"], d["still_quoted"]) for d in removed], [("cas", False)])
+        self.assertIn("页面不再列出的材料", review["reason"])
+        self.assertTrue(any("审核项" in p for p in self.publish()[0]["problems"]))
+
+        with storage.session(self.paths, readonly=False) as connection:
+            formal_pipeline.apply_review(connection, review["review_id"], decided_by="reviewer")
+            left = {r[0] for r in connection.execute(
+                "SELECT d.code FROM POLICY_DOCUMENT JOIN DOCUMENT d USING (doc_id)")}
+            orphan = connection.execute("""SELECT COUNT(*) FROM POLICY_EVIDENCE e WHERE e.target LIKE 'document:%'
+                AND substr(e.target, 10) NOT IN (SELECT doc_id FROM POLICY_DOCUMENT)""").fetchone()[0]
+        self.assertNotIn("cas", left)
+        self.assertEqual(orphan, 0)
+        republished = self.publish(ack_warnings=True)[0]
+        self.assertEqual((republished["result"], republished["revision_no"]), ("published", 2))
+        codes = {d["code"] for d in publication.search("UK", paths=self.paths)[0]["payload"]["documents"]}
+        self.assertNotIn("cas", codes)
+
+    def test_missed_extraction_is_flagged_and_unverifiable_quote_keeps_the_link(self):
+        self.scan()
+        self.rescan_without_cas(cas_quote="You must provide a CAS letter signed in blue ink by the dean.")
+        self.assertFalse(any(json.loads(r["proposed_value"]).get("removed_documents")
+                             for r in self.open_reviews()))
+
+        self.rescan_without_cas()
+        review = self.open_reviews()[0]
+        removed = json.loads(review["proposed_value"])["removed_documents"]
+        self.assertEqual([(d["code"], d["still_quoted"]) for d in removed], [("cas", True)])
+        self.assertIn("请先核对是否漏抽", review["reason"])
 
     def test_unchanged_scan_refreshes_verified_at(self):
         self.scan()
