@@ -214,7 +214,7 @@ VISA_POLICY 行，`policy_id = uuid5("visa_policy:<country>:student:<scope>")`�
   `review approve` 写回 FX_POLICY 并刷新 FX_EVIDENCE。
 - `FX_EVIDENCE` 与 POLICY_EVIDENCE 同结构（外键指向 FX_POLICY）。外汇知识尚未接入发布面。
 
-#### 学费（SCHOOL / PROGRAM / TUITION，迁移 006_tuition，当前实现）
+#### 学费（SCHOOL / PROGRAM / TUITION，迁移 006_tuition / 007_tuition_catalog / 008_tuition_rate，当前实现）
 
 `schema_type: tuition` 的来源由 `scan-tuition [学校|区域|all]`（或 `scan <来源>`）处理
 （`agent1/tuition_pipeline.py`、`agent1/tuition_extract.py`），抓取/快照/章节缓存同上。扫描单位是一所学校
@@ -235,15 +235,41 @@ VISA_POLICY 行，`policy_id = uuid5("visa_policy:<country>:student:<scope>")`�
   **金额前最近的已登记项目标签**必须是所声称的项目（与 exclude 重叠的标签不算，避免「Non-STEM」里的
   「STEM Faculties」）；上下文引用须在金额附近（折叠后 1000 字符内），学年、学生类别须由金额引用或附近
   上下文引用标明；计费口径/修读方式无原文支撑时记为 NULL（warning）。未通过的行丢弃并记 warning 级 GATE_ISSUE。
+- **目录模式（迁移 007_tuition_catalog）**：来源登记 `"catalog": true` 与 `school`，不登记 `programs`。
+  模型给出每个价格点的 `program_scope`（programme 单个项目 / division 学院或项目组统一价 /
+  school_wide 某学位层次全校统一价）、`program_label`（页面原文标签）、`program_name`（只能由标签里的词组成，
+  否则退回标签原文）、`level` 与 `amount_kind`（tuition / tuition_and_fees）。门控：标签须逐字在快照中，且在
+  本页全部已抽取标签里是金额前最近的一个；school_wide 须由原文标明学位层次，key 为 `level:<level>`；
+  其余 key 为规范化名称 `name:<words>`（去课程代码与标点）。PROGRAM 按发现结果 upsert，`PROGRAM.scope`
+  记录粒度（登记模式为 NULL）。同一价格点有纯学费时优先于「学费+杂费」合计，只有合计时 remark 注明。
+  迁移 007 同时把 `fee_status` 扩展出美国公立校的 `in_state` / `out_of_state`；美国私立校页面不分类别时
+  `fee_status` 为 NULL。模型被要求不累加金额，单独的附加费（如 UC Nonresident Supplemental Tuition）不算一行。
+- **费率变体（迁移 008_tuition_rate）**：同一项目/层次的非标准费率（Marginal Rate、Reduced tuition、按课程数、
+  Thesis、Continuing Registration…）由模型给出 `rate_label`，须在金额附近原文出现；写入 `TUITION.rate_label`
+  并进入价格点 key（`tuition_id` 仅在有费率标签时追加该分量），标准费率为 NULL。项目标签本身就是费率标签时，
+  归入来源登记的层次（无登记层次则拒绝）。
+- 目录模式门控补充：只由通用词组成的标签（Tuition、Tuition and Fees 2026-27、Full time）与费率标签不参与
+  「最近标签」竞争；学年可由金额之前最近的学年标题（4000 字符内，如表头 `Tuition and Fees 2026-27`）支撑；
+  币种可来自金额引用、附近表头（`Per Quarter (US$)`）或来源 `defaults.currency`，与引用里的符号冲突则拒绝；
+  `in_state` / `out_of_state` 只对 `school.control = "public"` 的学校有效，否则记为 NULL；模型给出但页面无依据的
+  `fee_status = all` 记为 NULL。来源可登记 `level`（整页只涉及一个学位层次时），用于支撑全校统一价的层次。
+  不含金额（`12,345` 或带币种符号的数字）的分块不调用模型。章节缓存 profile 只含模型可见的输入
+  （extraction_notes、学校名、登记项目、catalog 标志），改 defaults / level / control 不会使缓存失效。
 - 页面本身不写学年/口径时（UCL 费用表只在 URL 里有 `year=`），来源可登记 `defaults`
-  （academic_year / fee_status / fee_basis / study_mode）与 `defaults_note`，取值直接采用并写入 TUITION.remark。
+  （academic_year / fee_status / fee_basis / study_mode / currency）与 `defaults_note`，取值直接采用并写入 TUITION.remark。
 - 写入策略：新价格点直接插入；金额相同只刷新证据；已有金额变化、或同一价格点跨页面金额不同，进入
   REVIEW_QUEUE（`domain_table='TUITION'`，后者另记 `source_id = school:<key>` 的 GATE_ISSUE）；
   `review approve` 写回 TUITION 并刷新证据。页面不再列出的价格点保留（旧学年作为历史）。
 - `TUITION_EVIDENCE`：`kind='amount'` 为含金额的引用，`kind='context'` 为项目/类别/学年等上下文引用。
-- 当前来源：UCL 研究生授课费用表 2026/27 与 2027/28（计算机系 3 个 MSc；课程页受 Cloudflare 挑战保护，
-  改用费用表页）、港大主站本科学费概览（2026-27）、港大招生处学费表（2027/28）、中大研究院 RPg 学费。
-  NYU 的学分费率只在 Bursar PDF 里，GSAS/Bursar 网页被反爬拦截，暂无可抓 HTML 来源（PDF 抓取未实现）。
+- 当前来源（144 个，62 所学校）：2027 U.S. News 美国综合大学前 50（含并列，51 所）与英国 G5 + 王曼爱华（9 所）
+  各校官网学费页均以目录模式登记（`<school>_tuition_<n>`），UCL 研究生授课费用表 2026/27 与 2027/28 也改为目录模式；
+  港大（本科，登记模式）与中大（RPg，登记模式）沿用原来源，香港其余 6 所待补。只登记无头浏览器可取到的 HTML 页面；
+  以下缺口未登记：只有 PDF（Emory 全校研究生表、UNC 研究生分项目、Georgia Tech 研究生、NYU GSAS/Tandon 学分费率、
+  UW-Madison、Rutgers 研究生、LSE 全表、Cambridge 本科分课程）、需 JS 渲染（UCLA 注册处费用表、UCSB Power BI、
+  Edinburgh registryservices 页面）、反爬拦截（Rice bursar、UMich 注册处、UVA 学费页、UC Davis、Oxford 本科课程页）、
+  robots 禁止（Cambridge GAOBase fees.json）。KCL、Manchester、LSE 只有按课程的页面，仅登记了示例课程页。
+- 开发库当前不含学费记录（SCHOOL / PROGRAM / TUITION / TUITION_EVIDENCE 已清空，表结构保留，学费来源的
+  check_state 也已清除），需要时显式运行 `scan-tuition <学校|US|UK|CN-HK|all>` 入库。
   学费知识尚未接入发布面与 Agent2。
 
 #### 发布面（迁移 004_publication，当前实现）

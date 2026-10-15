@@ -129,20 +129,35 @@ class FxPatch(BaseModel):
 
 # ---------- 学费：SCHOOL / PROGRAM / TUITION ----------
 
-FEE_STATUSES = ("home", "international", "local", "non_local", "all")
+FEE_STATUSES = ("home", "international", "local", "non_local", "in_state", "out_of_state", "all")
 FEE_BASES = ("per_year", "total", "per_credit", "per_term")
 STUDY_MODES = ("full_time", "part_time", "any")
+LEVELS = ("undergraduate", "postgraduate_taught", "postgraduate_research", "graduate", "professional")
+PROGRAM_SCOPES = ("programme", "division", "school_wide")
+AMOUNT_KINDS = ("tuition", "tuition_and_fees")
 
 
 class TuitionRow(BaseModel):
-    """一个学费价格点；program 是来源登记里的项目 key（或 all = 该来源登记的全部项目）。"""
+    """一个学费价格点。
+
+    登记模式：program 是来源登记里的项目 key（或 all = 该来源登记的全部项目）。
+    目录模式：模型给出 program_scope / program_name / program_label / level，
+    门控通过后 program 由管道填为稳定的项目 key。
+    """
     model_config = ConfigDict(extra="ignore")
 
-    program: str
+    program: str | None = None
+    program_scope: Literal[PROGRAM_SCOPES] | None = None
+    program_name: str | None = None
+    program_label: str | None = None
+    level: Literal[LEVELS] | None = None
+    amount_kind: Literal[AMOUNT_KINDS] = "tuition"
     academic_year: str | None = None
     fee_status: Literal[FEE_STATUSES] | None = None
     fee_basis: Literal[FEE_BASES] | None = None
     study_mode: Literal[STUDY_MODES] | None = None
+    # 同一项目的非标准费率（Marginal Rate / Two Courses / Thesis ...）；None 为标准费率
+    rate_label: str | None = None
     amount: int | float | str
     currency: str | None = None
     evidence_quote: str

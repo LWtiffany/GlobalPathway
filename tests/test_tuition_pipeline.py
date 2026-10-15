@@ -57,6 +57,42 @@ UCL_SOURCE = {
     "defaults_note": "URL year=2026"}
 
 
+US_PAGE = """# Tuition and Fees, 2026-2027
+## Undergraduate
+Undergraduate tuition for the 2026-2027 academic year: $68,400 per year
+## Graduate School of Arts and Sciences
+Full-time tuition, 2026-2027: $63,200 per academic year
+## School of Law (J.D.)
+Law tuition and fees, 2026-2027: $79,500 per year
+Law tuition, 2026-2027: $76,000 per year
+"""
+PUBLIC_PAGE = """# Undergraduate Tuition 2026-27
+California residents: $14,950 per year
+Nonresidents: $50,400 per year (includes Nonresident Supplemental Tuition)
+"""
+CATALOG_SOURCE = {"id": "uni_fees", "url": "https://uni.example.edu/tuition", "catalog": True,
+                  "school": {"key": "uni", "name": "Example University", "country": "US"}}
+
+
+def catalog_row(scope, label, name, level, amount, quote, context, kind="tuition", status=None,
+                year="2026/27", basis="per_year"):
+    return {"program_scope": scope, "program_label": label, "program_name": name, "level": level,
+            "amount_kind": kind, "academic_year": year, "fee_status": status, "fee_basis": basis,
+            "amount": amount, "currency": "USD", "evidence_quote": quote, "context_quotes": context}
+
+
+US_ROWS = [
+    catalog_row("school_wide", "Undergraduate", None, "undergraduate", 68400, "$68,400 per year",
+                ["Undergraduate tuition for the 2026-2027 academic year"]),
+    catalog_row("division", "Graduate School of Arts and Sciences", "Graduate School of Arts and Sciences",
+                "graduate", 63200, "$63,200 per academic year", ["Full-time tuition, 2026-2027"]),
+    catalog_row("division", "School of Law (J.D.)", "School of Law JD", "professional", 79500,
+                "$79,500 per year", ["Law tuition and fees, 2026-2027"], kind="tuition_and_fees"),
+    catalog_row("division", "School of Law (J.D.)", "School of Law JD", "professional", 76000,
+                "$76,000 per year", ["Law tuition, 2026-2027"]),
+]
+
+
 def overview_page():
     return f"# Fees and Scholarships\n{INTRO}\n## Local\n{LOCAL}\n## Non-local\n{NON_STEM}\n{COHORT}\n{STEM}\n{COHORT}\n"
 
@@ -159,6 +195,145 @@ class TuitionGateTests(unittest.TestCase):
         self.assertTrue(report.warnings)
 
 
+class CatalogGateTests(unittest.TestCase):
+    def check(self, rows, markdown=US_PAGE, source=CATALOG_SOURCE):
+        clean, report = tuition_extract.verify(TuitionPatch.model_validate({"rows": rows}), markdown,
+                                               source, "snap-1")
+        return clean.rows, report
+
+    def test_page_labels_name_programmes_divisions_and_school_wide_rates(self):
+        rows, report = self.check(US_ROWS)
+        self.assertTrue(report.ok, report.problems)
+        self.assertEqual([(r.program, r.program_name, r.program_scope, r.level, r.amount_kind) for r in rows], [
+            ("level:undergraduate", "Undergraduate (school-wide)", "school_wide", "undergraduate", "tuition"),
+            ("name:graduate school of arts and sciences", "Graduate School of Arts and Sciences", "division",
+             "graduate", "tuition"),
+            ("name:school of law jd", "School of Law JD", "division", "professional", "tuition_and_fees"),
+            ("name:school of law jd", "School of Law JD", "division", "professional", "tuition")])
+
+    def test_label_must_be_on_the_page_and_nearest_before_the_amount(self):
+        invented = catalog_row("division", "School of Medicine", "School of Medicine", "professional", 76000,
+                               "$76,000 per year", ["Law tuition, 2026-2027"])
+        rows, report = self.check([invented])
+        self.assertEqual(rows, [])
+        self.assertIn("项目标签", report.errors[0]["reason"])
+        stolen = catalog_row("division", "Graduate School of Arts and Sciences", "GSAS", "graduate", 76000,
+                             "$76,000 per year", ["Law tuition, 2026-2027"])
+        rows, report = self.check([stolen, US_ROWS[3]])
+        self.assertEqual([r.amount for r in rows], [76000])
+        self.assertEqual(rows[0].program_name, "School of Law JD")
+        self.assertIn("最近的项目标签", report.errors[0]["reason"])
+
+    def test_ungrounded_name_falls_back_to_the_label_and_unsupported_level_is_dropped(self):
+        row_ = catalog_row("division", "Graduate School of Arts and Sciences", "Harvard GSAS PhD", "undergraduate",
+                           63200, "$63,200 per academic year", ["Full-time tuition, 2026-2027"])
+        rows, report = self.check([row_])
+        self.assertEqual((rows[0].program_name, rows[0].level), ("Graduate School of Arts and Sciences", None))
+        self.assertTrue(report.warnings)
+
+    def test_school_wide_rate_needs_a_level_on_the_page(self):
+        row_ = catalog_row("school_wide", None, None, "postgraduate_research", 63200,
+                           "$63,200 per academic year", ["Full-time tuition, 2026-2027"])
+        rows, report = self.check([row_])
+        self.assertEqual(rows, [])
+        self.assertIn("层次", report.errors[0]["reason"])
+
+    def test_us_residency_statuses(self):
+        public = {**CATALOG_SOURCE, "school": {**CATALOG_SOURCE["school"], "control": "public"}}
+        rows, report = self.check([
+            catalog_row("school_wide", "Undergraduate Tuition 2026-27", None, "undergraduate", 14950,
+                        "$14,950 per year", ["California residents"], status="in_state"),
+            catalog_row("school_wide", "Undergraduate Tuition 2026-27", None, "undergraduate", 50400,
+                        "$50,400 per year", ["Nonresidents"], status="out_of_state"),
+            catalog_row("school_wide", "Undergraduate Tuition 2026-27", None, "undergraduate", 50400,
+                        "$50,400 per year", ["Undergraduate Tuition 2026-27"], status="in_state")],
+            PUBLIC_PAGE, public)
+        self.assertEqual([(r.fee_status, r.amount) for r in rows], [("in_state", 14950), ("out_of_state", 50400)])
+        self.assertIn("学生类别", report.errors[0]["reason"])
+        private_page = "Undergraduate tuition 2026-27: $72,500 for residents of the residential colleges"
+        rows, report = self.check([catalog_row("school_wide", None, None, "undergraduate", 72500, "$72,500",
+                                               [private_page], status="in_state")], private_page)
+        self.assertEqual(rows[0].fee_status, None)
+        self.assertIn("非公立", report.warnings[0]["reason"])
+
+    def test_label_that_is_only_a_rate_falls_back_to_the_page_level(self):
+        page = "## Tuition 2026-27\n| Tuition for one course | $7,381 |\n"
+        row_ = {**catalog_row("programme", "Tuition for one course", "Tuition for one course", None, 7381,
+                              "| Tuition for one course | $7,381 |", ["Tuition 2026-27"], basis=None),
+                "rate_label": "Tuition for one course"}
+        rows, report = self.check([row_], page)
+        self.assertEqual(rows, [])
+        self.assertIn("费率标签", report.errors[0]["reason"])
+        rows, _ = self.check([row_], page, {**CATALOG_SOURCE, "level": "graduate"})
+        self.assertEqual((rows[0].program, rows[0].rate_label), ("level:graduate", "Tuition for one course"))
+
+    def test_currency_from_table_header_or_source_default(self):
+        page = ("# Tuition and Fees 2026-27 College\n| Degree Program | Per Quarter (US$) |\n| --- | --- |\n"
+                "| College (Flat-Rate) | 25,320 |\n")
+        row_ = catalog_row("division", "College (Flat-Rate)", "College", "undergraduate", 25320,
+                           "| College (Flat-Rate) | 25,320 |", ["Per Quarter (US$)", "Tuition and Fees 2026-27"],
+                           basis="per_term")
+        rows, report = self.check([{**row_, "currency": None}], page)
+        self.assertEqual((rows[0].currency, rows[0].fee_basis), ("USD", "per_term"))
+        bare = page.replace(" (US$)", "")
+        self.assertEqual(self.check([{**row_, "currency": None}], bare)[0], [])
+        rows, _ = self.check([{**row_, "currency": None}], bare,
+                             {**CATALOG_SOURCE, "defaults": {"currency": "USD"}})
+        self.assertEqual(rows[0].currency, "USD")
+        rows, report = self.check([{**row_, "currency": "GBP"}], page,
+                                  {**CATALOG_SOURCE, "defaults": {"currency": "USD"}})
+        self.assertEqual(rows, [])
+
+    def test_source_level_supports_rates_of_a_single_level_page(self):
+        page = "Tuition and Fees 2026-27\n| | Annual |\n| --- | --- |\n| Tuition | $68,574 |\n"
+        row_ = catalog_row("school_wide", "Tuition", None, "graduate", 68574, "$68,574",
+                           ["Tuition and Fees 2026-27", "Annual"], status="all")
+        self.assertEqual(self.check([row_], page)[0], [])
+        rows, report = self.check([row_], page, {**CATALOG_SOURCE, "level": "graduate"})
+        self.assertEqual((rows[0].program, rows[0].fee_status, rows[0].fee_basis),
+                         ("level:graduate", None, "per_year"))
+        self.assertTrue(report.ok, report.problems)
+
+    def test_rate_variants_are_separate_price_points(self):
+        page = ("## University Rates & Costs: 2026-27\n| Enrollment Status | University Rate |\n| --- | --- |\n"
+                "| Tuition - Regular Rate | 65,210 |\n| SHP Fee | 4,220 |\n"
+                "| **DCE, In Absentia, Trailing Nondegree Students** | |\n| Tuition - Marginal Rate | 4,700 |\n")
+        source = {**CATALOG_SOURCE, "level": "graduate", "defaults": {"currency": "USD"}}
+        base = dict(scope="school_wide", label="University Rate", name=None, level="graduate",
+                    context=["University Rates & Costs: 2026-27"], basis=None)
+        rows, report = self.check([
+            catalog_row(amount=65210, quote="| Tuition - Regular Rate | 65,210 |", **base),
+            {**catalog_row(amount=4700, quote="| Tuition - Marginal Rate | 4,700 |", **base),
+             "rate_label": "Marginal Rate"},
+            {**catalog_row(amount=4700, quote="| Tuition - Marginal Rate | 4,700 |", **base),
+             "rate_label": "Thesis rate"}], page, source)
+        self.assertEqual([(r.amount, r.rate_label, r.academic_year) for r in rows],
+                         [(65210, None, "2026/27"), (4700, "Marginal Rate", "2026/27")])
+        self.assertIn("费率标签", report.errors[0]["reason"])
+        merged, conflicts = tuition_extract.merge(rows, {})
+        self.assertEqual((len(merged), conflicts), (2, []))
+
+    def test_year_comes_from_the_nearest_year_heading_before_the_amount(self):
+        page = ("Tuition and Fees 2026-27\n| Tuition | $68,574 |\n" + "x" * 200 +
+                "\nTuition and Fees 2025-26\n| Tuition | $65,622 |\n")
+        self.assertEqual(tuition_extract.years_before("$65,622", page), {"2025/26"})
+        self.assertEqual(tuition_extract.years_before("$68,574", page), {"2026/27"})
+        self.assertEqual(tuition_extract.years_before("Fall 2026: $1,000", "Fall 2026: $1,000"), set())
+        self.assertEqual(tuition_extract.years_before("$1,000", "Fall 2026 term\n$1,000"), {"2026/27"})
+
+    def test_sections_without_amounts_are_not_sent_to_the_model(self):
+        section = incremental.Section("k", "Menu", "Tuition and Fees 2026-27\n* Billing\n* Contact", 0, 1, "h")
+        patch_, usage = tuition_extract.extract_section(section, CATALOG_SOURCE, client=object(), settings={})
+        self.assertEqual((patch_.rows, usage), ([], (0, 0)))
+
+    def test_tuition_only_amount_wins_over_combined_figure(self):
+        rows, _ = self.check(US_ROWS)
+        merged, conflicts = tuition_extract.merge(rows, {})
+        self.assertEqual(conflicts, [])
+        law = merged[("name:school of law jd", "2026/27", None, "per_year", None, None)]
+        self.assertEqual(law["amount"], 76000)
+
+
 class TuitionExtractTests(unittest.TestCase):
     def test_output_cleanup(self):
         cleaned = tuition_extract._clean_output(json.dumps({"rows": [
@@ -192,8 +367,8 @@ class TuitionExtractTests(unittest.TestCase):
             {**base, "program": "ug_non_stem", "amount": 47000, "source_id": "b"},
             {**base, "program": "ug_non_stem", "amount": 46000, "source_id": "b"}]}).rows
         merged, conflicts = tuition_extract.merge(rows, {"a": ["ug_stem", "ug_non_stem"], "b": ["ug_non_stem"]})
-        stem = ("ug_stem", "2026/27", "local", "per_year", None)
-        non_stem = ("ug_non_stem", "2026/27", "local", "per_year", None)
+        stem = ("ug_stem", "2026/27", "local", "per_year", None, None)
+        non_stem = ("ug_non_stem", "2026/27", "local", "per_year", None, None)
         self.assertEqual(merged[stem]["amount"], 48000)
         self.assertFalse(merged[stem]["conflict"])
         self.assertTrue(merged[non_stem]["conflict"])
@@ -332,6 +507,65 @@ class TuitionPipelineTests(unittest.TestCase):
         self.source_file.write_text(json.dumps(broken), encoding="utf-8")
         with self.assertRaises(ValueError):
             formal_pipeline.register_sources()
+        mixed = [{**self.sources[0], "catalog": True}]
+        self.source_file.write_text(json.dumps(mixed), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            formal_pipeline.register_sources()
+
+    def test_catalog_scan_records_discovered_programmes_with_scope(self):
+        catalog = {**{k: v for k, v in self.sources[0].items() if k != "programs"},
+                   "id": "uni_fees", "url": "https://uni.example.edu/tuition", "allowed_host": "uni.example.edu",
+                   "region": "US", "catalog": True, "school": CATALOG_SOURCE["school"]}
+        self.source_file.write_text(json.dumps([*self.sources, catalog]), encoding="utf-8")
+        self.pages[catalog["url"]] = US_PAGE
+        self.extractions["uni_fees"] = lambda section: TuitionPatch.model_validate(
+            {"rows": [r for r in US_ROWS if r["evidence_quote"].split()[0] in section.text]})
+        self.assertEqual(formal_pipeline.register_sources(), 3)
+        outcome = tuition_pipeline.scan_all("uni", paths=self.paths)
+        self.assertEqual(outcome["result"], "applied")
+        programs = {tuple(r) for r in self.db().execute("""SELECT p.name, p.level, p.scope FROM PROGRAM p
+            JOIN SCHOOL s USING (school_id) WHERE s.name='Example University'""")}
+        self.assertEqual(programs, {("Undergraduate (school-wide)", "undergraduate", "school_wide"),
+                                    ("Graduate School of Arts and Sciences", "graduate", "division"),
+                                    ("School of Law JD", "professional", "division")})
+        self.assertEqual({k: v for k, v in self.tuition().items() if k[0] == "School of Law JD"},
+                         {("School of Law JD", "2026/27", None): (76000, "USD")})
+        self.assertEqual(self.db().execute("SELECT COUNT(*) FROM REVIEW_QUEUE").fetchone()[0], 0)
+
+
+class TuitionMigrationTests(unittest.TestCase):
+    def test_007_keeps_tuition_rows_and_evidence(self):
+        with TemporaryDirectory(prefix="agent1-mig-") as directory:
+            old = Path(directory) / "migrations"
+            old.mkdir()
+            for file in sorted(storage.MIGRATIONS.glob("[0-9]*.sql")):
+                if file.stem <= "006_tuition":
+                    (old / file.name).write_text(file.read_text(encoding="utf-8"), encoding="utf-8")
+            paths = paths_for(Path(directory), "development")
+            with patch("agent1.storage.MIGRATIONS", old), \
+                    patch("agent1.storage.REQUIRED_MIGRATIONS",
+                          storage.REQUIRED_MIGRATIONS[:storage.REQUIRED_MIGRATIONS.index("006_tuition") + 1]):
+                storage.initialize(paths)
+            db = sqlite3.connect(paths.database)
+            db.execute("PRAGMA foreign_keys=ON")
+            db.execute("INSERT INTO SCHOOL (school_id, name, country) VALUES ('s','S','UK')")
+            db.execute("INSERT INTO PROGRAM (program_id, school_id, name) VALUES ('p','s','P')")
+            db.execute("""INSERT INTO TUITION (tuition_id, program_id, academic_year, amount, currency, fee_status,
+                fee_basis) VALUES ('t','p','2026/27',42700,'GBP','international','per_year')""")
+            db.execute("""INSERT INTO TUITION_EVIDENCE (evidence_id, tuition_id, kind, source_id, snapshot_id, quote,
+                recorded_at) VALUES ('e','t','amount','src','snap','£42,700','now')""")
+            db.commit()
+            db.close()
+            storage.initialize(paths)
+            db = sqlite3.connect(paths.database)
+            db.execute("PRAGMA foreign_keys=ON")
+            self.assertEqual(db.execute("SELECT amount, fee_status FROM TUITION").fetchall(),
+                             [(42700, "international")])
+            self.assertEqual(db.execute("SELECT quote FROM TUITION_EVIDENCE").fetchall(), [("£42,700",)])
+            db.execute("UPDATE TUITION SET fee_status='in_state'")
+            db.execute("DELETE FROM TUITION")
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM TUITION_EVIDENCE").fetchone()[0], 0)
+            db.close()
 
 
 if __name__ == "__main__":

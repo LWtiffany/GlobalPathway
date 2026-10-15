@@ -4,7 +4,7 @@
 
 已实现环境隔离、新数据库结构、按区域增量扫描、人工审核以及签证政策的发布面（迁移 `004_publication`）；
 留学购汇（外汇）政策已可抓取入库（`scan-fx`，迁移 `005_fx_evidence`）；
-项目学费已可抓取入库（`scan-tuition`，迁移 `006_tuition`）。
+项目学费已可抓取入库（`scan-tuition`，迁移 `006_tuition` / `007_tuition_catalog` / `008_tuition_rate`）。
 开发库已初始化并抓取 UK / US / CN-HK 学生签证；正式库未初始化，也未迁移旧数据。
 下方「日常使用」之后的原使用说明描述的是兼容管道。
 
@@ -44,10 +44,12 @@ macOS / Linux：`./run-agent1.sh`（= `scan-region all`）、`./run-agent1.sh UK
 逐字证据写入 `FX_EVIDENCE`；跨页面冲突与已有值变化进入 `REVIEW_QUEUE`（`FX_POLICY`）。
 外汇知识目前只入工作表，尚未接入发布面与 Agent2。
 
-学费（`schema_type: tuition`）按学校扫描：来源登记学校与项目（`school` / `programs`），模型只把页面上的
-学费行对应到登记的项目，每个价格点（学年 + 学生类别 + 计费口径 + 修读方式）一行 `TUITION`，
-逐字证据写入 `TUITION_EVIDENCE`；金额变化与跨页面冲突进入 `REVIEW_QUEUE`（`TUITION`）。
-当前覆盖 UCL（计算机系 MSc）、港大本科、中大 RPg；NYU 暂无可抓网页来源。学费同样尚未接入发布面与 Agent2。
+学费（`schema_type: tuition`）按学校扫描：来源登记学校，并登记项目（`programs`）或声明目录模式
+（`"catalog": true`，项目 / 学院 / 全校统一价由页面原文标签发现），每个价格点（学年 + 学生类别 + 计费口径 + 修读方式
++ 费率变体）一行 `TUITION`，逐字证据写入 `TUITION_EVIDENCE`；金额变化与跨页面冲突进入 `REVIEW_QUEUE`（`TUITION`）。
+已登记美国 U.S. News 前 50（含并列）、英国 G5 + 王曼爱华的官网学费页，以及港大、中大（香港其余 6 所待补）；
+只有 PDF / 需 JS / 被反爬拦截的页面未登记，缺口见数据库方案文档。开发库目前不含学费记录，需显式运行
+`scan-tuition <学校|US|UK|CN-HK|all>`。学费同样尚未接入发布面与 Agent2。
 
 签证政策按区域合并：同一目的地的所有官方页面（概览、资金、英语、材料、医疗附加费、TB、费用表等，
 见 `sources.json`）合并进同一组 `VISA_POLICY` 行（按 国家 + 就读地范围 唯一），字段级门控，

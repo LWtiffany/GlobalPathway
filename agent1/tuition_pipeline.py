@@ -2,10 +2,11 @@
 
 Same mechanics as the visa / FX pipelines: conditional probe -> Crawl4AI snapshot
 -> per-section extraction cached in section_cache.json. A source declares its
-school and programmes in sources.json; the scan unit is one school (all of its
-tuition pages). SCHOOL and PROGRAM rows mirror that registry. Each verified fee
-row becomes one TUITION row keyed by (programme, academic_year, fee_status,
-fee_basis, study_mode).
+school and either its programmes ("programs") or "catalog": true, in which case
+programmes, divisions and school-wide rates are discovered from the page labels
+(PROGRAM.scope). The scan unit is one school (all of its tuition pages). Each
+verified fee row becomes one TUITION row keyed by (programme, academic_year,
+fee_status, fee_basis, study_mode).
 
 Write policy matches FX_POLICY: a new price point is inserted, an unchanged one
 only refreshes its evidence, a changed amount or a cross-page conflict goes to
@@ -17,6 +18,7 @@ import json
 import uuid
 
 from . import config, crawl, formal_pipeline as fp, gate, storage, tuition_extract
+from .models import LEVELS
 
 DOMAIN = "tuition"
 
@@ -54,8 +56,8 @@ def program_id(school_key, program_key):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"program:{school_key}:{program_key}"))
 
 
-def tuition_id(program_id_, academic_year, fee_status, fee_basis, study_mode):
-    parts = (program_id_, academic_year, fee_status, fee_basis, study_mode)
+def tuition_id(program_id_, academic_year, fee_status, fee_basis, study_mode, rate=None):
+    parts = (program_id_, academic_year, fee_status, fee_basis, study_mode, *([rate] if rate else []))
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "tuition:" + "|".join(str(p or "-") for p in parts)))
 
 
@@ -63,30 +65,47 @@ def validate_registry(source):
     school = source.get("school") or {}
     if not all(school.get(k) for k in ("key", "name", "country")):
         raise ValueError(f"学费来源 {source['id']} 缺少 school.key / name / country")
+    unknown = set(source.get("defaults") or {}) - set(tuition_extract.DEFAULTABLE)
+    if unknown:
+        raise ValueError(f"学费来源 {source['id']} 的 defaults 含未知字段：{sorted(unknown)}")
+    if tuition_extract.is_catalog(source):
+        if source.get("programs"):
+            raise ValueError(f"学费来源 {source['id']} 不能同时登记 catalog 与 programs")
+        if source.get("level") not in (None, *LEVELS):
+            raise ValueError(f"学费来源 {source['id']} 的 level 须为 {LEVELS} 之一")
+        return
     programs = source.get("programs") or []
     keys = [p.get("key") for p in programs]
     if not programs or not all(keys) or len(set(keys)) != len(keys) \
             or tuition_extract.ALL_PROGRAMS in keys or not all(p.get("name") for p in programs):
         raise ValueError(f"学费来源 {source['id']} 的 programs 须为非空、key 唯一且带 name 的列表")
-    unknown = set(source.get("defaults") or {}) - set(tuition_extract.DEFAULTABLE)
-    if unknown:
-        raise ValueError(f"学费来源 {source['id']} 的 defaults 含未知字段：{sorted(unknown)}")
 
 
 # ---------- domain writes ----------
 
-def _upsert_registry(connection, members):
+def _upsert_program(connection, sid, school_key, key, name, level, scope):
+    connection.execute("""INSERT INTO PROGRAM (program_id, school_id, name, level, scope)
+        VALUES (?,?,?,?,?) ON CONFLICT(program_id) DO UPDATE SET name=excluded.name,
+        level=COALESCE(excluded.level, PROGRAM.level), scope=excluded.scope""",
+        (program_id(school_key, key), sid, name, level, scope))
+
+
+def _upsert_registry(connection, members, merged):
+    """SCHOOL from the registry; PROGRAM from registered programmes and catalog rows."""
     school = members[0]["school"]
     sid = school_id(school["key"])
     connection.execute("""INSERT INTO SCHOOL (school_id, name, country, city) VALUES (?,?,?,?)
         ON CONFLICT(school_id) DO UPDATE SET name=excluded.name, country=excluded.country,
         city=excluded.city""", (sid, school["name"], school["country"], school.get("city")))
     for source in members:
-        for program in source["programs"]:
-            connection.execute("""INSERT INTO PROGRAM (program_id, school_id, name, level)
-                VALUES (?,?,?,?) ON CONFLICT(program_id) DO UPDATE SET name=excluded.name,
-                level=excluded.level""",
-                (program_id(school["key"], program["key"]), sid, program["name"], program.get("level")))
+        for program in source.get("programs") or []:
+            _upsert_program(connection, sid, school["key"], program["key"], program["name"],
+                            program.get("level"), None)
+    for key, entry in merged.items():
+        row = entry["support"][0]
+        if row.program_scope:
+            _upsert_program(connection, sid, school["key"], key[0], row.program_name, row.level,
+                            row.program_scope)
 
 
 def _replace_evidence(connection, tuition_id_, rows):
@@ -116,6 +135,8 @@ def _same_amount(existing, amount, currency):
 
 def _remark(support, sources):
     notes = []
+    if all(row.amount_kind == "tuition_and_fees" for row in support):
+        notes.append("金额为页面给出的学费与杂费合计（tuition and fees）")
     for row in support:
         source = sources.get(row.source_id) or {}
         if source.get("defaults") and source.get("defaults_note"):
@@ -126,17 +147,19 @@ def _remark(support, sources):
 def _apply_school(connection, school_key, merged, sources):
     results = []
     for key, entry in merged.items():
-        program_key, academic_year, fee_status, fee_basis, study_mode = key
+        program_key, academic_year, fee_status, fee_basis, study_mode, rate = key
         pid = program_id(school_key, program_key)
-        tid = tuition_id(pid, academic_year, fee_status, fee_basis, study_mode)
+        tid = tuition_id(pid, academic_year, fee_status, fee_basis, study_mode, rate)
+        rate_label = entry["support"][0].rate_label
         row = {"tuition_id": tid, "program_id": pid, "academic_year": academic_year,
                "fee_status": fee_status, "fee_basis": fee_basis, "study_mode": study_mode,
-               "amount": entry["amount"], "currency": entry["currency"],
+               "rate_label": rate_label, "amount": entry["amount"], "currency": entry["currency"],
                "remark": _remark(entry["support"], sources)}
         support = [r.model_dump() for r in entry["support"]]
-        result = {"program": program_key, "academic_year": academic_year, "fee_status": fee_status,
-                  "study_mode": study_mode, "amount": entry["amount"], "currency": entry["currency"],
-                  "tuition_id": tid}
+        result = {"program": entry["support"][0].program_name or program_key,
+                  "academic_year": academic_year, "fee_status": fee_status, "fee_basis": fee_basis,
+                  "study_mode": study_mode, "rate": rate_label, "amount": entry["amount"],
+                  "currency": entry["currency"], "tuition_id": tid}
         existing = fp._row(connection, "SELECT * FROM TUITION WHERE tuition_id=?", (tid,))
         payload = {"tuition": row, "program_key": program_key, "school_key": school_key}
         if entry["conflict"]:
@@ -251,8 +274,10 @@ def _scan_school(key, *, paths, fresh_ids, full, sources, reapply=False):
         source, snapshot_id = capture["source"], capture["snapshot_id"]
         report = gate.GateReport()
         rows = 0
+        labels = tuition_extract.page_labels(capture["patches"])
         for section in capture["patches"]:
-            clean, _ = tuition_extract.verify(section, capture["markdown"], source, snapshot_id, report)
+            clean, _ = tuition_extract.verify(section, capture["markdown"], source, snapshot_id, report,
+                                              labels)
             verified += clean.rows
             rows += len(clean.rows)
         # rejected rows are dropped before the merge; they are logged, not queued
@@ -267,19 +292,20 @@ def _scan_school(key, *, paths, fresh_ids, full, sources, reapply=False):
                       "model_calls": capture["model_calls"], "reused_sections": capture["reused_sections"],
                       "rows": rows, "warnings": [p["reason"] for p in page_report.problems]})
 
-    keys_by_source = {s["id"]: [p["key"] for p in s["programs"]] for s in members}
+    keys_by_source = {s["id"]: [p["key"] for p in s.get("programs") or []] for s in members}
     merged, conflicts = tuition_extract.merge(verified, keys_by_source)
     if not merged:
         raise ValueError(f"{key} 所有学费页面都没有抽取到可核实的学费；保留已入库数据并检查覆盖范围")
     school_report = gate.GateReport()
     for conflict in conflicts:
-        program_key, year, status, _, mode = conflict["key"]
+        program_key, year, status, basis, mode, rate = conflict["key"]
         school_report.problem("conflict", "error",
-                              f"跨页面：{program_key} {year} {status} {mode} 金额冲突 {conflict['values']}",
+                              f"跨页面：{program_key} {year} {status} {basis} {mode} {rate or ''} "
+                              f"金额冲突 {conflict['values']}",
                               "人工核对各页面原文，在审核中选定金额", field=f"tuition:{program_key}",
                               value=fp._json(conflict["values"]), scope=program_key)
     with storage.session(paths, readonly=False) as connection:
-        _upsert_registry(connection, members)
+        _upsert_registry(connection, members, merged)
         applied = _apply_school(connection, key, merged, sources)
         issue_ids = []
         for capture, report in reports:
@@ -314,9 +340,15 @@ def scan_all(target="all", *, paths=None, full=False, reapply=False):
     paths = paths or config.PATHS
     fp._guard(paths)
     sources = fp.load_sources()
+    keys = _targets(target, sources)
     outcomes = []
-    for key in _targets(target, sources):
+    for key in keys:
         fresh = set() if reapply else {s["id"] for s in _school_sources(key, sources)}
-        outcomes.append(_scan_school(key, paths=paths, fresh_ids=fresh, full=full and not reapply,
-                                     sources=sources, reapply=reapply))
+        try:
+            outcomes.append(_scan_school(key, paths=paths, fresh_ids=fresh, full=full and not reapply,
+                                         sources=sources, reapply=reapply))
+        except Exception as exc:  # noqa: BLE001 - one school must not stop a batch
+            if len(keys) == 1:
+                raise
+            outcomes.append({"result": "failed", "school": key, "applied": False, "error": str(exc)})
     return outcomes[0] if len(outcomes) == 1 and target != "all" else {"result": "applied", "schools": outcomes}
