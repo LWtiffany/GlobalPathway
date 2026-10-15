@@ -228,7 +228,7 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
     return results
 
 
-def apply_review(connection, row, *, decided_by, note=None):
+def apply_review(connection, row):
     """Approve one OPEN FX_POLICY review row (dispatched from formal_pipeline.apply_review)."""
     payload = json.loads(row["proposed_value"])
     policy = payload["policy"]
@@ -252,8 +252,6 @@ def apply_review(connection, row, *, decided_by, note=None):
         if fact.get("field") in columns:
             evidence.setdefault(fact["field"], []).append(fact)
     _record_evidence(connection, id_, evidence, payload.get("documents"))
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""", (decided_by, fp._now(), note, row["review_id"]))
     return {"review_id": row["review_id"], "action": row["action"], "policy_id": id_,
             "applied_fields": columns}
 

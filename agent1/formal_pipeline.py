@@ -580,16 +580,25 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
 
 
 def apply_review(connection, review_id, *, decided_by, note=None):
-    """Approve one REVIEW_QUEUE row: apply its payload to the domain table."""
+    """Approve one REVIEW_QUEUE row: apply its payload to the domain table, then drop the row
+    (the queue only holds undecided items)."""
     row = _row(connection, "SELECT * FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'", (review_id,))
     if not row:
         raise ValueError(f"没有待处理的审核项：{review_id}")
     if row["domain_table"] == "FX_POLICY":
         from . import fx_pipeline
-        return fx_pipeline.apply_review(connection, row, decided_by=decided_by, note=note)
-    if row["domain_table"] == "TUITION":
+        result = fx_pipeline.apply_review(connection, row)
+    elif row["domain_table"] == "TUITION":
         from . import tuition_pipeline
-        return tuition_pipeline.apply_review(connection, row, decided_by=decided_by, note=note)
+        result = tuition_pipeline.apply_review(connection, row)
+    else:
+        result = _apply_visa_review(connection, row)
+    connection.execute("DELETE FROM REVIEW_QUEUE WHERE review_id=?", (review_id,))
+    return {**result, "status": "APPROVED", "decided_by": decided_by, "note": note}
+
+
+def _apply_visa_review(connection, row):
+    review_id = row["review_id"]
     if row["domain_table"] != "VISA_POLICY":
         raise ValueError(f"暂不支持审核域表：{row['domain_table']}")
     payload = json.loads(row["proposed_value"])
@@ -612,20 +621,17 @@ def apply_review(connection, review_id, *, decided_by, note=None):
     _remove_documents(connection, policy_id, payload.get("removed_documents"))
     _record_evidence(connection, policy_id, {c: policy[c] for c in field_columns},
                      json.loads(row["evidence_json"] or "[]"), payload.get("documents"))
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""",
-        (decided_by, _now(), note, review_id))
     return {"review_id": review_id, "action": row["action"], "policy_id": policy_id,
             "applied_fields": field_columns}
 
 
 def reject_review(connection, review_id, *, decided_by, note):
+    """Discard one OPEN review: the domain table is left untouched and the row is dropped."""
     row = _row(connection, "SELECT review_id FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'", (review_id,))
     if not row:
         raise ValueError(f"没有待处理的审核项：{review_id}")
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='REJECTED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""", (decided_by, _now(), note, review_id))
-    return {"review_id": review_id, "status": "REJECTED"}
+    connection.execute("DELETE FROM REVIEW_QUEUE WHERE review_id=?", (review_id,))
+    return {"review_id": review_id, "status": "REJECTED", "decided_by": decided_by, "note": note}
 
 
 # ---------- per-page capture ----------

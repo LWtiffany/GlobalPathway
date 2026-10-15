@@ -2,7 +2,6 @@
 
 const $app = document.getElementById("app");
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const STATUS_TABS = [["OPEN", "待审核"], ["APPROVED", "已入库"], ["REJECTED", "已驳回"]];
 const DOMAIN_LABEL = {
   VISA_POLICY: "签证政策", FX_POLICY: "购汇政策", TUITION: "学费", SCHOOL: "学校", PROGRAM: "项目",
   ACCOUNT_THRESHOLD: "开户门槛", CREDIT_CARD: "信用卡",
@@ -11,7 +10,7 @@ const ACTION_LABEL = { CREATE: "新增", UPDATE: "更新" };
 
 const A = {
   token: sessionStorage.getItem("gp_admin_token"), admin: sessionStorage.getItem("gp_admin_name"),
-  status: "OPEN", domain: "", data: null, detail: null, busy: false,
+  domain: "", data: null, detail: null, busy: false,
 };
 
 // ---------- helpers ----------
@@ -128,10 +127,9 @@ function renderLogin(err) {
 // ---------- list ----------
 
 async function load() {
-  const q = new URLSearchParams({ status: A.status });
-  if (A.domain) q.set("domain", A.domain);
+  const q = A.domain ? "?" + new URLSearchParams({ domain: A.domain }) : "";
   try {
-    A.data = await api("GET", "/reviews?" + q);
+    A.data = await api("GET", "/reviews" + q);
   } catch (e) {
     if (A.token) toast(e.message, true);
     return;
@@ -141,35 +139,30 @@ async function load() {
 
 function renderList() {
   const d = A.data;
+  const domains = new Set([...d.domains, A.domain].filter(Boolean));
   const tabs = h("div", { class: "tabs" },
-    STATUS_TABS.map(([key, label]) => h("button", {
-      class: A.status === key ? "on" : null,
-      onclick: () => { A.status = key; load(); },
-    }, label, h("em", null, d.counts[key] ?? 0))),
+    h("button", { class: "on" }, "待审核", h("em", null, d.reviews.length)),
     h("span", { class: "sp" }),
     h("select", { onchange: (e) => { A.domain = e.target.value; load(); } },
       h("option", { value: "", selected: !A.domain }, "全部域表"),
-      d.domains.map((key) => h("option", { value: key, selected: A.domain === key }, DOMAIN_LABEL[key] || key))));
+      [...domains].map((key) => h("option", { value: key, selected: A.domain === key }, DOMAIN_LABEL[key] || key))));
 
-  const decided = A.status !== "OPEN";
   const body = d.reviews.length ? h("table", { class: "tickets" },
     h("thead", null, h("tr", null,
       h("th", null, "提交时间"), h("th", null, "域表"), h("th", null, "动作"), h("th", null, "内容"),
-      h("th", null, "进审核原因"), decided ? h("th", null, "处理") : null)),
+      h("th", null, "进审核原因"))),
     h("tbody", null, d.reviews.map((r) => h("tr", { class: "pick", onclick: () => openDetail(r.review_id) },
       h("td", { class: "mono" }, fmtTime(r.created_at)),
       h("td", null, DOMAIN_LABEL[r.domain_table] || r.domain_table),
       h("td", null, h("span", { class: "badge " + r.action }, ACTION_LABEL[r.action] || r.action)),
       h("td", { class: "sum" }, h("div", { class: "clip" }, r.summary || r.record_key)),
-      h("td", { class: "why" }, h("div", { class: "clip" }, r.reason || "—")),
-      decided ? h("td", null, h("span", { class: "badge " + r.status }, r.decided_by || "—"),
-        h("div", { class: "note" }, fmtTime(r.decided_at))) : null))))
-    : h("div", { class: "empty-state" }, A.status === "OPEN" ? "暂无待审核数据" : "暂无记录");
+      h("td", { class: "why" }, h("div", { class: "clip" }, r.reason || "—"))))))
+    : h("div", { class: "empty-state" }, "暂无待审核数据");
 
   $app.replaceChildren(topBar(), h("div", { class: "gold" }), h("div", { class: "page adm" },
     h("h1", { class: "sf" }, "待审核数据"),
     h("p", { class: "lead" }, `Agent1 写库时，跨页面冲突、字段变更、证据不足或材料移除的数据不会直接入库，而是进入审核队列。`
-      + `“批准入库”会把拟写入内容写进正式数据库；“驳回”则丢弃，正式库保持原样。时间按 ${TZ} 显示。`),
+      + `“批准入库”会把拟写入内容写进正式数据库；“驳回”则丢弃，正式库保持原样。处理完的审核项会从队列删除。时间按 ${TZ} 显示。`),
     tabs, body));
   if (A.detail) renderDrawer();
 }
@@ -240,12 +233,6 @@ function evidenceView(list) {
 }
 
 function decideView(r) {
-  if (r.status !== "OPEN") {
-    return h("div", { class: "decide" },
-      h("div", null, h("span", { class: "badge " + r.status }, r.status === "APPROVED" ? "已入库" : "已驳回"),
-        ` ${r.decided_by || "—"} · ${fmtTime(r.decided_at)}`),
-      r.decision_note ? h("blockquote", null, r.decision_note) : null);
-  }
   const note = h("textarea", { placeholder: "审核备注（驳回必填，批准可选）", maxlength: "500" });
   const decide = async (verb) => {
     const text = note.value.trim();
@@ -254,7 +241,8 @@ function decideView(r) {
     if (A.busy) return;
     A.busy = true;
     try {
-      A.detail = await api("POST", `/reviews/${encodeURIComponent(r.review_id)}/${verb}`, { note: text || null });
+      await api("POST", `/reviews/${encodeURIComponent(r.review_id)}/${verb}`, { note: text || null });
+      closeDrawer();
       toast(verb === "approve" ? "已批准并写入正式库" : "已驳回，数据未入库");
       await load();
     } catch (e) {

@@ -272,7 +272,8 @@ def cmd_review(args):
                                                   decided_by=_actor(args.actor),
                                                   note=args.note)
         _print_json(result)
-        print(f"已批准并写入 {result['policy_id']}（{len(result['applied_fields'])} 个字段）")
+        record = result.get("policy_id") or result.get("tuition_id")
+        print(f"已批准并写入 {record}（{len(result['applied_fields'])} 个字段），审核项已移出队列")
         return 0
     if args.review_command == "reject":
         if not args.note:
@@ -282,6 +283,7 @@ def cmd_review(args):
             result = formal_pipeline.reject_review(db, args.review_id,
                                                    decided_by=_actor(args.actor), note=args.note)
         _print_json(result)
+        print("已驳回，数据未入库，审核项已移出队列")
         return 0
     return 0
 

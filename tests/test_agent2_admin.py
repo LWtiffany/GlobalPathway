@@ -73,14 +73,13 @@ class AdminCases(S1Base):
     def test_lists_open_reviews_with_summary_counts_and_detail(self):
         status, payload = self.admin("GET", "/v1/admin/reviews")
         self.assertEqual(status, 200)
-        self.assertEqual(payload["counts"], {"OPEN": 2, "APPROVED": 0, "REJECTED": 0})
         self.assertEqual(payload["domains"], ["VISA_POLICY"])
         by_id = {r["review_id"]: r for r in payload["reviews"]}
+        self.assertEqual(set(by_id), {self.first, self.second})
         self.assertEqual(by_id[self.first]["summary"], "UK · Student visa")
         self.assertTrue(by_id[self.first]["applicable"])
-        self.assertEqual(self.admin("GET", "/v1/admin/reviews?status=REJECTED")[1]["reviews"], [])
-        self.assertEqual(self.admin("GET", "/v1/admin/reviews?domain=TUITION")[1]["counts"]["OPEN"], 0)
-        self.assertEqual(self.admin("GET", "/v1/admin/reviews?status=BOGUS")[0], 400)
+        self.assertEqual(self.admin("GET", "/v1/admin/reviews?domain=TUITION")[1]["reviews"], [])
+        self.assertEqual(self.admin("GET", "/v1/admin/reviews?domain=BOGUS")[0], 400)
 
         status, detail = self.admin("GET", f"/v1/admin/reviews/{self.first}")
         self.assertEqual(status, 200)
@@ -89,17 +88,21 @@ class AdminCases(S1Base):
         self.assertIsNone(detail["current"])
         self.assertEqual(self.admin("GET", "/v1/admin/reviews/missing")[0], 404)
 
-    def test_approve_writes_domain_row_and_records_decision(self):
-        status, detail = self.admin("POST", f"/v1/admin/reviews/{self.first}/approve", {"note": "人工核对原文"})
+    def queued_ids(self):
+        with storage.session(self.paths) as db:
+            return {r[0] for r in db.execute("SELECT review_id FROM REVIEW_QUEUE")}
+
+    def test_approve_writes_domain_row_and_drops_review(self):
+        status, result = self.admin("POST", f"/v1/admin/reviews/{self.first}/approve", {"note": "人工核对原文"})
         self.assertEqual(status, 200)
-        self.assertEqual((detail["status"], detail["decided_by"], detail["decision_note"]),
-                         ("APPROVED", "admin:lily", "人工核对原文"))
+        self.assertEqual((result["status"], result["decided_by"], result["note"], result["policy_id"]),
+                         ("APPROVED", "admin:lily", "人工核对原文", "visa-a"))
         self.assertEqual(self.visa_row("visa-a")["funds_living_monthly"], 1529)
-        self.assertEqual(detail["current"]["policy_id"], "visa-a")
-        status, payload = self.admin("POST", f"/v1/admin/reviews/{self.first}/approve")
-        self.assertEqual((status, payload["code"]), (409, "REVIEW_CONFLICT"))
-        counts = self.admin("GET", "/v1/admin/reviews")[1]["counts"]
-        self.assertEqual(counts, {"OPEN": 1, "APPROVED": 1, "REJECTED": 0})
+        self.assertEqual(self.queued_ids(), {self.second})
+        self.assertEqual(self.admin("POST", f"/v1/admin/reviews/{self.first}/approve")[0], 404)
+        self.assertEqual(self.admin("GET", f"/v1/admin/reviews/{self.first}")[0], 404)
+        reviews = self.admin("GET", "/v1/admin/reviews")[1]["reviews"]
+        self.assertEqual([r["review_id"] for r in reviews], [self.second])
 
     def test_constraint_violation_is_reported_and_rolled_back(self):
         with storage.session(self.paths, readonly=False) as db:
@@ -109,14 +112,15 @@ class AdminCases(S1Base):
         status, payload = self.admin("POST", f"/v1/admin/reviews/{bad}/approve")
         self.assertEqual((status, payload["code"]), (409, "REVIEW_CONFLICT"))
         self.assertIsNone(self.visa_row("visa-c"))
-        self.assertEqual(self.admin("GET", f"/v1/admin/reviews/{bad}")[1]["status"], "OPEN")
+        self.assertIn(bad, self.queued_ids())
 
     def test_reject_requires_note_and_leaves_domain_untouched(self):
         self.assertEqual(self.admin("POST", f"/v1/admin/reviews/{self.second}/reject", {"note": "  "})[0], 400)
-        status, detail = self.admin("POST", f"/v1/admin/reviews/{self.second}/reject", {"note": "来源不可靠"})
-        self.assertEqual((status, detail["status"], detail["decision_note"]), (200, "REJECTED", "来源不可靠"))
+        status, result = self.admin("POST", f"/v1/admin/reviews/{self.second}/reject", {"note": "来源不可靠"})
+        self.assertEqual((status, result["status"], result["note"]), (200, "REJECTED", "来源不可靠"))
         self.assertIsNone(self.visa_row("visa-b"))
-        self.assertEqual(self.admin("POST", f"/v1/admin/reviews/{self.second}/approve")[0], 409)
+        self.assertEqual(self.queued_ids(), {self.first})
+        self.assertEqual(self.admin("POST", f"/v1/admin/reviews/{self.second}/approve")[0], 404)
         self.assertEqual(self.admin("POST", "/v1/admin/reviews/missing/reject", {"note": "x"})[0], 404)
 
 

@@ -193,7 +193,7 @@ def _apply_school(connection, school_key, merged, sources):
     return results
 
 
-def apply_review(connection, row, *, decided_by, note=None):
+def apply_review(connection, row):
     """Approve one OPEN TUITION review row (dispatched from formal_pipeline.apply_review)."""
     payload = json.loads(row["proposed_value"])
     tuition = payload["tuition"]
@@ -216,8 +216,6 @@ def apply_review(connection, row, *, decided_by, note=None):
                if float(r.get("amount") or 0) == float(tuition["amount"])
                and r.get("currency") == tuition["currency"]]
     _replace_evidence(connection, tid, support)
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""", (decided_by, fp._now(), note, row["review_id"]))
     return {"review_id": row["review_id"], "action": row["action"], "tuition_id": tid,
             "applied_fields": ["amount", "currency"]}
 

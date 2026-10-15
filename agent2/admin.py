@@ -1,4 +1,5 @@
-"""数据审核后台：展示 Agent1 REVIEW_QUEUE，管理员批准（写入正式库）或驳回（不入库）。
+"""数据审核后台：展示 Agent1 REVIEW_QUEUE 的待审核项，管理员批准（写入正式库）或驳回（不入库）；
+处理完的审核项从队列删除。
 
 认证：POST /v1/admin/login {name, password}，口令取自 AGENT2_ADMIN_PASSWORD
 （或 local_secrets.AGENT2_ADMIN_PASSWORD）；未配置时后台整体关闭。
@@ -14,7 +15,6 @@ from agent1 import formal_pipeline, storage
 
 from .service import ServiceError
 
-STATUSES = ("OPEN", "APPROVED", "REJECTED")
 DOMAIN_KEYS = {"VISA_POLICY": "policy_id", "FX_POLICY": "policy_id", "ACCOUNT_THRESHOLD": "threshold_id",
                "CREDIT_CARD": "card_id", "SCHOOL": "school_id", "PROGRAM": "program_id",
                "TUITION": "tuition_id"}
@@ -100,33 +100,26 @@ class AdminConsole:
         payload = json.loads(row["proposed_value"] or "{}")
         return {"review_id": row["review_id"], "domain_table": row["domain_table"],
                 "record_key": row["record_key"], "action": row["action"], "field_path": row["field_path"],
-                "reason": row["reason"], "status": row["status"], "created_at": row["created_at"],
-                "decided_by": row["decided_by"], "decided_at": row["decided_at"],
-                "decision_note": row["decision_note"], "summary": _summary(row["domain_table"], payload),
+                "reason": row["reason"], "created_at": row["created_at"],
+                "summary": _summary(row["domain_table"], payload),
                 "applicable": row["domain_table"] in APPLICABLE}
 
-    def list_reviews(self, status="OPEN", domain=None):
-        if status not in STATUSES:
-            raise ServiceError("INVALID_INPUT", f"status 须为 {'/'.join(STATUSES)}", 400)
+    def list_reviews(self, domain=None):
         if domain and domain not in DOMAIN_KEYS:
             raise ServiceError("INVALID_INPUT", "未知的域表", 400)
-        where, params = "", []
+        sql, params = "SELECT * FROM REVIEW_QUEUE WHERE status='OPEN'", []
         if domain:
-            where, params = " WHERE domain_table=?", [domain]
+            sql, params = sql + " AND domain_table=?", [domain]
         with self._session() as db:
-            counts = {s: 0 for s in STATUSES}
-            counts.update(dict(db.execute(
-                f"SELECT status, COUNT(*) FROM REVIEW_QUEUE{where} GROUP BY status", params).fetchall()))
-            clause = " AND ".join(filter(None, [where.removeprefix(" WHERE "), "status=?"]))
-            rows = db.execute(f"SELECT * FROM REVIEW_QUEUE WHERE {clause} ORDER BY created_at DESC",
-                              [*params, status]).fetchall()
+            rows = db.execute(sql + " ORDER BY created_at DESC", params).fetchall()
             domains = [r[0] for r in db.execute(
-                "SELECT DISTINCT domain_table FROM REVIEW_QUEUE ORDER BY domain_table")]
-        return {"reviews": [self._brief(r) for r in rows], "counts": counts, "domains": domains}
+                "SELECT DISTINCT domain_table FROM REVIEW_QUEUE WHERE status='OPEN' ORDER BY domain_table")]
+        return {"reviews": [self._brief(r) for r in rows], "domains": domains}
 
     def get_review(self, review_id):
         with self._session() as db:
-            row = db.execute("SELECT * FROM REVIEW_QUEUE WHERE review_id=?", (review_id,)).fetchone()
+            row = db.execute("SELECT * FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'",
+                             (review_id,)).fetchone()
             if not row:
                 raise ServiceError("NOT_FOUND", "审核项不存在", 404)
             key = DOMAIN_KEYS.get(row["domain_table"])
@@ -139,14 +132,14 @@ class AdminConsole:
     def _decide(self, review_id, decide):
         try:
             with self._session(readonly=False) as db:
-                if not db.execute("SELECT 1 FROM REVIEW_QUEUE WHERE review_id=?", (review_id,)).fetchone():
-                    raise ServiceError("NOT_FOUND", "审核项不存在", 404)
-                decide(db)
+                if not db.execute("SELECT 1 FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'",
+                                  (review_id,)).fetchone():
+                    raise ServiceError("NOT_FOUND", "审核项不存在或已处理", 404)
+                return decide(db)
         except ValueError as exc:
             raise ServiceError("REVIEW_CONFLICT", str(exc), 409)
         except sqlite3.IntegrityError as exc:
             raise ServiceError("REVIEW_CONFLICT", f"写入违反数据库约束，未入库：{exc}", 409)
-        return self.get_review(review_id)
 
     def approve(self, actor, review_id, note=None):
         note = _note(note, required=False)

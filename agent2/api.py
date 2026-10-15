@@ -180,7 +180,7 @@ def admin_login(service, user_id, body, query):
 
 @route("GET", r"/v1/admin/reviews", auth="admin")
 def admin_reviews(service, actor, body, query):
-    return 200, _admin(service).list_reviews(query.get("status", "OPEN"), query.get("domain") or None)
+    return 200, _admin(service).list_reviews(query.get("domain") or None)
 
 
 @route("GET", r"/v1/admin/reviews/(?P<review_id>[\w-]+)", auth="admin")

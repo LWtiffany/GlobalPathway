@@ -13,8 +13,6 @@
 .badge{display:inline-block;font-size:10px;padding:1px 7px;border:1px solid #d8c294;color:#8b7140;letter-spacing:.5px;white-space:nowrap}
 .badge.CREATE{border-color:#a9bba9;color:#4f6b52}
 .badge.UPDATE{border-color:#d8c294;color:#8b7140}
-.badge.APPROVED{border-color:#a9bba9;color:#4f6b52}
-.badge.REJECTED{border-color:#e2b8b3;color:#8e1b24}
 .drawer.wide{width:640px}
 .sec{font-size:11px;color:#8a8170;letter-spacing:2px;margin:20px 0 8px;border-bottom:1px solid #ece6db;padding-bottom:4px}
 .fields{width:100%;border-collapse:collapse}

@@ -267,9 +267,7 @@ class FormalScanTests(unittest.TestCase):
                     "SELECT funds_living_monthly FROM VISA_POLICY "
                     "WHERE applies_to_city='London'").fetchone()[0], 1100)
                 self.assertEqual(connection.execute(
-                    "SELECT count(*) FROM REVIEW_QUEUE WHERE status='APPROVED'").fetchone()[0], 1)
-                self.assertEqual(connection.execute(
-                    "SELECT count(*) FROM REVIEW_QUEUE WHERE status='OPEN'").fetchone()[0], 0)
+                    "SELECT count(*) FROM REVIEW_QUEUE").fetchone()[0], 0)
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
             snapshots = list((self.paths.snapshots / "official_visa").glob("*.md"))
             self.assertEqual(len(snapshots), 3)

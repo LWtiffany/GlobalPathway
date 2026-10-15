@@ -181,8 +181,8 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 AGENT2_ADMIN_PASSWORD='...' .venv/bin/python agent2.py serve --port 8787   # 打开 http://127.0.0.1:8787/admin
 ```
 
-- 展示 Agent1 `REVIEW_QUEUE`（待审核 / 已入库 / 已驳回，可按域表筛选）；详情含进审核原因、拟写入字段（与库内现值对比）、新增/移除材料、逐条证据原文。
-- **批准入库**调用 `formal_pipeline.apply_review` 写入正式库；**驳回**须填原因，数据不入库。两者都记录 `decided_by=admin:<审核人>`、时间与备注；写入失败（目标行冲突、违反约束、项目不存在）整笔回滚并在页面提示。
+- 展示 Agent1 `REVIEW_QUEUE` 的待审核项（可按域表筛选）；详情含进审核原因、拟写入字段（与库内现值对比）、新增/移除材料、逐条证据原文。
+- **批准入库**调用 `formal_pipeline.apply_review` 写入正式库；**驳回**须填原因，数据不入库。处理完的审核项直接从 `REVIEW_QUEUE` 删除（CLI `review approve/reject` 同样），队列里只留待审核的；审核人与备注只出现在接口返回 / CLI 输出里，不在库内留存。写入失败（目标行冲突、违反约束、项目不存在）整笔回滚，审核项保留并在页面提示。
 - 目前可批准的域表：签证政策、购汇政策、学费；其他域表只能驳回。批准只写工作表，发布到 Agent2 仍走 `publish`。
 - 口令取自环境变量 `AGENT2_ADMIN_PASSWORD`（或 `local_secrets.py` 中同名变量）；未配置时后台不可登录。管理员 token 只存在服务进程内存（8 小时过期），与用户 token 互不通用。
 
