@@ -196,8 +196,8 @@ def _check(connection, paths, policy_id, sources, ack_warnings):
     problems += stale
     if verified_at is None and not stale:
         problems.append("没有任何可追溯的证据来源")
-    for review in _rows(connection, """SELECT review_id FROM REVIEW_QUEUE
-            WHERE record_key=? AND status='OPEN'""", (policy_id,)):
+    for review in _rows(connection, "SELECT review_id FROM admin.REVIEW_QUEUE WHERE record_key=?",
+                        (policy_id,)):
         problems.append(f"审核项 {review['review_id']} 尚未处理")
     issues = _open_gate_issues(connection, payload["policy"]["country"], sources)
     errors = [i for i in issues if i["severity"] == "error"]

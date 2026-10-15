@@ -14,6 +14,7 @@ class EnvironmentPaths:
     environment: str
     data: Path
     database: Path
+    admin_database: Path
     snapshots: Path
     legacy_database: Path
     legacy_snapshots: Path
@@ -23,7 +24,7 @@ class EnvironmentPaths:
         # Reject junctions/symlinks that redirect an environment into another one.
         if self.data.resolve() != self.data.absolute():
             raise ValueError(f"环境目录不能通过链接重定向：{self.data}")
-        for path in (self.database, self.snapshots, self.legacy_database,
+        for path in (self.database, self.admin_database, self.snapshots, self.legacy_database,
                      self.legacy_snapshots, self.legacy_gate):
             if path.resolve() != path.absolute() or not path.is_relative_to(self.data):
                 raise ValueError(f"数据路径越过环境边界：{path}")
@@ -51,7 +52,7 @@ def paths_for(root, environment):
         data = Path(root).resolve() / "data" / environment
     paths = EnvironmentPaths(
         environment=environment, data=data, database=data / "agent1.sqlite3",
-        snapshots=data / "snapshots", legacy_database=data / "legacy" / "agent1.sqlite3",
+        admin_database=data / "admin.sqlite3", snapshots=data / "snapshots", legacy_database=data / "legacy" / "agent1.sqlite3",
         legacy_snapshots=data / "legacy" / "snapshots", legacy_gate=data / "legacy" / "gate",
     )
     paths.validate()

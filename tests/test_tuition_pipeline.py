@@ -416,6 +416,7 @@ class TuitionPipelineTests(unittest.TestCase):
     def db(self):
         connection = sqlite3.connect(self.paths.database)
         connection.row_factory = sqlite3.Row
+        connection.execute("ATTACH DATABASE ? AS admin", (str(self.paths.admin_database),))
         self.addCleanup(connection.close)
         return connection
 
@@ -442,7 +443,7 @@ class TuitionPipelineTests(unittest.TestCase):
             WHERE t.amount=249000""").fetchall()
         self.assertEqual({tuple(r) for r in evidence},
                          {("amount", "HKD249,000"), ("context", STEM), ("context", COHORT)})
-        self.assertEqual(db.execute("SELECT COUNT(*) FROM REVIEW_QUEUE").fetchone()[0], 0)
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM admin.REVIEW_QUEUE").fetchone()[0], 0)
         self.assertEqual(db.execute("SELECT COUNT(*) FROM POLICY_PUBLICATION").fetchone()[0], 0)
 
     def test_rescan_is_idempotent_and_a_changed_amount_is_queued_then_approved(self):
@@ -463,8 +464,8 @@ class TuitionPipelineTests(unittest.TestCase):
         self.extractions["hku_overview"] = raised
         tuition_pipeline.scan_all("hku", paths=self.paths, full=True)
         self.assertEqual(self.tuition()[("UG STEM", "2026/27", "non_local")], (249000, "HKD"))
-        review = self.db().execute("SELECT * FROM REVIEW_QUEUE WHERE domain_table='TUITION'").fetchone()
-        self.assertEqual((review["action"], review["status"]), ("UPDATE", "OPEN"))
+        review = self.db().execute("SELECT * FROM admin.REVIEW_QUEUE WHERE domain_table='TUITION'").fetchone()
+        self.assertEqual(review["action"], "UPDATE")
         self.assertIn("249000 HKD → 259000 HKD", review["reason"])
         with storage.session(self.paths, readonly=False) as connection:
             formal_pipeline.apply_review(connection, review["review_id"], decided_by="reviewer")
@@ -490,7 +491,7 @@ class TuitionPipelineTests(unittest.TestCase):
         self.assertNotIn(("UG STEM", "2026/27", "non_local"), self.tuition())
         result = next(r for r in outcome["tuition"] if r["result"] == "review")
         db = self.db()
-        review = db.execute("SELECT * FROM REVIEW_QUEUE WHERE review_id=?", (result["review_id"],)).fetchone()
+        review = db.execute("SELECT * FROM admin.REVIEW_QUEUE WHERE review_id=?", (result["review_id"],)).fetchone()
         self.assertEqual(review["action"], "CREATE")
         self.assertIn("249000 HKD / 250000 HKD", review["reason"])
         issue = db.execute("SELECT * FROM GATE_ISSUE WHERE source_id='school:hku' AND status='OPEN'").fetchone()
@@ -530,7 +531,7 @@ class TuitionPipelineTests(unittest.TestCase):
                                     ("School of Law JD", "professional", "division")})
         self.assertEqual({k: v for k, v in self.tuition().items() if k[0] == "School of Law JD"},
                          {("School of Law JD", "2026/27", None): (76000, "USD")})
-        self.assertEqual(self.db().execute("SELECT COUNT(*) FROM REVIEW_QUEUE").fetchone()[0], 0)
+        self.assertEqual(self.db().execute("SELECT COUNT(*) FROM admin.REVIEW_QUEUE").fetchone()[0], 0)
 
 
 class TuitionMigrationTests(unittest.TestCase):

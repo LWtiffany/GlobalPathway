@@ -10,6 +10,8 @@
 
 - 默认环境为 `development`；可用 `AGENT1_ENV` 或全局 `--env` 选择。
 - 新库：`data/<environment>/agent1.sqlite3`；新快照：`data/<environment>/snapshots/`。
+- 管理库：`data/<environment>/admin.sqlite3`（`ADMIN_USER` 管理员账号 + `REVIEW_QUEUE` 待审核项，迁移在 `agent1/admin_migrations/`）；
+  `db init` 一并创建，Agent1 会话以 schema `admin` 挂载，批准审核时写域表与删审核项在同一事务。管理库不进 git。
 - 兼容管道单独使用 `data/development/legacy/`；禁止在 production 运行。
 - `test` 使用系统临时目录，每个进程隔离，正常退出自动清理。
 - 原 `data/agent1.sqlite3` 及原快照保留原位，代码不自动读取、复制、清理或重新编号。
@@ -178,13 +180,16 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 ### 网页审核后台（`/admin`）
 
 ```bash
-AGENT2_ADMIN_PASSWORD='...' .venv/bin/python agent2.py serve --port 8787   # 打开 http://127.0.0.1:8787/admin
+.venv/bin/python agent2.py admin add <用户名>        # 交互输入两次密码（至少 8 位）；脚本可用 --password-stdin
+.venv/bin/python agent2.py admin passwd <用户名>     # 改密码
+.venv/bin/python agent2.py admin list | remove <用户名>
+.venv/bin/python agent2.py serve --port 8787         # 打开 http://127.0.0.1:8787/admin
 ```
 
-- 展示 Agent1 `REVIEW_QUEUE` 的待审核项（可按域表筛选）；详情含进审核原因、拟写入字段（与库内现值对比）、新增/移除材料、逐条证据原文。
-- **批准入库**调用 `formal_pipeline.apply_review` 写入正式库；**驳回**须填原因，数据不入库。处理完的审核项直接从 `REVIEW_QUEUE` 删除（CLI `review approve/reject` 同样），队列里只留待审核的；审核人与备注只出现在接口返回 / CLI 输出里，不在库内留存。写入失败（目标行冲突、违反约束、项目不存在）整笔回滚，审核项保留并在页面提示。
+- 展示管理库 `REVIEW_QUEUE` 的待审核项（可按域表筛选）；详情含进审核原因、拟写入字段（与库内现值对比）、新增/移除材料、逐条证据原文。
+- **批准入库**调用 `formal_pipeline.apply_review` 写入 Agent1 正式库；**驳回**须填原因，数据不入库。处理完的审核项直接从 `REVIEW_QUEUE` 删除（CLI `review approve/reject` 同样），队列里只留待审核的；审核人与备注只出现在接口返回 / CLI 输出里，不在库内留存。写入失败（目标行冲突、违反约束、项目不存在）整笔回滚，审核项保留并在页面提示。
 - 目前可批准的域表：签证政策、购汇政策、学费；其他域表只能驳回。批准只写工作表，发布到 Agent2 仍走 `publish`。
-- 口令取自环境变量 `AGENT2_ADMIN_PASSWORD`（或 `local_secrets.py` 中同名变量）；未配置时后台不可登录。管理员 token 只存在服务进程内存（8 小时过期），与用户 token 互不通用。
+- 登录对照 `ADMIN_USER`：密码只存 PBKDF2-SHA256 哈希（加盐，60 万次迭代），记录最近登录时间；账号删除后其会话立即失效。管理员 token 只存在服务进程内存（8 小时过期），与用户 token 互不通用。
 
 ## Agent2 只读知识接口
 
@@ -229,11 +234,11 @@ agent1.py          # CLI 入口
 agent2/            # Agent2 S1：意图、M06 追问、M07 知识读取、M08 证据、M09 生成、M10 门控、HTTP API
   fixtures/       # 合成知识夹具与 M06 固定案例
   web/            # 用户端前端（serve 同址托管）
-agent2.py          # Agent2 CLI 入口（serve / eval-m06）
+agent2.py          # Agent2 CLI 入口（serve / admin / eval-m06）
 sources.json       # 来源登记（含权威等级、负责人、检查周期、SLA、Schema 类型）
 data/
   agent1.sqlite3   # 历史混合库，保留原位
-  development/    # 开发新结构；legacy/ 为独立兼容管道
+  development/    # 开发新结构（agent1.sqlite3 + admin.sqlite3）；legacy/ 为独立兼容管道
   production/     # 正式新结构，须显式 db init 后创建
 docs/agent1-database.md # 新库表关系、边界与后续接入说明
 tests/             # 隔离环境、增量采集与候选比较的离线测试

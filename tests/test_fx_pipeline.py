@@ -174,6 +174,7 @@ class FxPipelineTests(unittest.TestCase):
     def db(self):
         connection = sqlite3.connect(self.paths.database)
         connection.row_factory = sqlite3.Row
+        connection.execute("ATTACH DATABASE ? AS admin", (str(self.paths.admin_database),))
         self.addCleanup(connection.close)
         return connection
 
@@ -204,7 +205,7 @@ class FxPipelineTests(unittest.TestCase):
     def test_cross_page_conflict_goes_to_review_and_approval_applies_it(self):
         fx_pipeline.scan_all("CN", paths=self.paths)
         reviews = self.db().execute(
-            "SELECT * FROM REVIEW_QUEUE WHERE domain_table='FX_POLICY' AND status='OPEN'").fetchall()
+            "SELECT * FROM admin.REVIEW_QUEUE WHERE domain_table='FX_POLICY'").fetchall()
         self.assertEqual(len(reviews), 2)
         self.assertIn("remitter_relation", reviews[0]["reason"])
         issue = self.db().execute(
@@ -225,7 +226,7 @@ class FxPipelineTests(unittest.TestCase):
         again = fx_pipeline.scan_all("CN", paths=self.paths, reapply=True)
         self.assertEqual({p["result"] for p in again["policies"]}, {"review"})
         self.assertEqual(self.db().execute(
-            "SELECT COUNT(*) FROM REVIEW_QUEUE WHERE domain_table='FX_POLICY'").fetchone()[0], 2)
+            "SELECT COUNT(*) FROM admin.REVIEW_QUEUE WHERE domain_table='FX_POLICY'").fetchone()[0], 2)
 
         changed_quota = QUOTA.replace("5万", "6万")
         self.pages["https://safe.example.org/rules"] = safe_page().replace(QUOTA, changed_quota)
@@ -245,8 +246,8 @@ class FxPipelineTests(unittest.TestCase):
         db = self.db()
         self.assertEqual(db.execute("SELECT annual_quota_amount FROM FX_POLICY WHERE purpose_code='tuition'")
                          .fetchone()[0], 50000)
-        reason = db.execute("""SELECT reason FROM REVIEW_QUEUE WHERE domain_table='FX_POLICY'
-            AND status='OPEN' AND proposed_value LIKE '%tuition%'""").fetchone()["reason"]
+        reason = db.execute("""SELECT reason FROM admin.REVIEW_QUEUE WHERE domain_table='FX_POLICY'
+            AND proposed_value LIKE '%tuition%'""").fetchone()["reason"]
         self.assertIn("annual_quota_amount: 50000 → 60000.0", reason)
 
     def test_formal_scan_dispatches_fx_sources(self):

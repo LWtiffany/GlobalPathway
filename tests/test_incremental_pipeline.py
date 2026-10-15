@@ -246,7 +246,7 @@ class FormalScanTests(unittest.TestCase):
                     "SELECT funds_living_monthly FROM VISA_POLICY "
                     "WHERE applies_to_city='London'").fetchone()[0], 1000)
                 self.assertEqual(connection.execute(
-                    "SELECT count(*) FROM REVIEW_QUEUE WHERE status='OPEN'").fetchone()[0], 1)
+                    "SELECT count(*) FROM admin.REVIEW_QUEUE").fetchone()[0], 1)
 
             # 4. full re-extract of the same content dedups the open review
             fourth = formal_pipeline.scan("official_visa", paths=self.paths, full=True)
@@ -255,7 +255,7 @@ class FormalScanTests(unittest.TestCase):
             self.assertEqual(london["review_id"], review_id)
             with storage.session(self.paths) as connection:
                 self.assertEqual(connection.execute(
-                    "SELECT count(*) FROM REVIEW_QUEUE WHERE status='OPEN'").fetchone()[0], 1)
+                    "SELECT count(*) FROM admin.REVIEW_QUEUE").fetchone()[0], 1)
 
             # 5. approving the review applies the new amount
             with storage.session(self.paths, readonly=False) as connection:
@@ -267,7 +267,7 @@ class FormalScanTests(unittest.TestCase):
                     "SELECT funds_living_monthly FROM VISA_POLICY "
                     "WHERE applies_to_city='London'").fetchone()[0], 1100)
                 self.assertEqual(connection.execute(
-                    "SELECT count(*) FROM REVIEW_QUEUE").fetchone()[0], 0)
+                    "SELECT count(*) FROM admin.REVIEW_QUEUE").fetchone()[0], 0)
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
             snapshots = list((self.paths.snapshots / "official_visa").glob("*.md"))
             self.assertEqual(len(snapshots), 3)
@@ -361,9 +361,9 @@ class FormalScanTests(unittest.TestCase):
             results = formal_pipeline._apply_region(connection, "UK", merged, blocked)
         with storage.session(self.paths) as connection:
             reason = connection.execute(
-                "SELECT reason FROM REVIEW_QUEUE WHERE record_key=?", (london,)).fetchone()[0]
+                "SELECT reason FROM admin.REVIEW_QUEUE WHERE record_key=?", (london,)).fetchone()[0]
             outside_review = connection.execute(
-                "SELECT action, reason FROM REVIEW_QUEUE WHERE record_key=?", (outside,)).fetchone()
+                "SELECT action, reason FROM admin.REVIEW_QUEUE WHERE record_key=?", (outside,)).fetchone()
             self.assertIsNone(connection.execute(
                 "SELECT 1 FROM VISA_POLICY WHERE policy_id=?", (outside,)).fetchone())
         # the London review must not carry the Outside London error
@@ -454,7 +454,7 @@ class RegionMergeTests(unittest.TestCase):
             row = dict(connection.execute("SELECT * FROM VISA_POLICY WHERE policy_id=?",
                                           (pid,)).fetchone())
             review = json.loads(connection.execute(
-                "SELECT proposed_value FROM REVIEW_QUEUE WHERE record_key=?", (pid,)).fetchone()[0])
+                "SELECT proposed_value FROM admin.REVIEW_QUEUE WHERE record_key=?", (pid,)).fetchone()[0])
         self.assertEqual((row["visa_fee"], row["i20_required"], row["apply_window_days"]), (160, 1, 365))
         self.assertEqual(review["policy"]["visa_fee"], 185)
         self.assertNotIn("i20_required", review["policy"])

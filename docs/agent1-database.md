@@ -132,6 +132,19 @@ remark 只承载说明；如何从说明拆条件是后续抽取与门控服务�
 三套发布状态；新结构由 publication 指针表达当前发布状态。
 当前实现见下文「发布面」：签证政策用 `POLICY_REVISION` / `POLICY_PUBLICATION` / `PUBLICATION_EVENT`。
 
+### C2. 管理库（admin.sqlite3，迁移 `agent1/admin_migrations/001_admin`，当前实现）
+
+与 `agent1.sqlite3` 同目录、同环境，`db init` 一并创建；不进 git。Agent1 会话（`storage.session`）
+以 schema `admin` 挂载它，代码里写 `admin.REVIEW_QUEUE`。库用回滚日志（非 WAL），批准审核时
+“写域表 + 删审核项”跨两个库仍是一个原子事务。
+
+| 表 | 主键/主要内容 | 关系与用途 |
+| --- | --- | --- |
+| ADMIN_USER | username、password_hash（PBKDF2-SHA256 加盐）、created_at、last_login_at | `/admin` 审核后台登录；账号用 `agent2.py admin add/passwd/remove/list` 维护 |
+| REVIEW_QUEUE | review_id、domain_table、record_key、action（CREATE/UPDATE）、proposed_value、evidence_json、reason、created_at；(domain_table, record_key, action) 唯一 | 只放待审核项：批准后写入 Agent1 域表并删除该行，驳回只删除；发布前检查要求该政策没有待审核项 |
+
+迁移 `009_review_queue_to_admin` 把 `agent1.sqlite3` 里原 REVIEW_QUEUE 的待审核行搬到管理库，再删除原表。
+
 ### D. 增量检查与变化规则（开发入口已接入）
 
 `scan` 仅允许 development/test，要求来源已明确 approved 且 enabled。

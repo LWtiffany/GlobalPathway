@@ -232,7 +232,7 @@ class PublicationFlowTests(unittest.TestCase):
     def open_reviews(self):
         with storage.session(self.paths) as connection:
             return [dict(r) for r in connection.execute(
-                "SELECT * FROM REVIEW_QUEUE WHERE status='OPEN'")]
+                "SELECT * FROM admin.REVIEW_QUEUE")]
 
     def rescan_without_cas(self, cas_quote=None):
         """Re-extract every section; CAS is omitted (or given an unverifiable quote)."""

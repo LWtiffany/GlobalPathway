@@ -203,7 +203,7 @@ def cmd_gate(args):
     return 0
 
 
-# ---------- review (REVIEW_QUEUE in the formal database) ----------
+# ---------- review (REVIEW_QUEUE in the admin database) ----------
 
 def cmd_review(args):
     paths = config.PATHS
@@ -237,19 +237,18 @@ def cmd_review(args):
         return 0
     if args.review_command == "list":
         with storage.session(paths) as db:
-            rows = [dict(r) for r in db.execute(
-                "SELECT * FROM REVIEW_QUEUE WHERE status=? ORDER BY created_at", (args.status,))]
+            rows = [dict(r) for r in db.execute("SELECT * FROM admin.REVIEW_QUEUE ORDER BY created_at")]
             open_issues = db.execute(
                 "SELECT COUNT(*) FROM GATE_ISSUE WHERE status='OPEN'").fetchone()[0]
         if args.json:
             _print_json(rows)
             return 0
         if not rows:
-            print(f"没有 {args.status} 状态的审核项")
+            print("没有待审核项")
             return 0
         for row in rows:
             print(f"{row['review_id']}  {row['domain_table']}.{row['record_key'][:13]}…  "
-                  f"{row['action']:<6} {row['status']:<8} at={row['created_at'][:19]}")
+                  f"{row['action']:<6} at={row['created_at'][:19]}")
             print(f"    原因：{row['reason'][:160]}")
         if open_issues:
             print(f"\n另：当前有 {open_issues} 条未解决的门控问题，用 `review issues` 查看。")
@@ -259,7 +258,7 @@ def cmd_review(args):
         return 2
     if args.review_command == "show":
         with storage.session(paths) as db:
-            row = db.execute("SELECT * FROM REVIEW_QUEUE WHERE review_id=?",
+            row = db.execute("SELECT * FROM admin.REVIEW_QUEUE WHERE review_id=?",
                              (args.review_id,)).fetchone()
         if not row:
             print(f"没有审核项：{args.review_id}", file=sys.stderr)
@@ -457,7 +456,7 @@ def build_parser():
     p.add_argument("review_command", choices=["list", "show", "approve", "reject", "issues"])
     p.add_argument("review_id", nargs="?", help="show/approve/reject 时必填")
     p.add_argument("--note")
-    p.add_argument("--status", default="OPEN")
+    p.add_argument("--status", default="OPEN", help="issues 时按门控问题状态过滤")
     p.add_argument("--source", help="issues 时按来源过滤")
     p.add_argument("--json", action="store_true")
     p.add_argument("--actor")

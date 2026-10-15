@@ -11,7 +11,7 @@ from agent1.environment import cleanup_test_storage, paths_for
 
 DOMAIN_TABLES = {"DOCUMENT", "VISA_POLICY", "FX_POLICY", "POLICY_DOCUMENT",
                  "ACCOUNT_THRESHOLD", "ACCOUNT_DOC", "CREDIT_CARD",
-                 "SCHOOL", "PROGRAM", "TUITION", "REVIEW_QUEUE", "GATE_ISSUE"}
+                 "SCHOOL", "PROGRAM", "TUITION", "GATE_ISSUE"}
 
 
 class DatabaseFoundationTests(unittest.TestCase):
@@ -35,6 +35,10 @@ class DatabaseFoundationTests(unittest.TestCase):
                      "quality_issues", "sources", "crawl_runs", "source_snapshots",
                      "policy_evidence", "policy_publication", "audit_events"):
             self.assertNotIn(gone, first["tables"])
+        self.assertNotIn("REVIEW_QUEUE", first["tables"])
+        with closing(sqlite3.connect(self.paths.admin_database)) as connection:
+            admin_tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertTrue({"ADMIN_USER", "REVIEW_QUEUE"}.issubset(admin_tables))
         with storage.session(self.paths) as connection:
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT count(*) FROM VISA_POLICY").fetchone()[0], 0)
@@ -95,13 +99,42 @@ class DatabaseFoundationTests(unittest.TestCase):
         storage.initialize(self.paths)
         with storage.session(self.paths, readonly=False) as connection:
             with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute("""INSERT INTO REVIEW_QUEUE
-                    (review_id, domain_table, record_key, action, reason, status, created_at)
-                    VALUES('review','NOT_A_TABLE','key','CREATE','test','OPEN','2026-10-13T00:00:00+00:00')""")
+                connection.execute("""INSERT INTO admin.REVIEW_QUEUE
+                    (review_id, domain_table, record_key, action, reason, created_at)
+                    VALUES('review','NOT_A_TABLE','key','CREATE','test','2026-10-13T00:00:00+00:00')""")
             with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("""INSERT INTO admin.REVIEW_QUEUE
+                    (review_id, domain_table, record_key, action, reason, created_at)
+                    VALUES('review','VISA_POLICY','key','DELETE','test','2026-10-13T00:00:00+00:00')""")
+
+    def test_session_requires_admin_database(self):
+        storage.initialize(self.paths)
+        self.paths.admin_database.unlink()
+        with self.assertRaisesRegex(RuntimeError, "管理库"):
+            with storage.session(self.paths):
+                pass
+
+    def test_migration_009_moves_open_reviews_to_admin_database(self):
+        old = self.root / "migrations-008"
+        old.mkdir()
+        for original in storage.MIGRATIONS.glob("*.sql"):
+            if original.stem < "009":
+                (old / original.name).write_text(original.read_text(encoding="utf-8"), encoding="utf-8")
+        with patch.object(storage, "MIGRATIONS", old), \
+                patch.object(storage, "REQUIRED_MIGRATIONS", storage.REQUIRED_MIGRATIONS[:-1]):
+            storage.initialize(self.paths)
+        with closing(sqlite3.connect(self.paths.database)) as connection:
+            for review_id, status in (("r-open", "OPEN"), ("r-done", "APPROVED")):
                 connection.execute("""INSERT INTO REVIEW_QUEUE
                     (review_id, domain_table, record_key, action, reason, status, created_at)
-                    VALUES('review','VISA_POLICY','key','DELETE','test','OPEN','2026-10-13T00:00:00+00:00')""")
+                    VALUES(?, 'VISA_POLICY', ?, 'UPDATE', 'r', ?, 't')""", (review_id, review_id, status))
+            connection.commit()
+        storage.initialize(self.paths)
+        with storage.session(self.paths) as connection:
+            self.assertEqual([r[0] for r in connection.execute("SELECT review_id FROM admin.REVIEW_QUEUE")],
+                             ["r-open"])
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM main.sqlite_master WHERE name='REVIEW_QUEUE'").fetchone())
 
     def test_gate_issue_severity_is_constrained(self):
         storage.initialize(self.paths)

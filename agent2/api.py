@@ -165,7 +165,7 @@ def delete_plan_item(service, user_id, body, query, item_id):
     return 200, service.delete_plan_item(user_id, item_id)
 
 
-# ---------- 审核后台（/admin）：Agent1 REVIEW_QUEUE ----------
+# ---------- 审核后台（/admin）：管理库 REVIEW_QUEUE ----------
 
 def _admin(service):
     if service.admin is None:
@@ -175,7 +175,7 @@ def _admin(service):
 
 @route("POST", r"/v1/admin/login", auth=False)
 def admin_login(service, user_id, body, query):
-    return 200, _admin(service).login(body.get("name"), body.get("password"))
+    return 200, _admin(service).login(body.get("username"), body.get("password"))
 
 
 @route("GET", r"/v1/admin/reviews", auth="admin")

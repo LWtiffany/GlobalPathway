@@ -99,13 +99,13 @@ function topBar() {
 // ---------- login ----------
 
 function renderLogin(err) {
-  const name = h("input", { name: "name", autocomplete: "username", value: A.admin || "" });
+  const name = h("input", { name: "username", autocomplete: "username", value: A.admin || "" });
   const pass = h("input", { name: "password", type: "password", autocomplete: "current-password" });
   const errEl = h("div", { class: "formerr" }, err || "");
   const submit = async (e) => {
     e.preventDefault();
     try {
-      const r = await api("POST", "/login", { name: name.value, password: pass.value });
+      const r = await api("POST", "/login", { username: name.value, password: pass.value });
       A.token = r.token;
       A.admin = r.admin;
       sessionStorage.setItem("gp_admin_token", r.token);
@@ -119,7 +119,7 @@ function renderLogin(err) {
     h("div", { class: "page" }, h("form", { class: "card login", onsubmit: submit },
       h("h1", { class: "sf" }, "管理员登录"),
       h("p", { class: "lead" }, "审核 Agent1 抓取后未通过自动质量检查的数据，决定是否写入正式数据库。"),
-      h("label", null, "审核人", name), h("label", null, "口令", pass),
+      h("label", null, "用户名", name), h("label", null, "密码", pass),
       h("button", { class: "btn", type: "submit" }, "登录"), errEl)));
   (A.admin ? pass : name).focus();
 }

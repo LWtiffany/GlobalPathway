@@ -1,18 +1,19 @@
 """Formal schema lifecycle for the clean domain schema (db-er-diagram.mmd).
 
-The database holds only the domain tables plus schema_migrations and REVIEW_QUEUE;
-pipeline mechanics live in JSON files under the environment data directory.
+agent1.sqlite3 holds the domain tables, gate issues and publications; REVIEW_QUEUE
+lives in admin.sqlite3, attached to every session as schema `admin` (admin_store).
+Pipeline mechanics live in JSON files under the environment data directory.
 """
-import hashlib
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import config
+from . import admin_store, config, migrate
 
 MIGRATIONS = Path(__file__).with_name("migrations")
 REQUIRED_MIGRATIONS = ("001_domain_schema", "002_review_queue", "003_gate_issue", "004_publication",
-                       "005_fx_evidence", "006_tuition", "007_tuition_catalog", "008_tuition_rate")
+                       "005_fx_evidence", "006_tuition", "007_tuition_catalog", "008_tuition_rate",
+                       "009_review_queue_to_admin")
 
 
 def _open(paths, mode):
@@ -24,56 +25,30 @@ def _open(paths, mode):
     return connection
 
 
-def _check_schema(connection, allow_empty=False):
-    tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if not tables and allow_empty:
-        return
+def _check_schema(connection):
+    tables = {r[0] for r in connection.execute("SELECT name FROM main.sqlite_master WHERE type='table'")}
     if "schema_migrations" not in tables:
         raise RuntimeError("目标不是新结构数据库（缺少 schema_migrations）；请先 db init。")
-    applied = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
-    missing = set(REQUIRED_MIGRATIONS) - applied
-    if missing:
-        raise RuntimeError(f"数据库缺少迁移：{', '.join(sorted(missing))}；请先 db init。")
+    lacking = migrate.missing(connection, REQUIRED_MIGRATIONS)
+    if lacking:
+        raise RuntimeError(f"数据库缺少迁移：{', '.join(sorted(lacking))}；请先 db init。")
 
 
 def initialize(paths=None):
-    """Explicit, transactional, checksummed schema initialization; inserts no business data."""
+    """Explicit, transactional, checksummed schema initialization (agent1.sqlite3 and
+    admin.sqlite3); inserts no business data."""
     paths = paths or config.PATHS
     paths.validate()
     paths.data.mkdir(parents=True, exist_ok=True)
+    admin_store.initialize(paths)
     connection = _open(paths, "rwc")
     try:
+        admin_store.attach(connection, paths, readonly=False)
         connection.execute("BEGIN IMMEDIATE")
-        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {r[0] for r in connection.execute("SELECT name FROM main.sqlite_master WHERE type='table'")}
         if tables and "schema_migrations" not in tables:
             raise RuntimeError("目标库存在旧结构残留，拒绝原地升级；请归档后重新 db init。")
-        connection.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
-            version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)""")
-        files = sorted(MIGRATIONS.glob("[0-9]*.sql"))
-        if not files:
-            raise RuntimeError("缺少数据库结构迁移文件")
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        applied = {row["version"]: row["checksum"] for row in connection.execute("SELECT * FROM schema_migrations")}
-        if set(applied) - {file.stem for file in files}:
-            raise RuntimeError("数据库包含当前代码未知的迁移，拒绝降级使用")
-        for file in files:
-            sql = file.read_text(encoding="utf-8")
-            checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
-            if file.stem in applied:
-                if applied[file.stem] != checksum:
-                    raise RuntimeError(f"已应用的迁移被修改：{file.name}；必须新增迁移文件")
-                continue
-            # executescript would implicitly commit; execute complete statements individually.
-            statement = ""
-            for line in sql.splitlines(keepends=True):
-                statement += line
-                if sqlite3.complete_statement(statement):
-                    connection.execute(statement)
-                    statement = ""
-            if statement.strip():
-                raise RuntimeError(f"迁移末尾有不完整 SQL：{file.name}")
-            connection.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (file.stem, checksum, now))
+        migrate.apply(connection, MIGRATIONS)
         connection.commit()
     except Exception:
         connection.rollback()
@@ -91,6 +66,7 @@ def session(paths=None, readonly=True):
     connection = _open(paths, "ro" if readonly else "rw")
     try:
         _check_schema(connection)
+        admin_store.attach(connection, paths, readonly)
         if readonly:
             connection.execute("PRAGMA query_only=ON")
         else:
@@ -117,9 +93,9 @@ def status(paths=None):
         result["initialized"] = True
         result["migrations"] = [dict(row) for row in connection.execute("SELECT * FROM schema_migrations ORDER BY version")]
         result["tables"] = [row[0] for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-        result["open_reviews"] = connection.execute(
-            "SELECT COUNT(*) FROM REVIEW_QUEUE WHERE status='OPEN'").fetchone()[0]
+            "SELECT name FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        result["admin_database"] = str(paths.admin_database)
+        result["open_reviews"] = connection.execute("SELECT COUNT(*) FROM admin.REVIEW_QUEUE").fetchone()[0]
         result["open_gate_issues"] = connection.execute(
             "SELECT COUNT(*) FROM GATE_ISSUE WHERE status='OPEN'").fetchone()[0]
         result["publications"] = dict(connection.execute(

@@ -1,17 +1,27 @@
-"""审核后台 /admin：管理员登录、REVIEW_QUEUE 列表 / 详情、批准入库与驳回。"""
+"""审核后台 /admin：管理员账号（管理库 ADMIN_USER）、REVIEW_QUEUE 列表 / 详情、批准入库与驳回。"""
+import io
 import json
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from agent1 import admin_store, storage
 from agent1 import formal_pipeline as fp
-from agent1 import storage
 from agent1.environment import paths_for
 from agent2 import api
+from agent2 import cli as agent2_cli
 from agent2.admin import SESSION_SECONDS, AdminConsole
 from tests.test_agent2_s1 import S1Base
 
 PASSWORD = "correct horse"
+
+
+def fast_hashing(test):
+    patcher = patch.object(admin_store, "PBKDF2_ITERATIONS", 1000)
+    patcher.start()
+    test.addCleanup(patcher.stop)
 
 
 def visa_payload(title, **fields):
@@ -20,10 +30,13 @@ def visa_payload(title, **fields):
 
 class AdminCases(S1Base):
     def setUp(self):
+        fast_hashing(self)
         directory = TemporaryDirectory(prefix="agent2-admin-")
         self.addCleanup(directory.cleanup)
         self.paths = paths_for(Path(directory.name), "development")
         storage.initialize(self.paths)
+        with admin_store.session(self.paths, readonly=False) as db:
+            admin_store.add_user(db, "lily", PASSWORD)
         with storage.session(self.paths, readonly=False) as db:
             self.first = fp._enqueue_review(
                 db, table="VISA_POLICY", key="visa-a", action="CREATE",
@@ -37,8 +50,11 @@ class AdminCases(S1Base):
                 payload=visa_payload("Graduate visa"), evidence=[], reason="跨页面冲突")
         self.now = [0.0]
         self.make()
-        self.service.admin = AdminConsole(self.paths, PASSWORD, clock=lambda: self.now[0])
-        self.token = self.call("POST", "/v1/admin/login", {"name": "lily", "password": PASSWORD})[1]["token"]
+        self.service.admin = AdminConsole(self.paths, clock=lambda: self.now[0])
+        self.token = self.login("lily", PASSWORD)[1]["token"]
+
+    def login(self, username, password):
+        return self.call("POST", "/v1/admin/login", {"username": username, "password": password})
 
     def call(self, method, path, body=None, token=None):
         raw = json.dumps(body).encode() if body is not None else b""
@@ -53,14 +69,31 @@ class AdminCases(S1Base):
             row = db.execute("SELECT * FROM VISA_POLICY WHERE policy_id=?", (key,)).fetchone()
         return dict(row) if row else None
 
-    def test_login_requires_configured_password(self):
-        self.assertEqual(self.call("POST", "/v1/admin/login", {"name": "lily", "password": "nope"})[0], 401)
-        self.assertEqual(self.call("POST", "/v1/admin/login", {"name": " ", "password": PASSWORD})[0], 400)
-        self.service.admin = AdminConsole(self.paths, None)
-        status, payload = self.call("POST", "/v1/admin/login", {"name": "lily", "password": ""})
-        self.assertEqual((status, payload["code"]), (503, "ADMIN_DISABLED"))
+    def test_login_checks_admin_accounts(self):
+        status, payload = self.login("lily", PASSWORD)
+        self.assertEqual((status, payload["admin"]), (200, "lily"))
+        self.assertEqual(self.login("lily", "wrong password")[0], 401)
+        self.assertEqual(self.login("nobody", PASSWORD)[0], 401)
+        self.assertEqual(self.login(" ", PASSWORD)[0], 400)
+        with admin_store.session(self.paths) as db:
+            user = admin_store.list_users(db)[0]
+            stored = db.execute("SELECT password_hash FROM ADMIN_USER").fetchone()[0]
+        self.assertIsNotNone(user["last_login_at"])
+        self.assertTrue(stored.startswith("pbkdf2_sha256$") and PASSWORD not in stored)
         self.service.admin = None
         self.assertEqual(self.call("GET", "/v1/admin/reviews", token=self.token)[0], 503)
+
+    def test_login_without_accounts_explains_setup(self):
+        with admin_store.session(self.paths, readonly=False) as db:
+            admin_store.remove_user(db, "lily")
+        status, payload = self.login("lily", PASSWORD)
+        self.assertEqual((status, payload["code"]), (503, "ADMIN_NO_ACCOUNTS"))
+
+    def test_removed_account_loses_its_session(self):
+        self.assertEqual(self.admin("GET", "/v1/admin/reviews")[0], 200)
+        with admin_store.session(self.paths, readonly=False) as db:
+            admin_store.remove_user(db, "lily")
+        self.assertEqual(self.admin("GET", "/v1/admin/reviews")[0], 401)
 
     def test_admin_routes_reject_missing_user_and_expired_tokens(self):
         user_token = self.service.demo_login("alice")["token"]
@@ -90,13 +123,13 @@ class AdminCases(S1Base):
 
     def queued_ids(self):
         with storage.session(self.paths) as db:
-            return {r[0] for r in db.execute("SELECT review_id FROM REVIEW_QUEUE")}
+            return {r[0] for r in db.execute("SELECT review_id FROM admin.REVIEW_QUEUE")}
 
     def test_approve_writes_domain_row_and_drops_review(self):
         status, result = self.admin("POST", f"/v1/admin/reviews/{self.first}/approve", {"note": "人工核对原文"})
         self.assertEqual(status, 200)
         self.assertEqual((result["status"], result["decided_by"], result["note"], result["policy_id"]),
-                         ("APPROVED", "admin:lily", "人工核对原文", "visa-a"))
+                         ("APPROVED", "lily", "人工核对原文", "visa-a"))
         self.assertEqual(self.visa_row("visa-a")["funds_living_monthly"], 1529)
         self.assertEqual(self.queued_ids(), {self.second})
         self.assertEqual(self.admin("POST", f"/v1/admin/reviews/{self.first}/approve")[0], 404)
@@ -122,6 +155,45 @@ class AdminCases(S1Base):
         self.assertEqual(self.queued_ids(), {self.first})
         self.assertEqual(self.admin("POST", f"/v1/admin/reviews/{self.second}/approve")[0], 404)
         self.assertEqual(self.admin("POST", "/v1/admin/reviews/missing/reject", {"note": "x"})[0], 404)
+
+
+class AdminAccountCliCases(unittest.TestCase):
+    def setUp(self):
+        fast_hashing(self)
+        directory = TemporaryDirectory(prefix="agent2-admin-cli-")
+        self.addCleanup(directory.cleanup)
+        self.paths = paths_for(Path(directory.name), "development")
+        storage.initialize(self.paths)
+        patcher = patch.object(agent2_cli, "_agent1_paths", lambda env: self.paths)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_cli(self, *argv, password=None):
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO(f"{password}\n" if password else "")), redirect_stdout(out), \
+                redirect_stderr(io.StringIO()):
+            code = agent2_cli.main(["admin", *argv])
+        return code, out.getvalue()
+
+    def verify(self, username, password):
+        with admin_store.session(self.paths) as db:
+            stored = db.execute("SELECT password_hash FROM ADMIN_USER WHERE username=?", (username,)).fetchone()
+        return bool(stored) and admin_store.verify_password(password, stored[0])
+
+    def test_add_passwd_list_remove(self):
+        self.assertEqual(self.run_cli("add", "lily", "--password-stdin", password=PASSWORD)[0], 0)
+        self.assertTrue(self.verify("lily", PASSWORD))
+        self.assertEqual(self.run_cli("add", "lily", "--password-stdin", password=PASSWORD)[0], 1)
+        self.assertEqual(self.run_cli("add", "bad name", "--password-stdin", password=PASSWORD)[0], 1)
+        self.assertEqual(self.run_cli("add", "short", "--password-stdin", password="123")[0], 1)
+        self.assertEqual(self.run_cli("passwd", "lily", "--password-stdin", password="new password!")[0], 0)
+        self.assertTrue(self.verify("lily", "new password!"))
+        code, out = self.run_cli("list")
+        self.assertEqual([u["username"] for u in json.loads(out)], ["lily"])
+        self.assertNotIn("pbkdf2", out)
+        self.assertEqual(self.run_cli("remove", "lily")[0], 0)
+        self.assertFalse(self.verify("lily", "new password!"))
+        self.assertEqual(self.run_cli("remove", "lily")[0], 1)
 
 
 class AdminPageCases(unittest.TestCase):

@@ -9,8 +9,9 @@ VISA_POLICY rows keyed by (country, scope), so a fact found on any page lands in
 the same row.
 
 Pipeline mechanics (check state, section cache, snapshots) live in JSON files;
-the database holds the domain tables, schema_migrations, REVIEW_QUEUE and
-GATE_ISSUE (the persisted gate problems behind each review reason).
+agent1.sqlite3 holds the domain tables, schema_migrations and GATE_ISSUE (the
+persisted gate problems behind each review reason); REVIEW_QUEUE is in the admin
+database, attached as schema `admin`.
 
 Write policy (field level):
   - a field with a gate error or a cross-page conflict never auto-applies; it is
@@ -330,21 +331,20 @@ def _record_evidence(connection, policy_id, values, evidence, documents):
 
 
 def _enqueue_review(connection, *, table, key, action, payload, evidence, reason):
-    # Dedup: one OPEN review per (table, key, action); repeat scans reuse it but
-    # refresh the reason/evidence so the open item always reflects the latest run.
-    existing = _row(connection, """SELECT review_id FROM REVIEW_QUEUE
-        WHERE domain_table=? AND record_key=? AND action=? AND status='OPEN'""",
-        (table, key, action))
+    # Dedup: one pending review per (table, key, action); repeat scans reuse it but
+    # refresh the reason/evidence so the item always reflects the latest run.
+    existing = _row(connection, """SELECT review_id FROM admin.REVIEW_QUEUE
+        WHERE domain_table=? AND record_key=? AND action=?""", (table, key, action))
     if existing:
-        connection.execute("""UPDATE REVIEW_QUEUE
+        connection.execute("""UPDATE admin.REVIEW_QUEUE
             SET proposed_value=?, evidence_json=?, reason=? WHERE review_id=?""",
             (_json(payload), _json(evidence), reason, existing["review_id"]))
         return existing["review_id"]
     review_id = _id("review")
-    connection.execute("""INSERT INTO REVIEW_QUEUE
+    connection.execute("""INSERT INTO admin.REVIEW_QUEUE
         (review_id, domain_table, record_key, action, field_path, proposed_value,
-         evidence_json, reason, status, created_at)
-        VALUES (?,?,?,?,?,?,?,?, 'OPEN', ?)""",
+         evidence_json, reason, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)""",
         (review_id, table, key, action, None, _json(payload),
          _json(evidence), reason, _now()))
     return review_id
@@ -580,9 +580,9 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
 
 
 def apply_review(connection, review_id, *, decided_by, note=None):
-    """Approve one REVIEW_QUEUE row: apply its payload to the domain table, then drop the row
-    (the queue only holds undecided items)."""
-    row = _row(connection, "SELECT * FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'", (review_id,))
+    """Approve one admin.REVIEW_QUEUE row: apply its payload to the domain table, then drop
+    the row (the queue only holds undecided items)."""
+    row = _row(connection, "SELECT * FROM admin.REVIEW_QUEUE WHERE review_id=?", (review_id,))
     if not row:
         raise ValueError(f"没有待处理的审核项：{review_id}")
     if row["domain_table"] == "FX_POLICY":
@@ -593,7 +593,7 @@ def apply_review(connection, review_id, *, decided_by, note=None):
         result = tuition_pipeline.apply_review(connection, row)
     else:
         result = _apply_visa_review(connection, row)
-    connection.execute("DELETE FROM REVIEW_QUEUE WHERE review_id=?", (review_id,))
+    connection.execute("DELETE FROM admin.REVIEW_QUEUE WHERE review_id=?", (review_id,))
     return {**result, "status": "APPROVED", "decided_by": decided_by, "note": note}
 
 
@@ -627,10 +627,8 @@ def _apply_visa_review(connection, row):
 
 def reject_review(connection, review_id, *, decided_by, note):
     """Discard one OPEN review: the domain table is left untouched and the row is dropped."""
-    row = _row(connection, "SELECT review_id FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'", (review_id,))
-    if not row:
+    if not connection.execute("DELETE FROM admin.REVIEW_QUEUE WHERE review_id=?", (review_id,)).rowcount:
         raise ValueError(f"没有待处理的审核项：{review_id}")
-    connection.execute("DELETE FROM REVIEW_QUEUE WHERE review_id=?", (review_id,))
     return {"review_id": review_id, "status": "REJECTED", "decided_by": decided_by, "note": note}
 
 

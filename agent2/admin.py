@@ -1,17 +1,15 @@
-"""数据审核后台：展示 Agent1 REVIEW_QUEUE 的待审核项，管理员批准（写入正式库）或驳回（不入库）；
-处理完的审核项从队列删除。
+"""数据审核后台：展示管理库（admin.sqlite3）REVIEW_QUEUE 的待审核项，管理员批准（写入
+Agent1 正式库）或驳回（不入库）；处理完的审核项从队列删除。
 
-认证：POST /v1/admin/login {name, password}，口令取自 AGENT2_ADMIN_PASSWORD
-（或 local_secrets.AGENT2_ADMIN_PASSWORD）；未配置时后台整体关闭。
+认证：POST /v1/admin/login {username, password}，对照管理库 ADMIN_USER（PBKDF2 哈希）；
+账号用 `agent2.py admin add <用户名>` 创建。
 """
-import hmac
 import json
-import os
 import secrets
 import sqlite3
 import time
 
-from agent1 import formal_pipeline, storage
+from agent1 import admin_store, formal_pipeline, storage
 
 from .service import ServiceError
 
@@ -21,17 +19,6 @@ DOMAIN_KEYS = {"VISA_POLICY": "policy_id", "FX_POLICY": "policy_id", "ACCOUNT_TH
 APPLICABLE = {"VISA_POLICY", "FX_POLICY", "TUITION"}
 SESSION_SECONDS = 8 * 3600
 MAX_NOTE = 500
-
-
-def configured_password():
-    password = os.environ.get("AGENT2_ADMIN_PASSWORD")
-    if password:
-        return password
-    try:
-        from local_secrets import AGENT2_ADMIN_PASSWORD
-    except ImportError:
-        return None
-    return AGENT2_ADMIN_PASSWORD or None
 
 
 def _summary(domain, payload):
@@ -57,37 +44,40 @@ def _note(value, required):
 
 
 class AdminConsole:
-    def __init__(self, paths, password, *, clock=time.monotonic):
+    def __init__(self, paths, *, clock=time.monotonic):
         self.paths = paths
-        self._password = password
         self._clock = clock
         self._sessions = {}
 
     # ---------- auth ----------
 
-    def _require_enabled(self):
-        if not self._password:
-            raise ServiceError("ADMIN_DISABLED", "未配置 AGENT2_ADMIN_PASSWORD，审核后台未启用", 503)
+    def _accounts(self, readonly=True):
+        if not self.paths.admin_database.exists():
+            raise ServiceError("ADMIN_UNAVAILABLE", "管理库不存在，请先运行 agent1 db init", 503)
+        return admin_store.session(self.paths, readonly=readonly)
 
-    def login(self, name, password):
-        self._require_enabled()
-        name = name.strip() if isinstance(name, str) else ""
-        if not name or len(name) > 40:
-            raise ServiceError("INVALID_INPUT", "请填写审核人姓名（40 字以内）", 400)
-        if not isinstance(password, str) or not hmac.compare_digest(
-                password.encode("utf-8"), self._password.encode("utf-8")):
-            raise ServiceError("ADMIN_DENIED", "口令错误", 401)
+    def login(self, username, password):
+        username = username.strip() if isinstance(username, str) else ""
+        if not username or not isinstance(password, str) or not password:
+            raise ServiceError("INVALID_INPUT", "请填写用户名和密码", 400)
+        with self._accounts(readonly=False) as db:
+            if not admin_store.authenticate(db, username, password):
+                if not admin_store.list_users(db):
+                    raise ServiceError("ADMIN_NO_ACCOUNTS",
+                                       "尚未创建管理员账号，请先运行 agent2.py admin add <用户名>", 503)
+                raise ServiceError("ADMIN_DENIED", "用户名或密码错误", 401)
         token = secrets.token_urlsafe(32)
-        self._sessions[token] = (name, self._clock() + SESSION_SECONDS)
-        return {"token": token, "admin": name}
+        self._sessions[token] = (username, self._clock() + SESSION_SECONDS)
+        return {"token": token, "admin": username}
 
     def actor_for_token(self, token):
-        self._require_enabled()
         entry = self._sessions.get(token) if token else None
-        if not entry or entry[1] < self._clock():
-            self._sessions.pop(token, None)
-            raise ServiceError("ADMIN_UNAUTHORIZED", "请先登录审核后台", 401)
-        return entry[0]
+        if entry and entry[1] >= self._clock():
+            with self._accounts() as db:
+                if db.execute("SELECT 1 FROM ADMIN_USER WHERE username=?", (entry[0],)).fetchone():
+                    return entry[0]
+        self._sessions.pop(token, None)
+        raise ServiceError("ADMIN_UNAUTHORIZED", "请先登录审核后台", 401)
 
     # ---------- review queue ----------
 
@@ -107,19 +97,18 @@ class AdminConsole:
     def list_reviews(self, domain=None):
         if domain and domain not in DOMAIN_KEYS:
             raise ServiceError("INVALID_INPUT", "未知的域表", 400)
-        sql, params = "SELECT * FROM REVIEW_QUEUE WHERE status='OPEN'", []
+        sql, params = "SELECT * FROM admin.REVIEW_QUEUE", []
         if domain:
-            sql, params = sql + " AND domain_table=?", [domain]
+            sql, params = sql + " WHERE domain_table=?", [domain]
         with self._session() as db:
             rows = db.execute(sql + " ORDER BY created_at DESC", params).fetchall()
             domains = [r[0] for r in db.execute(
-                "SELECT DISTINCT domain_table FROM REVIEW_QUEUE WHERE status='OPEN' ORDER BY domain_table")]
+                "SELECT DISTINCT domain_table FROM admin.REVIEW_QUEUE ORDER BY domain_table")]
         return {"reviews": [self._brief(r) for r in rows], "domains": domains}
 
     def get_review(self, review_id):
         with self._session() as db:
-            row = db.execute("SELECT * FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'",
-                             (review_id,)).fetchone()
+            row = db.execute("SELECT * FROM admin.REVIEW_QUEUE WHERE review_id=?", (review_id,)).fetchone()
             if not row:
                 raise ServiceError("NOT_FOUND", "审核项不存在", 404)
             key = DOMAIN_KEYS.get(row["domain_table"])
@@ -132,8 +121,7 @@ class AdminConsole:
     def _decide(self, review_id, decide):
         try:
             with self._session(readonly=False) as db:
-                if not db.execute("SELECT 1 FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'",
-                                  (review_id,)).fetchone():
+                if not db.execute("SELECT 1 FROM admin.REVIEW_QUEUE WHERE review_id=?", (review_id,)).fetchone():
                     raise ServiceError("NOT_FOUND", "审核项不存在或已处理", 404)
                 return decide(db)
         except ValueError as exc:
@@ -144,9 +132,9 @@ class AdminConsole:
     def approve(self, actor, review_id, note=None):
         note = _note(note, required=False)
         return self._decide(review_id, lambda db: formal_pipeline.apply_review(
-            db, review_id, decided_by=f"admin:{actor}", note=note))
+            db, review_id, decided_by=actor, note=note))
 
     def reject(self, actor, review_id, note):
         note = _note(note, required=True)
         return self._decide(review_id, lambda db: formal_pipeline.reject_review(
-            db, review_id, decided_by=f"admin:{actor}", note=note))
+            db, review_id, decided_by=actor, note=note))
