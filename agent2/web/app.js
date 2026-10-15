@@ -712,6 +712,7 @@ function followUp(q) {
     f.options.forEach((o) => chips.append(h("button", { onclick: () => answerField(q.field, o.value, o.label) }, o.label)));
   } else {
     const input = h("input", { type: f.kind === "date" ? "date" : f.kind === "age" ? "number" : "text", placeholder: f.label });
+    input.dataset.field = q.field;
     const ok = () => {
       const v = readInput(input, q.field);
       if (v !== undefined) answerField(q.field, v, valueLabel(q.field, v));
@@ -722,11 +723,26 @@ function followUp(q) {
   return h("div", { class: "fq" }, h("div", { class: "q" }, q.text), chips);
 }
 
+// Values typed into follow-up inputs but not confirmed with Enter / 确定 are submitted
+// together with the answer the user clicked, so they are never silently dropped.
+function typedAnswers(except) {
+  const out = {};
+  document.querySelectorAll(".fq input[data-field]").forEach((el) => {
+    const code = el.dataset.field;
+    if (code === except || code in out) return;
+    const v = readInput(el, code);
+    if (v !== undefined && !Number.isNaN(v)) out[code] = v;
+  });
+  return out;
+}
+
 async function answerField(code, value, text) {
-  if (S.busy) return;
+  if (S.busy) { toast("上一条还在处理中，请稍候再提交"); return; }
+  const typed = typedAnswers(code);
+  const fields = { ...typed, [code]: value };
   try {
     S.profile = await api("PATCH", `/profiles/${S.pid}`,
-      { expected_version: S.profile.version, fields: { [code]: value } });
+      { expected_version: S.profile.version, fields });
   } catch (e) {
     if (e.code === "VERSION_CONFLICT") {
       await refreshProfile();
@@ -738,10 +754,12 @@ async function answerField(code, value, text) {
     return;
   }
   syncProfile();
-  S.missing.delete(code);
+  Object.keys(fields).forEach((c) => S.missing.delete(c));
   drawSheet();
   drawSide();
-  await send(`${label(code)}：${text}`, null, [code]);
+  const parts = Object.entries(typed).map(([c, v]) => `${label(c)}：${valueLabel(c, v)}`);
+  parts.push(`${label(code)}：${text}`);
+  await send(parts.join("；"), null, Object.keys(fields));
 }
 
 function proposalCard(p) {
