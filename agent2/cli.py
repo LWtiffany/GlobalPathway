@@ -1,7 +1,8 @@
 """Agent 2 命令行。
 
   serve [--host H] [--port P] [--db PATH] [--knowledge agent1|fixture] [--agent1-env ENV]
-                                            启动 S1 HTTP API（默认读 Agent1 已发布政策）
+                                            启动 S1 HTTP API（默认读 Agent1 已发布政策）；
+                                            /admin 审核后台口令取自 AGENT2_ADMIN_PASSWORD
   eval-m06 [--repeat N] [--out PATH]        跑 M06 分模块测试指标，保存逐条记录
 """
 import argparse
@@ -16,6 +17,10 @@ DATA = ROOT / "data" / "agent2"
 
 
 def cmd_serve(args):
+    from agent1 import config as agent1_config
+    from agent1.environment import paths_for
+
+    from .admin import AdminConsole, configured_password
     from .api import serve
     from .service import Agent2Service
     from .store import Store
@@ -28,8 +33,12 @@ def cmd_serve(args):
         knowledge = FixtureKnowledgeRead.from_file()
     db = Path(args.db)
     db.parent.mkdir(parents=True, exist_ok=True)
+    password = configured_password()
+    admin = AdminConsole(paths_for(agent1_config.ROOT, args.agent1_env), password)
     service = Agent2Service(Store(db), knowledge,
-                            demo_enabled=os.environ.get("AGENT2_DEMO", "1") == "1")
+                            demo_enabled=os.environ.get("AGENT2_DEMO", "1") == "1", admin=admin)
+    if not password:
+        print("[agent2] 未配置 AGENT2_ADMIN_PASSWORD，/admin 审核后台不可登录")
     serve(service, args.host, args.port)
     return 0
 

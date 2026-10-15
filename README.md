@@ -89,7 +89,7 @@ Agent1 是「留学准备助手」的公共知识采集与发布组件，按《�
 - **兼容存储**：本地 SQLite（`data/development/legacy/agent1.sqlite3`）；原文快照在同目录下的 `snapshots/`。
 - **兼容门控问题清单**：写入 `data/development/legacy/gate/problems.json`；新结构用 `quality_issues` 表。
 - **调度**：进程内定时器（`schedule` 命令），SQLite 任务记录 + 租约防重 + 失败退避重试。
-- **审核与发布**：CLI 完成（管理端 API/UI 为后续工作）。高风险新增/变更必须人工批准后才发布（ADR-002）。
+- **审核与发布**：CLI 完成；审核另有网页后台 `/admin`（发布仍走 CLI）。高风险新增/变更必须人工批准后才发布（ADR-002）。
 - 模型只产出候选知识：无发布权限、无数据库写权限、网页内容仅作数据。
 
 ## Setup
@@ -175,6 +175,17 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 - `withdraw` 立即失效并强制理由；`rollback` 核对旧版本新鲜度后才恢复指针（`--force` 可越过）。
 - 发布/撤回/回滚/审核全部写入 `audit_log` 与 `knowledge_events`。
 
+### 网页审核后台（`/admin`）
+
+```bash
+AGENT2_ADMIN_PASSWORD='...' .venv/bin/python agent2.py serve --port 8787   # 打开 http://127.0.0.1:8787/admin
+```
+
+- 展示 Agent1 `REVIEW_QUEUE`（待审核 / 已入库 / 已驳回，可按域表筛选）；详情含进审核原因、拟写入字段（与库内现值对比）、新增/移除材料、逐条证据原文。
+- **批准入库**调用 `formal_pipeline.apply_review` 写入正式库；**驳回**须填原因，数据不入库。两者都记录 `decided_by=admin:<审核人>`、时间与备注；写入失败（目标行冲突、违反约束、项目不存在）整笔回滚并在页面提示。
+- 目前可批准的域表：签证政策、购汇政策、学费；其他域表只能驳回。批准只写工作表，发布到 Agent2 仍走 `publish`。
+- 口令取自环境变量 `AGENT2_ADMIN_PASSWORD`（或 `local_secrets.py` 中同名变量）；未配置时后台不可登录。管理员 token 只存在服务进程内存（8 小时过期），与用户 token 互不通用。
+
 ## Agent2 只读知识接口
 
 ```powershell
@@ -197,7 +208,7 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 - 覆盖英国、美国、香港学生签证材料。Agent1 的适用条件按 `CONDITION_MAP` 映射到 Profile 字段：英国（年龄、资金来源、停留是否满 6 个月、是否居住在 TB 名单国家）、香港（本地保证人是院校还是个人、保证人是否永久性居民、申请人常住地、是否持有香港身份证）；任一条件键映射不了（如美国“面签前须缴签证费”），该材料整条显示为“待核实”，不当作无条件需要。
 - `--knowledge fixture` 与 `eval-m06` 使用 `agent2/fixtures/knowledge_uk_student_visa.json` 合成知识夹具（`synthetic=true`，来源地址为 `example.invalid`），回答带【模拟资料】标识。
 - 回答生成目前用模板（M09 `template-v1`），没有接 LLM；M06 的模型追问建议是可选钩子，模型给出的字段仍要过条件表复核。
-- 前端（`agent2/web/`，原生 HTML/CSS/JS，无构建）由 `serve` 同址托管，浏览器打开 `http://127.0.0.1:8787/` 即可：模拟登录（学生/家长 × 英/港/美预设）→ 上方案表（基本信息 9 格、汇款/开户/签证/信用卡四类建议、用户待办）· 下对话（进度、追问选项、引用抽屉、质量状态、有帮助/信息有误/继续补充）；另有 `#/onboarding` 建档、`#/report/<profile_id>` 打印报告、`#/feedback` 纠错记录。四类建议里目前只有签证有已发布资料，汇款/开户/信用卡显示「待补充」；管理端页面未做。
+- 前端（`agent2/web/`，原生 HTML/CSS/JS，无构建）由 `serve` 同址托管，浏览器打开 `http://127.0.0.1:8787/` 即可：模拟登录（学生/家长 × 英/港/美预设）→ 上方案表（基本信息 9 格、汇款/开户/签证/信用卡四类建议、用户待办）· 下对话（进度、追问选项、引用抽屉、质量状态、有帮助/信息有误/继续补充）；另有 `#/onboarding` 建档、`#/report/<profile_id>` 打印报告、`#/feedback` 纠错记录。四类建议里目前只有签证有已发布资料，汇款/开户/信用卡显示「待补充」；数据审核后台见 `/admin`（上文「网页审核后台」）。
 
 ## 设计要点与已知边界
 
@@ -206,7 +217,7 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 - **失败重试**：可重试故障（网络/模型超时/限流/输出非法）按退避重试至来源 `max_retries`；401/403、验证码、登录墙、配置错误不重试，运行记 `FAILED` 且原因可见（`runs` 命令）。
 - **GOV.UK 资金页规则降级器**：仅在 LLM 瞬时超时且已登记该降级器时启用，输出同样过门控；配置错误不会触发降级。
 - 快照按规范化 Markdown 取指纹，导航/版式变动可能改变指纹（由字段级 diff 过滤，不产生新版本）。
-- **本轮未实现**（设计已列后续工作包）：PDF 与授权接口采集（A1.2）、管理端 API/UI（7.3）、独立消息队列与 outbox 投递、Agent2 详细设计、跨源冲突的审核界面、其他业务类的专用 Schema（汇款/开户/信用卡目前走通用事实 Schema）。
+- **本轮未实现**（设计已列后续工作包）：PDF 与授权接口采集（A1.2）、管理端的发布/撤回 UI（7.3；审核已有 `/admin`）、独立消息队列与 outbox 投递、Agent2 详细设计、其他业务类的专用 Schema（汇款/开户/信用卡目前走通用事实 Schema）。
 - 历史混合库保留原位；开发兼容管道使用独立 legacy 库；正式新结构见本文开头与数据库方案。
 
 ## 目录

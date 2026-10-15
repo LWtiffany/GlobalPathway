@@ -41,11 +41,13 @@ def utc_now():
 
 
 class Agent2Service:
-    def __init__(self, store, knowledge, *, clock=utc_now, generator=None, demo_enabled=True, suggest=None):
+    def __init__(self, store, knowledge, *, clock=utc_now, generator=None, demo_enabled=True, suggest=None,
+                 admin=None):
         self.store = store
         self.knowledge = knowledge
         self.clock = clock
         self.demo_enabled = demo_enabled
+        self.admin = admin
         self.runner = Agent2Runner(knowledge, clock, generator=generator, suggest=suggest)
 
     def _ts(self):

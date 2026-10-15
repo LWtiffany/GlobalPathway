@@ -1,6 +1,7 @@
 """Agent 2 HTTP API（S1 最小集，标准库实现）。
 
 认证：POST /v1/demo/login 得到 token，之后带 `Authorization: Bearer <token>`。
+审核后台（/v1/admin/*）另用 POST /v1/admin/login 的管理员 token，与用户 token 互不通用。
 错误统一为 {"code","message","retryable","trace_id"}，不含内部堆栈。
 """
 import json
@@ -164,6 +165,39 @@ def delete_plan_item(service, user_id, body, query, item_id):
     return 200, service.delete_plan_item(user_id, item_id)
 
 
+# ---------- 审核后台（/admin）：Agent1 REVIEW_QUEUE ----------
+
+def _admin(service):
+    if service.admin is None:
+        raise ServiceError("ADMIN_DISABLED", "审核后台未启用", 503)
+    return service.admin
+
+
+@route("POST", r"/v1/admin/login", auth=False)
+def admin_login(service, user_id, body, query):
+    return 200, _admin(service).login(body.get("name"), body.get("password"))
+
+
+@route("GET", r"/v1/admin/reviews", auth="admin")
+def admin_reviews(service, actor, body, query):
+    return 200, _admin(service).list_reviews(query.get("status", "OPEN"), query.get("domain") or None)
+
+
+@route("GET", r"/v1/admin/reviews/(?P<review_id>[\w-]+)", auth="admin")
+def admin_review(service, actor, body, query, review_id):
+    return 200, _admin(service).get_review(review_id)
+
+
+@route("POST", r"/v1/admin/reviews/(?P<review_id>[\w-]+)/approve", auth="admin")
+def admin_approve(service, actor, body, query, review_id):
+    return 200, _admin(service).approve(actor, review_id, body.get("note"))
+
+
+@route("POST", r"/v1/admin/reviews/(?P<review_id>[\w-]+)/reject", auth="admin")
+def admin_reject(service, actor, body, query, review_id):
+    return 200, _admin(service).reject(actor, review_id, body.get("note"))
+
+
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
                 ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
@@ -179,6 +213,8 @@ STATIC_HEADERS = {
 def static_file(path):
     """Resolve a GET path to a file under agent2/web (SPA: unknown paths fall back to index.html)."""
     relative = path.partition("?")[0].lstrip("/") or "index.html"
+    if relative.rstrip("/") == "admin":
+        relative = "admin.html"
     candidate = (WEB_ROOT / relative).resolve()
     if not candidate.is_relative_to(WEB_ROOT) or not candidate.is_file():
         candidate = WEB_ROOT / "index.html"
@@ -208,7 +244,10 @@ def dispatch(service, method, path, headers, raw_body):
                 user_id = None
                 if auth:
                     token = (headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-                    user_id = service.user_for_token(token)
+                    if auth == "admin":
+                        user_id = _admin(service).actor_for_token(token)
+                    else:
+                        user_id = service.user_for_token(token)
                 status, payload = handler(service, user_id, body, query, **match.groupdict())
                 payload = _dump(payload)
                 if isinstance(payload, dict):
