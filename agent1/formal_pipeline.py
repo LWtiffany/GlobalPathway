@@ -101,8 +101,11 @@ def register_sources(path=None, paths=None):
     """校验 sources.json（兼容旧 CLI 名称；不再写库）。返回来源数量。"""
     sources = load_sources(path)
     for source in sources.values():
-        if source.get("schema_type") not in ("visa_policy", "fx_policy", "generic_facts"):
+        if source.get("schema_type") not in ("visa_policy", "fx_policy", "tuition", "generic_facts"):
             raise ValueError(f"来源 {source['id']} 的 schema_type 未知")
+        if source["schema_type"] == "tuition":
+            from . import tuition_pipeline
+            tuition_pipeline.validate_registry(source)
     return len(sources)
 
 
@@ -584,6 +587,9 @@ def apply_review(connection, review_id, *, decided_by, note=None):
     if row["domain_table"] == "FX_POLICY":
         from . import fx_pipeline
         return fx_pipeline.apply_review(connection, row, decided_by=decided_by, note=note)
+    if row["domain_table"] == "TUITION":
+        from . import tuition_pipeline
+        return tuition_pipeline.apply_review(connection, row, decided_by=decided_by, note=note)
     if row["domain_table"] != "VISA_POLICY":
         raise ValueError(f"暂不支持审核域表：{row['domain_table']}")
     payload = json.loads(row["proposed_value"])
@@ -628,12 +634,13 @@ def _extract_sections(source, paths, markdown, previous_md, profile, full, setti
                       extractor=None):
     extractor = extractor or formal_extract
     patch_class = getattr(extractor, "PATCH", VisaPatch)
-    sections = incremental.split_sections(markdown)
+    split = getattr(extractor, "split_sections", incremental.split_sections)
+    sections = split(markdown)
     old_sections = []
     if previous_md:
         old_file = _snapshot_file(paths, previous_md)
         if old_file.is_file():
-            old_sections = incremental.split_sections(old_file.read_text(encoding="utf-8"))
+            old_sections = split(old_file.read_text(encoding="utf-8"))
     affected, _removed = incremental.changed_sections(old_sections, sections)
     if full:
         affected = {section.key for section in sections}
@@ -663,12 +670,14 @@ def _capture(source, paths, settings, client_box, *, fresh, full, extractor=None
 
     fresh=False reuses the last snapshot without touching the network (sibling
     pages of the region that were not asked to be re-checked). extractor is a
-    module with extraction_profile / extract_section / PATCH (default: visa).
+    module with extraction_profile / extract_section / PATCH (default: visa) and
+    optionally source_notes(source), the per-source input of its cache profile.
     """
     extractor = extractor or formal_extract
     source_id = source["id"]
     state = _load_state(paths, source_id)
-    notes = source.get("extraction_notes")
+    notes = (extractor.source_notes(source) if hasattr(extractor, "source_notes")
+             else source.get("extraction_notes"))
     now = datetime.now(timezone.utc)
     epoch = state.get("cache_epoch", "initial")
     status = "CACHED"
@@ -920,8 +929,11 @@ def scan(source_id, *, paths=None, full=False):
     if source.get("schema_type") == "fx_policy":
         from . import fx_pipeline
         return fx_pipeline.scan(source_id, paths=paths, full=full)
+    if source.get("schema_type") == "tuition":
+        from . import tuition_pipeline
+        return tuition_pipeline.scan(source_id, paths=paths, full=full)
     if source.get("schema_type") != "visa_policy":
-        raise ValueError("新管道目前只支持 visa_policy / fx_policy；其他领域待专用抽取器接入")
+        raise ValueError("新管道目前只支持 visa_policy / fx_policy / tuition；其他领域待专用抽取器接入")
     crawl.validate_source(source)
     region = source.get("region") or "unknown"
     outcome = _scan_region(region, paths=paths, fresh_ids={source_id}, full=full, sources=sources)

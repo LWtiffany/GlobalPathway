@@ -147,7 +147,7 @@ remark 只承载说明；如何从说明拆条件是后续抽取与门控服务�
 已发布内容与新结果的比较忽略 remark 措辞和材料顺序，保留条件变化；
 字段/材料本次漏抽不会自动删除。疑似资格/豁免只留在 remark 时进入待解决候选。
 所有候选都不自动发布；完整的变化进入审核，质量问题需解决后才能进入后续发布阶段。
-当前没有后台定时服务接入新入口，须显式调用 `scan <来源>`、`scan-region <区域>` 或 `scan-fx <国家>`。
+当前没有后台定时服务接入新入口，须显式调用 `scan <来源>`、`scan-region <区域>`、`scan-fx <国家>` 或 `scan-tuition <学校>`。
 
 #### 按区域合并（当前 VISA_POLICY 实现）
 
@@ -213,6 +213,38 @@ VISA_POLICY 行，`policy_id = uuid5("visa_policy:<country>:student:<scope>")`�
 - 写入策略与 VISA_POLICY 相同：空列直接补齐，已有值变化/材料变化/材料消失进入 UPDATE 审核，
   `review approve` 写回 FX_POLICY 并刷新 FX_EVIDENCE。
 - `FX_EVIDENCE` 与 POLICY_EVIDENCE 同结构（外键指向 FX_POLICY）。外汇知识尚未接入发布面。
+
+#### 学费（SCHOOL / PROGRAM / TUITION，迁移 006_tuition，当前实现）
+
+`schema_type: tuition` 的来源由 `scan-tuition [学校|区域|all]`（或 `scan <来源>`）处理
+（`agent1/tuition_pipeline.py`、`agent1/tuition_extract.py`），抓取/快照/章节缓存同上。扫描单位是一所学校
+（同一 `school.key` 的全部学费页面）。
+
+- 学校与项目由操作者在来源里登记，不由模型产生：`school`（key / name / country / city）、
+  `programs`（key / name / level / `aliases` 页面上的项目标签 / `exclude` 不算该项目的相似标签）。
+  扫描时按登记 upsert：`school_id = uuid5("school:<key>")`，`program_id = uuid5("program:<school>:<program>")`。
+- 迁移 006 给 TUITION 增加 `fee_status`（home / international / local / non_local / all）、
+  `fee_basis`（per_year / total / per_credit / per_term）、`study_mode`（full_time / part_time / any）与 `remark`；
+  页面未说明的保持 NULL。一行是一个价格点，
+  `tuition_id = uuid5(program_id | academic_year | fee_status | fee_basis | study_mode)`。
+  `academic_year` 统一为 `2026/27` 形式。
+- 模型只把章节里的学费行对应到登记的项目 key；`program="all"` 表示页面写明适用于全部项目
+  （展开到该来源登记的每个项目，项目专属行优先）。学费页常把金额单独放在标题里、项目标签在标题前，
+  所以抽取前把相邻小章节合并到分块上限（3500 字符）以内，标签和金额进同一次模型调用。
+- 门控：金额引用须逐字在快照中，且含该金额与币种符号（£ / HK$ / HKD / US$ …，与模型币种一致）；
+  **金额前最近的已登记项目标签**必须是所声称的项目（与 exclude 重叠的标签不算，避免「Non-STEM」里的
+  「STEM Faculties」）；上下文引用须在金额附近（折叠后 1000 字符内），学年、学生类别须由金额引用或附近
+  上下文引用标明；计费口径/修读方式无原文支撑时记为 NULL（warning）。未通过的行丢弃并记 warning 级 GATE_ISSUE。
+- 页面本身不写学年/口径时（UCL 费用表只在 URL 里有 `year=`），来源可登记 `defaults`
+  （academic_year / fee_status / fee_basis / study_mode）与 `defaults_note`，取值直接采用并写入 TUITION.remark。
+- 写入策略：新价格点直接插入；金额相同只刷新证据；已有金额变化、或同一价格点跨页面金额不同，进入
+  REVIEW_QUEUE（`domain_table='TUITION'`，后者另记 `source_id = school:<key>` 的 GATE_ISSUE）；
+  `review approve` 写回 TUITION 并刷新证据。页面不再列出的价格点保留（旧学年作为历史）。
+- `TUITION_EVIDENCE`：`kind='amount'` 为含金额的引用，`kind='context'` 为项目/类别/学年等上下文引用。
+- 当前来源：UCL 研究生授课费用表 2026/27 与 2027/28（计算机系 3 个 MSc；课程页受 Cloudflare 挑战保护，
+  改用费用表页）、港大主站本科学费概览（2026-27）、港大招生处学费表（2027/28）、中大研究院 RPg 学费。
+  NYU 的学分费率只在 Bursar PDF 里，GSAS/Bursar 网页被反爬拦截，暂无可抓 HTML 来源（PDF 抓取未实现）。
+  学费知识尚未接入发布面与 Agent2。
 
 #### 发布面（迁移 004_publication，当前实现）
 

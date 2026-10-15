@@ -127,6 +127,35 @@ class FxPatch(BaseModel):
     documents: list[FxDocument] = []
 
 
+# ---------- 学费：SCHOOL / PROGRAM / TUITION ----------
+
+FEE_STATUSES = ("home", "international", "local", "non_local", "all")
+FEE_BASES = ("per_year", "total", "per_credit", "per_term")
+STUDY_MODES = ("full_time", "part_time", "any")
+
+
+class TuitionRow(BaseModel):
+    """一个学费价格点；program 是来源登记里的项目 key（或 all = 该来源登记的全部项目）。"""
+    model_config = ConfigDict(extra="ignore")
+
+    program: str
+    academic_year: str | None = None
+    fee_status: Literal[FEE_STATUSES] | None = None
+    fee_basis: Literal[FEE_BASES] | None = None
+    study_mode: Literal[STUDY_MODES] | None = None
+    amount: int | float | str
+    currency: str | None = None
+    evidence_quote: str
+    # 页面上标明项目 / 学生类别 / 学年的原文片段（须在金额附近）
+    context_quotes: list[str] = []
+    source_id: str | None = None
+    snapshot_id: str | None = None
+
+
+class TuitionPatch(BaseModel):
+    rows: list[TuitionRow] = []
+
+
 class GateProblem(BaseModel):
     """兼容管道门控问题，写入当前环境 legacy/gate/problems.json。"""
     problem_id: str
@@ -164,6 +193,6 @@ class SourceConfig(BaseModel):
     freshness_sla_hours: int | None = None
     content_selector: str | None = None
     dynamic: bool = False
-    schema_type: str = "generic_facts"  # visa_policy / fx_policy / generic_facts
+    schema_type: str = "generic_facts"  # visa_policy / fx_policy / tuition / generic_facts
     max_retries: int = 2
     notes: str = ""

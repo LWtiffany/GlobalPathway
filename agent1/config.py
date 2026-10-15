@@ -28,7 +28,7 @@ configure_environment()
 # Schema 与提示词版本：随处理逻辑升级而递增，用于受控重处理（设计 2.5）
 SCHEMA_VERSION = "1.1.0"
 PROMPT_VERSIONS = {"visa_policy": "visa-policies-12", "generic_facts": "generic-facts-1",
-                   "fx_policy": "fx-policies-1"}
+                   "fx_policy": "fx-policies-1", "tuition": "tuition-1"}
 
 # 各资料类别的默认检查周期与新鲜度 SLA（PRD 7.4：活动/费率/外汇 24h，签证/开户 7 天，学校费用入学季 7 天）
 CATEGORY_DEFAULTS = {

@@ -3,7 +3,8 @@
 ## 数据库重构进度（2026-10-13）
 
 已实现环境隔离、新数据库结构、按区域增量扫描、人工审核以及签证政策的发布面（迁移 `004_publication`）；
-留学购汇（外汇）政策已可抓取入库（`scan-fx`，迁移 `005_fx_evidence`）。
+留学购汇（外汇）政策已可抓取入库（`scan-fx`，迁移 `005_fx_evidence`）；
+项目学费已可抓取入库（`scan-tuition`，迁移 `006_tuition`）。
 开发库已初始化并抓取 UK / US / CN-HK 学生签证；正式库未初始化，也未迁移旧数据。
 下方「日常使用」之后的原使用说明描述的是兼容管道。
 
@@ -32,15 +33,21 @@
 .\.venv\Scripts\python.exe agent1.py --env development scan-region UK --full    # 单个区域强制全量重抽
 .\.venv\Scripts\python.exe agent1.py --env development scan uk_student_visa_money
 .\.venv\Scripts\python.exe agent1.py --env development scan-fx CN               # 中国留学购汇（外汇）来源 -> FX_POLICY
+.\.venv\Scripts\python.exe agent1.py --env development scan-tuition             # 学费来源（学校 key / 区域 / all）-> TUITION
 ```
 
 macOS / Linux：`./run-agent1.sh`（= `scan-region all`）、`./run-agent1.sh UK --force`、`./run-agent1.sh uk_student_visa_money`、
-`./run-agent1.sh scan-fx CN`。
+`./run-agent1.sh scan-fx CN`、`./run-agent1.sh scan-tuition ucl`。
 
 外汇（`schema_type: fx_policy`，外汇局总局/分局与工行、中行、汇丰页面）按国家合并为两行 `FX_POLICY`
 （`purpose_code` = tuition / living），材料写入 `POLICY_DOCUMENT`（`policy_domain='fx_policy'`），
 逐字证据写入 `FX_EVIDENCE`；跨页面冲突与已有值变化进入 `REVIEW_QUEUE`（`FX_POLICY`）。
 外汇知识目前只入工作表，尚未接入发布面与 Agent2。
+
+学费（`schema_type: tuition`）按学校扫描：来源登记学校与项目（`school` / `programs`），模型只把页面上的
+学费行对应到登记的项目，每个价格点（学年 + 学生类别 + 计费口径 + 修读方式）一行 `TUITION`，
+逐字证据写入 `TUITION_EVIDENCE`；金额变化与跨页面冲突进入 `REVIEW_QUEUE`（`TUITION`）。
+当前覆盖 UCL（计算机系 MSc）、港大本科、中大 RPg；NYU 暂无可抓网页来源。学费同样尚未接入发布面与 Agent2。
 
 签证政策按区域合并：同一目的地的所有官方页面（概览、资金、英语、材料、医疗附加费、TB、费用表等，
 见 `sources.json`）合并进同一组 `VISA_POLICY` 行（按 国家 + 就读地范围 唯一），字段级门控，

@@ -4,6 +4,7 @@
   scan ID [--full]            新库：检查一个来源并重写其区域的 VISA_POLICY
   scan-region R [--full|--reapply]  新库：检查区域 R（UK / US / CN-HK / all）的全部签证来源
   scan-fx [C] [--full|--reapply]    新库：检查国家 C（默认 all）的全部外汇（留学购汇）来源，写 FX_POLICY
+  scan-tuition [S] [--full|--reapply]  新库：检查学校 S（school key / 区域 / 默认 all）的学费来源，写 SCHOOL/PROGRAM/TUITION
   sources sync|list|set      来源登记（设计 2.4 / A1.1）
   run ID [ID...] [--force]    手动触发完整管道
   schedule [--once] [--source ID...]   进程内定时调度
@@ -28,7 +29,7 @@ import sys
 
 from . import config, db as db_mod, gate as gate_mod, knowledge as knowledge_mod, pipeline, scheduler, versions
 from . import storage
-from . import formal_pipeline, fx_pipeline, publication
+from . import formal_pipeline, fx_pipeline, publication, tuition_pipeline
 from .environment import ENVIRONMENTS, cleanup_test_storage
 
 
@@ -62,6 +63,11 @@ def cmd_scan_region(args):
 
 def cmd_scan_fx(args):
     _print_json(fx_pipeline.scan_all(args.country, full=args.full, reapply=args.reapply))
+    return 0
+
+
+def cmd_scan_tuition(args):
+    _print_json(tuition_pipeline.scan_all(args.target, full=args.full, reapply=args.reapply))
     return 0
 
 
@@ -401,6 +407,13 @@ def build_parser():
     p.add_argument("--reapply", action="store_true",
                    help="不联网：用已存快照和缓存抽取，按当前合并/门控规则重新入库")
 
+    p = sub.add_parser("scan-tuition", help="新库：检查学费来源并写 SCHOOL/PROGRAM/TUITION；不发布")
+    p.add_argument("target", nargs="?", default="all",
+                   help="学校（sources.json school.key，如 ucl）或区域（UK / CN-HK）；默认 all")
+    p.add_argument("--full", action="store_true", help="强制整页抓取和完整重新抽取")
+    p.add_argument("--reapply", action="store_true",
+                   help="不联网：用已存快照和缓存抽取，按当前合并/门控规则重新入库")
+
     p = sub.add_parser("sources", help="来源登记管理")
     p.add_argument("sources_command", choices=["sync", "list", "set"])
     p.add_argument("source_id", nargs="?", help="set 时的来源 ID")
@@ -492,7 +505,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         config.configure_environment(args.env)
-        formal = ("db", "scan", "scan-region", "scan-fx", "review", "publish", "publication")
+        formal = ("db", "scan", "scan-region", "scan-fx", "scan-tuition", "review", "publish", "publication")
         target = config.DB_PATH if args.command in formal else config.LEGACY_DB_PATH
         print(f"[agent1] environment={config.ENVIRONMENT} database={target}", file=sys.stderr)
         if args.command == "db":
@@ -503,6 +516,8 @@ def main(argv=None):
             return cmd_scan_region(args)
         if args.command == "scan-fx":
             return cmd_scan_fx(args)
+        if args.command == "scan-tuition":
+            return cmd_scan_tuition(args)
         if args.command == "review":
             return cmd_review(args)
         if args.command == "publish":

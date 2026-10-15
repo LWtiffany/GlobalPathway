@@ -7,6 +7,7 @@
 #   ./run-agent1.sh uk_student_visa      # 指定来源（同区域其他页面沿用上次快照）
 #   ./run-agent1.sh UK --force           # 强制全量重抽（--full）
 #   ./run-agent1.sh scan-fx CN           # 增量抓取中国留学购汇（外汇）来源，写 FX_POLICY
+#   ./run-agent1.sh scan-tuition         # 增量抓取学费来源（可指定学校 ucl / 区域 UK），写 TUITION
 #   ./run-agent1.sh review list           # 任意 agent1 子命令都可用
 #
 # 需要先在 local_secrets.py 中填入 AGENT1_LLM_API_KEY。
@@ -33,7 +34,7 @@ export CRAWL4_AI_BASE_DIRECTORY="${CRAWL4_AI_BASE_DIRECTORY:-$PWD/data/_crawl4ai
 
 # 第一个参数若是已知子命令则原样转发；否则视为「来源 ID」，自动补 `scan`
 # （新 schema 管道：抽取结果直写 domain 表；变更/门控失败进 REVIEW_QUEUE 人工审核）
-KNOWN_COMMANDS="db scan scan-region scan-fx review publish publication sources run schedule runs gate knowledge status visa show"
+KNOWN_COMMANDS="db scan scan-region scan-fx scan-tuition review publish publication sources run schedule runs gate knowledge status visa show"
 REGIONS="all UK US CN-HK"
 
 if [ "$#" -eq 0 ]; then
@@ -47,7 +48,7 @@ fi
 # --force 是 --full 的别名
 args=()
 for arg in "$@"; do
-  if [ "$arg" = "--force" ] && { [ "$1" = "scan" ] || [ "$1" = "scan-region" ] || [ "$1" = "scan-fx" ]; }; then
+  if [ "$arg" = "--force" ] && { [ "$1" = "scan" ] || [ "$1" = "scan-region" ] || [ "$1" = "scan-fx" ] || [ "$1" = "scan-tuition" ]; }; then
     args+=("--full")
   else
     args+=("$arg")

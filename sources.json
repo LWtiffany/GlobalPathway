@@ -518,5 +518,267 @@
     "max_retries": 2,
     "notes": "银行办理口径：超额度留学汇款需护照签证、录取通知书与费用通知单",
     "extraction_notes": "Only extract rules for study-abroad (留学) purchase or remittance and general personal quota rules; ignore other remittance purposes and fees."
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "ucl_pgt_fees_2026",
+    "name": "UCL Graduate taught fees 2026/27 (Computer Science department)",
+    "url": "https://www.ucl.ac.uk/digital-presence-services/degree-fees-drupal/index.php?coursetype=graduate_taught&year=2026",
+    "allowed_host": "www.ucl.ac.uk",
+    "region": "UK",
+    "access_basis": "公开官方网页（UCL 费用表）；课程页受 Cloudflare 挑战保护，改用不受保护的费用表页",
+    "content_selector": "#computerscience, #datascienceandmachinelearning, #machinelearning",
+    "school": {
+      "key": "ucl",
+      "name": "University College London (UCL)",
+      "country": "UK",
+      "city": "London"
+    },
+    "programs": [
+      {
+        "key": "msc_computer_science",
+        "name": "Computer Science MSc",
+        "level": "postgraduate_taught",
+        "aliases": [
+          "Computer Science, MSc"
+        ]
+      },
+      {
+        "key": "msc_data_science_ml",
+        "name": "Data Science and Machine Learning MSc",
+        "level": "postgraduate_taught",
+        "aliases": [
+          "Data Science and Machine Learning, MSc"
+        ]
+      },
+      {
+        "key": "msc_machine_learning",
+        "name": "Machine Learning MSc",
+        "level": "postgraduate_taught",
+        "aliases": [
+          "Machine Learning, MSc"
+        ],
+        "exclude": [
+          "Data Science and Machine Learning"
+        ]
+      }
+    ],
+    "defaults": {
+      "academic_year": "2026/27",
+      "fee_basis": "per_year"
+    },
+    "defaults_note": "URL 参数 year=2026 对应 2026/27 学年；UCL 费用表列示每学年学费，项目块内不重复写学年与计费口径",
+    "notes": "UK = home，Overseas = international；Part-time N/A 不入库"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "ucl_pgt_fees_2027",
+    "name": "UCL Graduate taught fees 2027/28 (Computer Science department)",
+    "url": "https://www.ucl.ac.uk/digital-presence-services/degree-fees-drupal/index.php?coursetype=graduate_taught&year=2027",
+    "allowed_host": "www.ucl.ac.uk",
+    "region": "UK",
+    "access_basis": "公开官方网页（UCL 费用表）；课程页受 Cloudflare 挑战保护，改用不受保护的费用表页",
+    "content_selector": "#computerscience, #datascienceandmachinelearning, #machinelearning",
+    "school": {
+      "key": "ucl",
+      "name": "University College London (UCL)",
+      "country": "UK",
+      "city": "London"
+    },
+    "programs": [
+      {
+        "key": "msc_computer_science",
+        "name": "Computer Science MSc",
+        "level": "postgraduate_taught",
+        "aliases": [
+          "Computer Science, MSc"
+        ]
+      },
+      {
+        "key": "msc_data_science_ml",
+        "name": "Data Science and Machine Learning MSc",
+        "level": "postgraduate_taught",
+        "aliases": [
+          "Data Science and Machine Learning, MSc"
+        ]
+      },
+      {
+        "key": "msc_machine_learning",
+        "name": "Machine Learning MSc",
+        "level": "postgraduate_taught",
+        "aliases": [
+          "Machine Learning, MSc"
+        ],
+        "exclude": [
+          "Data Science and Machine Learning"
+        ]
+      }
+    ],
+    "defaults": {
+      "academic_year": "2027/28",
+      "fee_basis": "per_year"
+    },
+    "defaults_note": "URL 参数 year=2027 对应 2027/28 学年；UCL 费用表列示每学年学费，项目块内不重复写学年与计费口径",
+    "notes": "UK = home，Overseas = international；Part-time N/A 不入库"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "hku_ug_fees_overview",
+    "name": "HKU Tuition Fee & Scholarships (undergraduate, 2026-27 cohort)",
+    "url": "https://www.hku.hk/en/admission-aid/tuition-fee-scholarships",
+    "allowed_host": "www.hku.hk",
+    "region": "CN-HK",
+    "access_basis": "公开官方网页（港大主站）；服务端渲染",
+    "content_selector": ".listingaccordion",
+    "school": {
+      "key": "hku",
+      "name": "The University of Hong Kong (HKU)",
+      "country": "CN-HK",
+      "city": "Hong Kong"
+    },
+    "programs": [
+      {
+        "key": "ug_stem",
+        "name": "Undergraduate programmes (STEM Faculties and Schools)",
+        "level": "undergraduate",
+        "aliases": [
+          "STEM Faculties"
+        ],
+        "exclude": [
+          "Non-STEM"
+        ]
+      },
+      {
+        "key": "ug_non_stem",
+        "name": "Undergraduate programmes (Non-STEM Faculties and Schools)",
+        "level": "undergraduate",
+        "aliases": [
+          "Non-STEM"
+        ]
+      }
+    ],
+    "extraction_notes": "All fees on this page are undergraduate tuition. The fee for local students applies to every programme (program \"all\").",
+    "notes": "港大主站本科学费概览：本地 / 非本地非 STEM / 非本地 STEM"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "hku_ug_fees_admissions",
+    "name": "HKU Admissions Fees (undergraduate, 2027/28)",
+    "url": "https://www.admissions.hku.hk/fees-and-scholarships/fees",
+    "allowed_host": "www.admissions.hku.hk",
+    "region": "CN-HK",
+    "access_basis": "公开官方网页（港大招生处）；服务端渲染",
+    "content_selector": ".xenyo-1col-section",
+    "school": {
+      "key": "hku",
+      "name": "The University of Hong Kong (HKU)",
+      "country": "CN-HK",
+      "city": "Hong Kong"
+    },
+    "programs": [
+      {
+        "key": "ug_stem",
+        "name": "Undergraduate programmes (STEM Faculties and Schools)",
+        "level": "undergraduate",
+        "aliases": [
+          "STEM Faculties"
+        ],
+        "exclude": [
+          "Non-STEM"
+        ]
+      },
+      {
+        "key": "ug_non_stem",
+        "name": "Undergraduate programmes (Non-STEM Faculties and Schools)",
+        "level": "undergraduate",
+        "aliases": [
+          "Non-STEM"
+        ]
+      }
+    ],
+    "extraction_notes": "All fees on this page are undergraduate tuition. The fee for subsidised local students applies to every programme (program \"all\"). MBBS / BDS fees are not configured.",
+    "notes": "招生处学费表：下一学年本科学费（含 STEM / 非 STEM / MBBS）"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "cuhk_rpg_fees",
+    "name": "CUHK Graduate School Fees (research postgraduate)",
+    "url": "https://www.gs.cuhk.edu.hk/admissions/scholarships-fees/fees",
+    "allowed_host": "www.gs.cuhk.edu.hk",
+    "region": "CN-HK",
+    "access_basis": "公开官方网页（中大研究院）；服务端渲染",
+    "content_selector": "article.node--type-page",
+    "school": {
+      "key": "cuhk",
+      "name": "The Chinese University of Hong Kong (CUHK)",
+      "country": "CN-HK",
+      "city": "Hong Kong"
+    },
+    "programs": [
+      {
+        "key": "rpg",
+        "name": "Research Postgraduate Programmes (MPhil / PhD)",
+        "level": "research_postgraduate",
+        "aliases": [
+          "Research Postgraduate Programmes"
+        ]
+      }
+    ],
+    "notes": "研究型研究生（MPhil/PhD）学费；授课型研究生见各项目页（未登记）"
   }
 ]

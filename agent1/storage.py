@@ -12,7 +12,7 @@ from . import config
 
 MIGRATIONS = Path(__file__).with_name("migrations")
 REQUIRED_MIGRATIONS = ("001_domain_schema", "002_review_queue", "003_gate_issue", "004_publication",
-                       "005_fx_evidence")
+                       "005_fx_evidence", "006_tuition")
 
 
 def _open(paths, mode):
