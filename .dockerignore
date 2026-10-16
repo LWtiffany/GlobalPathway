@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+*.sqlite3
+*.db
+*.bak
+data/
+scripts/
+tests/
+docs/
+admin_console/local_secrets.py
+admin_console/web/app.css
+.env
+.env.*
+.github/

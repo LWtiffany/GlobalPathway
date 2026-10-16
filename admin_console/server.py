@@ -50,6 +50,11 @@ def _dump(value):
     return json.loads(json.dumps(value, ensure_ascii=False, default=_json_default))
 
 
+@route("GET", r"/healthz", auth=False)
+def healthz(console, actor, body, query):
+    return 200, {"status": "ok"}
+
+
 @route("POST", r"/v1/admin/login", auth=False)
 def admin_login(console, actor, body, query):
     return 200, console.login(body.get("username"), body.get("password"))

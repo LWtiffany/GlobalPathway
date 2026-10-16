@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir "psycopg[binary]>=3.2,<4"
+
+COPY admin_console ./admin_console
+
+ENV ADMIN_HOST=0.0.0.0 \
+    ADMIN_PORT=8765
+EXPOSE 8765
+
+CMD ["python", "-m", "admin_console", "serve"]

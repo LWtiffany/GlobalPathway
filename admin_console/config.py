@@ -12,9 +12,10 @@ def _env(name, default=None):
     return value if value not in (None, "") else default
 
 
-# PostgreSQL (reachable through scripts/start_team03_pg_tunnel.ps1 -> 127.0.0.1:15432)
-DB_HOST = _env("ADMIN_DB_HOST", "127.0.0.1")
-DB_PORT = int(_env("ADMIN_DB_PORT", "15432"))
+# PostgreSQL (Aliyun RDS, reachable over the competition ECS private network).
+# Local development can override ADMIN_DB_HOST/ADMIN_DB_PORT to route through an SSH tunnel.
+DB_HOST = _env("ADMIN_DB_HOST", "pgm-2ze9t2uh39o1115k.rwlb.rds.aliyuncs.com")
+DB_PORT = int(_env("ADMIN_DB_PORT", "5432"))
 DB_NAME = _env("ADMIN_DB_NAME", "team03")
 DB_USER = _env("ADMIN_DB_USER", "team03")
 DB_PASSWORD = _env("ADMIN_DB_PASSWORD", "")

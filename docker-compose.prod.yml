@@ -1,0 +1,9 @@
+services:
+  admin:
+    image: ${ADMIN_IMAGE:-globalpathway/admin:prod}
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+    network_mode: host
+    env_file: .env
+    restart: unless-stopped
