@@ -18,4 +18,4 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Smoke tests (import + config + schema)
-        run: python -m unittest tests.test_smoke -v
+        run: python -m unittest discover -s tests -p test_smoke.py -v
