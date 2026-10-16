@@ -144,8 +144,11 @@ def make_handler(console):
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path.startswith("/v1/"):
-                return self._handle("GET")
+            path = self.path.partition("?")[0]
+            # 已注册的 GET API 路由（含 /healthz）优先，避免被静态文件 fallback 吞掉
+            for verb, pattern, handler, auth in ROUTES:
+                if verb == "GET" and pattern.match(path):
+                    return self._handle("GET")
             found = static_file(self.path)
             if not found:
                 return self._handle("GET")

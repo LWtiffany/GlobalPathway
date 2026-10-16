@@ -4,7 +4,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir "psycopg[binary]>=3.2,<4"
+RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ "psycopg[binary]>=3.2,<4"
 
 COPY admin_console ./admin_console
 
