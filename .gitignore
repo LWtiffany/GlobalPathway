@@ -1,0 +1,14 @@
+.venv/
+data/*
+!data/development/
+!data/agent2/
+data/**/*.bak-*
+data/agent2/eval/
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+__pycache__/
+.pytest_cache/
+.workbuddy/
+.env
+local_secrets.py
