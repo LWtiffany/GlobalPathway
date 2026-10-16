@@ -58,6 +58,7 @@ jobs:
           username: ${{ secrets.ECS_USER }}
           key: ${{ secrets.ECS_DEPLOY_KEY }}
           envs: GH_TOKEN
+          command_timeout: 30m
           script: |
             set -e
             cd /srv/globalpathway
