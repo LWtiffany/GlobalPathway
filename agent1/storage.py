@@ -1,127 +1,367 @@
-"""Formal schema lifecycle for the clean domain schema (db-er-diagram.mmd).
+"""PostgreSQL storage for the formal domain schema (db-er-diagram.mmd).
 
-The database holds only the domain tables plus schema_migrations and REVIEW_QUEUE;
-pipeline mechanics live in JSON files under the environment data directory.
+权威存储从 SQLite 迁移到阿里云 RDS PostgreSQL。表结构与 admin_console 已建
+的 PG schema 保持一致（域表在 public schema，审核队列在 admin schema）；agent1
+独有的发布/门控/审计表用 PG 方言补齐。所有 DDL 幂等，可安全重复执行。
 """
-import hashlib
-import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
 
 from . import config
 
-MIGRATIONS = Path(__file__).with_name("migrations")
-REQUIRED_MIGRATIONS = ("001_domain_schema", "002_review_queue", "003_gate_issue", "004_publication",
-                       "005_fx_evidence", "006_tuition", "007_tuition_catalog", "008_tuition_rate")
+# 域表（public schema，与 admin_console 一致）+ admin schema（admin_user /
+# review_queue）+ agent1 独有表（GATE_ISSUE / 发布面 / 账户与信用卡域）。
+SCHEMA = """
+CREATE SCHEMA IF NOT EXISTS admin;
+
+CREATE TABLE IF NOT EXISTS DOCUMENT (
+    doc_id   TEXT PRIMARY KEY,
+    code     TEXT NOT NULL,
+    name_zh  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS VISA_POLICY (
+    policy_id                TEXT PRIMARY KEY,
+    country                  TEXT    NOT NULL,
+    policy_type              TEXT    NOT NULL,
+    title                    TEXT    NOT NULL,
+    effective_from           DATE,
+    effective_to             DATE,
+    cas_required             INTEGER CHECK (cas_required IN (0,1)),
+    i20_required             INTEGER CHECK (i20_required IN (0,1)),
+    funds_tuition_unpaid     NUMERIC,
+    funds_tuition_currency   TEXT    CHECK (funds_tuition_currency IS NULL OR funds_tuition_currency ~ '^[A-Z]{3}$'),
+    funds_living_monthly     NUMERIC,
+    funds_living_currency    TEXT    CHECK (funds_living_currency  IS NULL OR funds_living_currency  ~ '^[A-Z]{3}$'),
+    funds_living_months      INTEGER,
+    funds_holding_days       INTEGER,
+    funds_doc_max_age_days   INTEGER,
+    funds_owner_allowed      TEXT,
+    english_level            TEXT,
+    tb_test_required         INTEGER CHECK (tb_test_required IN (0,1)),
+    health_surcharge         NUMERIC,
+    apply_window_days        INTEGER,
+    processing_days          INTEGER,
+    visa_fee                 NUMERIC,
+    applies_to_city          TEXT,
+    remark                   TEXT,
+    CHECK (funds_tuition_unpaid IS NULL OR funds_tuition_currency IS NOT NULL),
+    CHECK (funds_living_monthly  IS NULL OR funds_living_currency  IS NOT NULL),
+    CHECK (effective_from IS NULL OR effective_to IS NULL OR effective_from <= effective_to)
+);
+
+CREATE TABLE IF NOT EXISTS FX_POLICY (
+    policy_id                TEXT PRIMARY KEY,
+    country                  TEXT    NOT NULL,
+    policy_type              TEXT    NOT NULL,
+    title                    TEXT    NOT NULL,
+    effective_from           DATE,
+    effective_to             DATE,
+    annual_quota_amount      NUMERIC,
+    annual_quota_currency    TEXT    CHECK (annual_quota_currency IS NULL OR annual_quota_currency ~ '^[A-Z]{3}$'),
+    quota_reset              TEXT,
+    over_quota_allowed       INTEGER CHECK (over_quota_allowed IN (0,1)),
+    purpose_code             TEXT,
+    tuition_direct_to_school INTEGER CHECK (tuition_direct_to_school IN (0,1)),
+    remitter_relation        TEXT,
+    can_use_family_quota     INTEGER CHECK (can_use_family_quota IN (0,1)),
+    remark                   TEXT,
+    CHECK (annual_quota_amount IS NULL OR annual_quota_currency IS NOT NULL),
+    CHECK (effective_from IS NULL OR effective_to IS NULL OR effective_from <= effective_to)
+);
+
+CREATE TABLE IF NOT EXISTS POLICY_DOCUMENT (
+    policy_id      TEXT NOT NULL,
+    policy_domain  TEXT NOT NULL CHECK (policy_domain IN ('visa_policy','fx_policy')),
+    doc_id         TEXT NOT NULL,
+    required       INTEGER CHECK (required IS NULL OR required IN (0,1)),
+    "condition"    TEXT,
+    CHECK (required IS NOT NULL OR "condition" IS NULL),
+    PRIMARY KEY (policy_id, policy_domain, doc_id)
+);
+
+CREATE TABLE IF NOT EXISTS ACCOUNT_THRESHOLD (
+    threshold_id          TEXT PRIMARY KEY,
+    bank_code             TEXT    NOT NULL,
+    product_code          TEXT    NOT NULL,
+    country               TEXT    NOT NULL,
+    min_age               INTEGER,
+    min_deposit           NUMERIC,
+    min_deposit_currency  TEXT    CHECK (min_deposit_currency IS NULL OR min_deposit_currency ~ '^[A-Z]{3}$'),
+    residency_note        TEXT,
+    CHECK (min_deposit IS NULL OR min_deposit_currency IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS ACCOUNT_DOC (
+    threshold_id   TEXT NOT NULL,
+    doc_id         TEXT NOT NULL,
+    required       INTEGER NOT NULL CHECK (required IN (0,1)),
+    PRIMARY KEY (threshold_id, doc_id)
+);
+
+CREATE TABLE IF NOT EXISTS CREDIT_CARD (
+    card_id                  TEXT PRIMARY KEY,
+    issuer                   TEXT    NOT NULL,
+    product_name             TEXT    NOT NULL,
+    annual_fee               NUMERIC,
+    fee_waiver_condition     TEXT,
+    target_audience          TEXT,
+    overseas_cashback_rate   NUMERIC CHECK (overseas_cashback_rate IS NULL OR (overseas_cashback_rate BETWEEN 0 AND 1)),
+    fx_markup_rate           NUMERIC CHECK (fx_markup_rate         IS NULL OR (fx_markup_rate         BETWEEN 0 AND 1)),
+    eligibility              TEXT,
+    perks                    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS SCHOOL (
+    school_id   TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    country     TEXT,
+    city        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS PROGRAM (
+    program_id   TEXT PRIMARY KEY,
+    school_id    TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    level        TEXT,
+    scope        TEXT CHECK (scope IS NULL OR scope IN ('programme','division','school_wide'))
+);
+
+CREATE TABLE IF NOT EXISTS TUITION (
+    tuition_id     TEXT PRIMARY KEY,
+    program_id     TEXT NOT NULL,
+    academic_year  TEXT,
+    amount         NUMERIC,
+    currency       TEXT CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$'),
+    fee_status     TEXT CHECK (fee_status IS NULL OR fee_status IN
+                       ('home','international','local','non_local','in_state','out_of_state','all')),
+    fee_basis      TEXT CHECK (fee_basis IS NULL OR fee_basis IN ('per_year','total','per_credit','per_term')),
+    study_mode     TEXT CHECK (study_mode IS NULL OR study_mode IN ('full_time','part_time','any')),
+    rate_label     TEXT,
+    remark         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS POLICY_EVIDENCE (
+    evidence_id  TEXT PRIMARY KEY,
+    policy_id    TEXT NOT NULL,
+    target       TEXT NOT NULL CHECK (target LIKE 'field:%' OR target LIKE 'document:%'),
+    kind         TEXT NOT NULL CHECK (kind IN ('value','condition')),
+    source_id    TEXT NOT NULL,
+    snapshot_id  TEXT NOT NULL,
+    quote        TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policy_evidence_target ON POLICY_EVIDENCE(policy_id, target);
+
+CREATE TABLE IF NOT EXISTS FX_EVIDENCE (
+    evidence_id  TEXT PRIMARY KEY,
+    policy_id    TEXT NOT NULL,
+    target       TEXT NOT NULL CHECK (target LIKE 'field:%' OR target LIKE 'document:%'),
+    kind         TEXT NOT NULL CHECK (kind IN ('value','condition')),
+    source_id    TEXT NOT NULL,
+    snapshot_id  TEXT NOT NULL,
+    quote        TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fx_evidence_target ON FX_EVIDENCE(policy_id, target);
+
+CREATE TABLE IF NOT EXISTS TUITION_EVIDENCE (
+    evidence_id  TEXT PRIMARY KEY,
+    tuition_id   TEXT NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('amount','context')),
+    source_id    TEXT NOT NULL,
+    snapshot_id  TEXT NOT NULL,
+    quote        TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tuition_evidence ON TUITION_EVIDENCE(tuition_id);
+
+CREATE TABLE IF NOT EXISTS GATE_ISSUE (
+    issue_id         TEXT PRIMARY KEY,
+    source_id        TEXT NOT NULL,
+    snapshot_id      TEXT,
+    scope            TEXT,
+    check_name       TEXT NOT NULL,
+    severity         TEXT NOT NULL CHECK (severity IN ('error','warning')),
+    field            TEXT,
+    value            TEXT,
+    quote            TEXT,
+    reason           TEXT NOT NULL,
+    suggested_action TEXT,
+    issue_key        TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED','IGNORED')),
+    first_seen_at    TEXT NOT NULL,
+    last_seen_at     TEXT NOT NULL,
+    resolved_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_gate_issue_source_status ON GATE_ISSUE(source_id, status);
+CREATE INDEX IF NOT EXISTS idx_gate_issue_key ON GATE_ISSUE(source_id, issue_key);
+
+CREATE TABLE IF NOT EXISTS POLICY_REVISION (
+    revision_id   TEXT PRIMARY KEY,
+    policy_id     TEXT NOT NULL,
+    revision_no   INTEGER NOT NULL CHECK (revision_no >= 1),
+    facts_hash    TEXT NOT NULL,
+    payload_json  TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE (policy_id, revision_no)
+);
+
+CREATE TABLE IF NOT EXISTS POLICY_PUBLICATION (
+    policy_id        TEXT PRIMARY KEY,
+    revision_id      TEXT NOT NULL,
+    status           TEXT NOT NULL CHECK (status IN ('ACTIVE','WITHDRAWN')),
+    published_by     TEXT NOT NULL,
+    published_at     TEXT NOT NULL,
+    verified_at      TEXT NOT NULL,
+    withdrawn_by     TEXT,
+    withdrawn_at     TEXT,
+    withdraw_reason  TEXT,
+    CHECK (status = 'ACTIVE' OR (withdrawn_by IS NOT NULL AND withdrawn_at IS NOT NULL
+                                 AND withdraw_reason IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS PUBLICATION_EVENT (
+    event_id              TEXT PRIMARY KEY,
+    policy_id             TEXT NOT NULL,
+    action                TEXT NOT NULL CHECK (action IN ('PUBLISH','REVERIFY','WITHDRAW')),
+    revision_id           TEXT,
+    previous_revision_id  TEXT,
+    actor                 TEXT NOT NULL,
+    reason                TEXT,
+    detail_json           TEXT,
+    at                    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_publication_event_policy ON PUBLICATION_EVENT(policy_id, at);
+
+CREATE TABLE IF NOT EXISTS admin.admin_user (
+    username        TEXT PRIMARY KEY CHECK (length(username) BETWEEN 1 AND 40),
+    password_hash   TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL,
+    last_login_at   TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS admin.review_queue (
+    review_id       TEXT PRIMARY KEY,
+    domain_table    TEXT NOT NULL CHECK (domain_table IN ('VISA_POLICY','FX_POLICY','ACCOUNT_THRESHOLD','CREDIT_CARD','SCHOOL','PROGRAM','TUITION')),
+    record_key      TEXT NOT NULL,
+    action          TEXT NOT NULL CHECK (action IN ('CREATE','UPDATE')),
+    field_path      TEXT,
+    proposed_value  TEXT,
+    evidence_json   TEXT,
+    reason          TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    UNIQUE (domain_table, record_key, action)
+);
+
+-- POLICY_REVISION 不可变、PUBLICATION_EVENT 只追加、发布必须指向同一 policy 的修订。
+CREATE OR REPLACE FUNCTION _immutable_guard() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'this table is immutable';
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS policy_revision_no_update ON POLICY_REVISION;
+CREATE TRIGGER policy_revision_no_update BEFORE UPDATE ON POLICY_REVISION
+    FOR EACH ROW EXECUTE FUNCTION _immutable_guard();
+DROP TRIGGER IF EXISTS policy_revision_no_delete ON POLICY_REVISION;
+CREATE TRIGGER policy_revision_no_delete BEFORE DELETE ON POLICY_REVISION
+    FOR EACH ROW EXECUTE FUNCTION _immutable_guard();
+DROP TRIGGER IF EXISTS publication_event_no_update ON PUBLICATION_EVENT;
+CREATE TRIGGER publication_event_no_update BEFORE UPDATE ON PUBLICATION_EVENT
+    FOR EACH ROW EXECUTE FUNCTION _immutable_guard();
+DROP TRIGGER IF EXISTS publication_event_no_delete ON PUBLICATION_EVENT;
+CREATE TRIGGER publication_event_no_delete BEFORE DELETE ON PUBLICATION_EVENT
+    FOR EACH ROW EXECUTE FUNCTION _immutable_guard();
+
+CREATE OR REPLACE FUNCTION _publication_own_revision() RETURNS trigger AS $$
+DECLARE
+    rev_policy TEXT;
+BEGIN
+    SELECT policy_id INTO rev_policy FROM POLICY_REVISION WHERE revision_id = NEW.revision_id;
+    IF rev_policy IS DISTINCT FROM NEW.policy_id THEN
+        RAISE EXCEPTION 'publication must point at a revision of the same policy';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS policy_publication_own_revision_insert ON POLICY_PUBLICATION;
+CREATE TRIGGER policy_publication_own_revision_insert BEFORE INSERT ON POLICY_PUBLICATION
+    FOR EACH ROW EXECUTE FUNCTION _publication_own_revision();
+DROP TRIGGER IF EXISTS policy_publication_own_revision_update ON POLICY_PUBLICATION;
+CREATE TRIGGER policy_publication_own_revision_update BEFORE UPDATE ON POLICY_PUBLICATION
+    FOR EACH ROW EXECUTE FUNCTION _publication_own_revision();
+"""
 
 
-def _open(paths, mode):
-    paths.validate()
-    connection = sqlite3.connect(paths.database.as_uri() + f"?mode={mode}", uri=True, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA busy_timeout=30000")
-    return connection
+def _connect():
+    """Open a connection to the shared PostgreSQL database."""
+    return psycopg.connect(
+        host=config.DB_HOST, port=config.DB_PORT, dbname=config.DB_NAME,
+        user=config.DB_USER, password=config.DB_PASSWORD,
+        row_factory=dict_row, connect_timeout=10,
+    )
 
 
-def _check_schema(connection, allow_empty=False):
-    tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if not tables and allow_empty:
-        return
-    if "schema_migrations" not in tables:
-        raise RuntimeError("目标不是新结构数据库（缺少 schema_migrations）；请先 db init。")
-    applied = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
-    missing = set(REQUIRED_MIGRATIONS) - applied
-    if missing:
-        raise RuntimeError(f"数据库缺少迁移：{', '.join(sorted(missing))}；请先 db init。")
-
-
-def initialize(paths=None):
-    """Explicit, transactional, checksummed schema initialization; inserts no business data."""
-    paths = paths or config.PATHS
-    paths.validate()
-    paths.data.mkdir(parents=True, exist_ok=True)
-    connection = _open(paths, "rwc")
+def _prepare(connection):
+    """幂等建表（autocommit 下执行多语句 DDL）。"""
+    connection.autocommit = True
     try:
-        connection.execute("BEGIN IMMEDIATE")
-        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if tables and "schema_migrations" not in tables:
-            raise RuntimeError("目标库存在旧结构残留，拒绝原地升级；请归档后重新 db init。")
-        connection.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
-            version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)""")
-        files = sorted(MIGRATIONS.glob("[0-9]*.sql"))
-        if not files:
-            raise RuntimeError("缺少数据库结构迁移文件")
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        applied = {row["version"]: row["checksum"] for row in connection.execute("SELECT * FROM schema_migrations")}
-        if set(applied) - {file.stem for file in files}:
-            raise RuntimeError("数据库包含当前代码未知的迁移，拒绝降级使用")
-        for file in files:
-            sql = file.read_text(encoding="utf-8")
-            checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
-            if file.stem in applied:
-                if applied[file.stem] != checksum:
-                    raise RuntimeError(f"已应用的迁移被修改：{file.name}；必须新增迁移文件")
-                continue
-            # executescript would implicitly commit; execute complete statements individually.
-            statement = ""
-            for line in sql.splitlines(keepends=True):
-                statement += line
-                if sqlite3.complete_statement(statement):
-                    connection.execute(statement)
-                    statement = ""
-            if statement.strip():
-                raise RuntimeError(f"迁移末尾有不完整 SQL：{file.name}")
-            connection.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (file.stem, checksum, now))
+        connection.execute(SCHEMA)
+    finally:
+        connection.autocommit = False
+
+
+@contextmanager
+def session(paths=None, readonly=True):
+    """读写连接。readonly=True 只读事务；False 可写事务。
+
+    paths 参数保留以兼容旧调用签名；数据库地址由 config 提供，与本地路径无关。
+    """
+    connection = _connect()
+    try:
+        _prepare(connection)
+        connection.read_only = readonly
+        yield connection
         connection.commit()
     except Exception:
         connection.rollback()
         raise
     finally:
         connection.close()
-    paths.snapshots.mkdir(parents=True, exist_ok=True)
+
+
+def initialize(paths=None):
+    """幂等初始化 schema（建表 + 触发器），无业务数据写入。"""
+    connection = _connect()
+    try:
+        _prepare(connection)
+    finally:
+        connection.close()
     return status(paths)
 
 
-@contextmanager
-def session(paths=None, readonly=True):
-    """No DDL on reads. New services must explicitly request a write transaction."""
-    paths = paths or config.PATHS
-    connection = _open(paths, "ro" if readonly else "rw")
-    try:
-        _check_schema(connection)
-        if readonly:
-            connection.execute("PRAGMA query_only=ON")
-        else:
-            connection.execute("BEGIN IMMEDIATE")
-        yield connection
-        if not readonly:
-            connection.commit()
-    except Exception:
-        if not readonly:
-            connection.rollback()
-        raise
-    finally:
-        connection.close()
-
-
 def status(paths=None):
-    paths = paths or config.PATHS
-    paths.validate()
-    result = {"environment": paths.environment, "database": str(paths.database),
-              "initialized": False}
-    if not paths.database.exists():
-        return result
-    with session(paths) as connection:
-        result["initialized"] = True
-        result["migrations"] = [dict(row) for row in connection.execute("SELECT * FROM schema_migrations ORDER BY version")]
-        result["tables"] = [row[0] for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-        result["open_reviews"] = connection.execute(
-            "SELECT COUNT(*) FROM REVIEW_QUEUE WHERE status='OPEN'").fetchone()[0]
-        result["open_gate_issues"] = connection.execute(
-            "SELECT COUNT(*) FROM GATE_ISSUE WHERE status='OPEN'").fetchone()[0]
-        result["publications"] = dict(connection.execute(
-            "SELECT status, COUNT(*) FROM POLICY_PUBLICATION GROUP BY status").fetchall())
+    """返回连接与表清单（不依赖本地路径）。"""
+    result = {
+        "environment": config.ENVIRONMENT,
+        "database": f"{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}",
+        "initialized": False,
+    }
+    try:
+        with session(readonly=True) as connection:
+            result["initialized"] = True
+            result["tables"] = [r["tablename"] for r in connection.execute(
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname IN ('public','admin') ORDER BY tablename")]
+            result["open_reviews"] = connection.execute(
+                "SELECT COUNT(*) AS n FROM admin.review_queue").fetchone()["n"]
+            result["open_gate_issues"] = connection.execute(
+                "SELECT COUNT(*) AS n FROM GATE_ISSUE WHERE status='OPEN'").fetchone()["n"]
+            result["publications"] = dict(connection.execute(
+                "SELECT status, COUNT(*) AS n FROM POLICY_PUBLICATION GROUP BY status").fetchall())
+    except Exception as exc:  # noqa: BLE001 - status 是诊断接口，失败不抛出
+        result["error"] = f"{type(exc).__name__}: {exc}"
     return result

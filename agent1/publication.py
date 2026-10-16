@@ -67,11 +67,11 @@ def _required(value):
 
 def build(connection, paths, policy_id, sources):
     """Seal the working row. Returns (payload, facts_hash, problems)."""
-    row = _row(connection, "SELECT * FROM VISA_POLICY WHERE policy_id=?", (policy_id,))
+    row = _row(connection, "SELECT * FROM VISA_POLICY WHERE policy_id=%s", (policy_id,))
     if row is None:
         raise PublishError(f"没有签证政策：{policy_id}")
     evidence = {}
-    for ev in _rows(connection, """SELECT * FROM POLICY_EVIDENCE WHERE policy_id=?
+    for ev in _rows(connection, """SELECT * FROM POLICY_EVIDENCE WHERE policy_id=%s
                                    ORDER BY target, kind, source_id, quote""", (policy_id,)):
         evidence.setdefault(ev["target"], []).append(ev)
     texts, problems, used = {}, [], set()
@@ -108,7 +108,7 @@ def build(connection, paths, policy_id, sources):
     documents, facts_documents = [], []
     for doc in _rows(connection, """SELECT d.doc_id, d.code, d.name_zh, pd.required, pd."condition"
             FROM POLICY_DOCUMENT pd JOIN DOCUMENT d USING (doc_id)
-            WHERE pd.policy_id=? AND pd.policy_domain='visa_policy'
+            WHERE pd.policy_id=%s AND pd.policy_domain='visa_policy'
             ORDER BY d.code, d.name_zh""", (policy_id,)):
         items = evidence.get(f"document:{doc['doc_id']}", [])
         label = f"材料 {doc['name_zh']}"
@@ -165,7 +165,7 @@ def _open_gate_issues(connection, country, sources):
     ids = [s["id"] for s in sources.values()
            if s.get("schema_type") == "visa_policy" and (s.get("region") or "unknown") == country]
     ids.append(f"region:{country}")
-    placeholders = ",".join("?" for _ in ids)
+    placeholders = ",".join("%s" for _ in ids)
     return _rows(connection, f"""SELECT issue_id, source_id, severity, field, reason FROM GATE_ISSUE
         WHERE status='OPEN' AND source_id IN ({placeholders})
         ORDER BY source_id, severity, field""", ids)
@@ -175,14 +175,14 @@ def _event(connection, policy_id, action, *, actor, revision_id=None, previous=N
            reason=None, detail=None):
     connection.execute("""INSERT INTO PUBLICATION_EVENT
         (event_id, policy_id, action, revision_id, previous_revision_id, actor, reason, detail_json, at)
-        VALUES (?,?,?,?,?,?,?,?,?)""",
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (f"pubev-{uuid.uuid4().hex}", policy_id, action, revision_id, previous, actor, reason,
          _canonical(detail) if detail is not None else None, _now().isoformat()))
 
 
 def _current(connection, policy_id):
     return _row(connection, """SELECT p.*, r.facts_hash, r.revision_no FROM POLICY_PUBLICATION p
-        JOIN POLICY_REVISION r USING (revision_id) WHERE p.policy_id=?""", (policy_id,))
+        JOIN POLICY_REVISION r USING (revision_id) WHERE p.policy_id=%s""", (policy_id,))
 
 
 def _source_ids(payload):
@@ -196,8 +196,8 @@ def _check(connection, paths, policy_id, sources, ack_warnings):
     problems += stale
     if verified_at is None and not stale:
         problems.append("没有任何可追溯的证据来源")
-    for review in _rows(connection, """SELECT review_id FROM REVIEW_QUEUE
-            WHERE record_key=? AND status='OPEN'""", (policy_id,)):
+    for review in _rows(connection, """SELECT review_id FROM admin.review_queue
+            WHERE record_key=%s""", (policy_id,)):
         problems.append(f"审核项 {review['review_id']} 尚未处理")
     issues = _open_gate_issues(connection, payload["policy"]["country"], sources)
     errors = [i for i in issues if i["severity"] == "error"]
@@ -253,24 +253,24 @@ def _publish_one(connection, paths, policy_id, sources, *, actor, reason, ack_wa
     current = _current(connection, policy_id)
     if current and current["status"] == "ACTIVE" and current["facts_hash"] == facts_hash:
         newer = max(_parse(current["verified_at"]), _parse(verified_at)).isoformat()
-        connection.execute("UPDATE POLICY_PUBLICATION SET verified_at=? WHERE policy_id=?",
+        connection.execute("UPDATE POLICY_PUBLICATION SET verified_at=%s WHERE policy_id=%s",
                            (newer, policy_id))
         _event(connection, policy_id, "REVERIFY", actor=actor, revision_id=current["revision_id"],
                reason=reason or "发布内容未变化，刷新核验时间")
         return {**result, "result": "unchanged", "revision_id": current["revision_id"],
                 "verified_at": newer}
 
-    revision_no = connection.execute("SELECT COALESCE(MAX(revision_no), 0) + 1 FROM POLICY_REVISION "
-                                     "WHERE policy_id=?", (policy_id,)).fetchone()[0]
+    revision_no = connection.execute("SELECT COALESCE(MAX(revision_no), 0) + 1 AS n FROM POLICY_REVISION "
+                                     "WHERE policy_id=%s", (policy_id,)).fetchone()["n"]
     revision_id = f"rev-{uuid.uuid4().hex}"
     now = _now().isoformat()
     connection.execute("""INSERT INTO POLICY_REVISION
         (revision_id, policy_id, revision_no, facts_hash, payload_json, created_by, created_at)
-        VALUES (?,?,?,?,?,?,?)""",
+        VALUES (%s,%s,%s,%s,%s,%s,%s)""",
         (revision_id, policy_id, revision_no, facts_hash, _canonical(payload), actor, now))
     connection.execute("""INSERT INTO POLICY_PUBLICATION
         (policy_id, revision_id, status, published_by, published_at, verified_at)
-        VALUES (?,?, 'ACTIVE', ?,?,?)
+        VALUES (%s,%s, 'ACTIVE', %s,%s,%s)
         ON CONFLICT(policy_id) DO UPDATE SET revision_id=excluded.revision_id, status='ACTIVE',
             published_by=excluded.published_by, published_at=excluded.published_at,
             verified_at=excluded.verified_at, withdrawn_by=NULL, withdrawn_at=NULL,
@@ -287,10 +287,10 @@ def _publish_one(connection, paths, policy_id, sources, *, actor, reason, ack_wa
 
 def _targets(connection, target, sources):
     if target == "all" or target in visa_regions(sources):
-        sql = "SELECT policy_id FROM VISA_POLICY" + ("" if target == "all" else " WHERE country=?")
+        sql = "SELECT policy_id FROM VISA_POLICY" + ("" if target == "all" else " WHERE country=%s")
         return [r["policy_id"] for r in _rows(connection, sql + " ORDER BY country, title",
                                               () if target == "all" else (target,))]
-    if _row(connection, "SELECT 1 FROM VISA_POLICY WHERE policy_id=?", (target,)):
+    if _row(connection, "SELECT 1 FROM VISA_POLICY WHERE policy_id=%s", (target,)):
         return [target]
     raise PublishError(f"未知的发布目标：{target}（区域 / all / policy_id）")
 
@@ -314,8 +314,8 @@ def withdraw(policy_id, *, actor, reason, paths=None):
         if not current or current["status"] != "ACTIVE":
             raise PublishError(f"{policy_id} 没有生效中的发布")
         now = _now().isoformat()
-        connection.execute("""UPDATE POLICY_PUBLICATION SET status='WITHDRAWN', withdrawn_by=?,
-            withdrawn_at=?, withdraw_reason=? WHERE policy_id=?""", (actor, now, reason, policy_id))
+        connection.execute("""UPDATE POLICY_PUBLICATION SET status='WITHDRAWN', withdrawn_by=%s,
+            withdrawn_at=%s, withdraw_reason=%s WHERE policy_id=%s""", (actor, now, reason, policy_id))
         _event(connection, policy_id, "WITHDRAW", actor=actor, revision_id=current["revision_id"],
                reason=reason)
     return {"policy_id": policy_id, "revision_id": current["revision_id"], "status": "WITHDRAWN"}
@@ -325,7 +325,7 @@ def reverify_region(connection, paths, country, sources):
     """After a scan: refresh verified_at of ACTIVE publications whose facts did not change."""
     results = []
     for pub in _rows(connection, """SELECT p.policy_id FROM POLICY_PUBLICATION p
-            JOIN VISA_POLICY v USING (policy_id) WHERE p.status='ACTIVE' AND v.country=?""", (country,)):
+            JOIN VISA_POLICY v USING (policy_id) WHERE p.status='ACTIVE' AND v.country=%s""", (country,)):
         policy_id = pub["policy_id"]
         current = _current(connection, policy_id)
         _payload, facts_hash, verified_at, problems, _warnings = _check(
@@ -337,7 +337,7 @@ def reverify_region(connection, paths, country, sources):
             results.append({"policy_id": policy_id, "result": "not_reverified",
                             "reason": "；".join(problems)})
         elif _parse(verified_at) > _parse(current["verified_at"]):
-            connection.execute("UPDATE POLICY_PUBLICATION SET verified_at=? WHERE policy_id=?",
+            connection.execute("UPDATE POLICY_PUBLICATION SET verified_at=%s WHERE policy_id=%s",
                                (verified_at, policy_id))
             _event(connection, policy_id, "REVERIFY", actor="scan", revision_id=current["revision_id"],
                    reason="扫描确认已发布事实未变化")
@@ -415,7 +415,7 @@ def search(country=None, policy_type="student", *, now=None, paths=None):
     with storage.session(paths) as connection:
         rows = _rows(connection, """SELECT p.*, r.revision_no, r.payload_json FROM POLICY_PUBLICATION p
             JOIN POLICY_REVISION r USING (revision_id) JOIN VISA_POLICY v USING (policy_id)
-            WHERE p.status='ACTIVE' AND (? IS NULL OR v.country=?) AND v.policy_type=?
+            WHERE p.status='ACTIVE' AND (%s IS NULL OR v.country=%s) AND v.policy_type=%s
             ORDER BY v.country, v.title""", (country, country, policy_type))
     return [_envelope(row, row, now, paths) for row in rows]
 
@@ -429,8 +429,8 @@ def get(policy_id, revision_id, *, now=None, paths=None):
     now = now or _now()
     with storage.session(paths) as connection:
         revision = _row(connection, """SELECT * FROM POLICY_REVISION
-            WHERE revision_id=? AND (? IS NULL OR policy_id=?)""", (revision_id, policy_id, policy_id))
-        pub = revision and _row(connection, "SELECT * FROM POLICY_PUBLICATION WHERE policy_id=?",
+            WHERE revision_id=%s AND (%s IS NULL OR policy_id=%s)""", (revision_id, policy_id, policy_id))
+        pub = revision and _row(connection, "SELECT * FROM POLICY_PUBLICATION WHERE policy_id=%s",
                                 (revision["policy_id"],))
     if revision is None or pub is None:
         return None

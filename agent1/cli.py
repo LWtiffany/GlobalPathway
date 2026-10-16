@@ -225,10 +225,10 @@ def cmd_gate(args):
 def cmd_review(args):
     paths = config.PATHS
     if args.review_command == "issues":
-        sql = "SELECT * FROM GATE_ISSUE WHERE status=?"
+        sql = "SELECT * FROM GATE_ISSUE WHERE status=%s"
         parameters = [args.status]
         if args.source:
-            sql += " AND source_id=?"
+            sql += " AND source_id=%s"
             parameters.append(args.source)
         sql += " ORDER BY source_id, severity, scope, check_name"
         with storage.session(paths) as db:
@@ -255,9 +255,9 @@ def cmd_review(args):
     if args.review_command == "list":
         with storage.session(paths) as db:
             rows = [dict(r) for r in db.execute(
-                "SELECT * FROM REVIEW_QUEUE WHERE status=? ORDER BY created_at", (args.status,))]
+                "SELECT * FROM admin.review_queue ORDER BY created_at")] if args.status == "OPEN" else []
             open_issues = db.execute(
-                "SELECT COUNT(*) FROM GATE_ISSUE WHERE status='OPEN'").fetchone()[0]
+                "SELECT COUNT(*) AS n FROM GATE_ISSUE WHERE status='OPEN'").fetchone()["n"]
         if args.json:
             _print_json(rows)
             return 0
@@ -266,7 +266,7 @@ def cmd_review(args):
             return 0
         for row in rows:
             print(f"{row['review_id']}  {row['domain_table']}.{row['record_key'][:13]}…  "
-                  f"{row['action']:<6} {row['status']:<8} at={row['created_at'][:19]}")
+                  f"{row['action']:<6} {'OPEN':<8} at={row['created_at'][:19]}")
             print(f"    原因：{row['reason'][:160]}")
         if open_issues:
             print(f"\n另：当前有 {open_issues} 条未解决的门控问题，用 `review issues` 查看。")
@@ -276,7 +276,7 @@ def cmd_review(args):
         return 2
     if args.review_command == "show":
         with storage.session(paths) as db:
-            row = db.execute("SELECT * FROM REVIEW_QUEUE WHERE review_id=?",
+            row = db.execute("SELECT * FROM admin.review_queue WHERE review_id=%s",
                              (args.review_id,)).fetchone()
         if not row:
             print(f"没有审核项：{args.review_id}", file=sys.stderr)

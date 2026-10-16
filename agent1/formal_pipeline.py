@@ -223,10 +223,13 @@ def _apply_documents(connection, policy_id, documents):
         if not document["code"].strip():
             continue
         link = _document_link(document)
-        connection.execute("INSERT OR IGNORE INTO DOCUMENT (doc_id, code, name_zh) VALUES (?,?,?)",
+        connection.execute("INSERT INTO DOCUMENT (doc_id, code, name_zh) VALUES (%s,%s,%s) "
+                           "ON CONFLICT (doc_id) DO NOTHING",
                            (link["doc_id"], link["code"], link["name_zh"]))
-        connection.execute("""INSERT OR REPLACE INTO POLICY_DOCUMENT
-            (policy_id, policy_domain, doc_id, required, "condition") VALUES (?,?,?,?,?)""",
+        connection.execute('INSERT INTO POLICY_DOCUMENT '
+                           '(policy_id, policy_domain, doc_id, required, "condition") '
+                           'VALUES (%s,%s,%s,%s,%s) ON CONFLICT (policy_id, policy_domain, doc_id) '
+                           'DO UPDATE SET required=EXCLUDED.required, "condition"=EXCLUDED."condition"',
                            (policy_id, "visa_policy", link["doc_id"], link["required"],
                             link["condition"]))
 
@@ -239,7 +242,7 @@ def _sync_documents(connection, policy_id, documents):
             continue
         link = _document_link(document)
         existing = _row(connection, """SELECT required, "condition" FROM POLICY_DOCUMENT
-            WHERE policy_id=? AND policy_domain='visa_policy' AND doc_id=?""",
+            WHERE policy_id=%s AND policy_domain='visa_policy' AND doc_id=%s""",
             (policy_id, link["doc_id"]))
         if existing is None:
             new.append(document)
@@ -256,14 +259,14 @@ def _vanished_documents(connection, policy_id, named, pages):
     may simply have missed it (the reviewer is told to check before approving removal).
     """
     rows = connection.execute("""SELECT d.doc_id, d.code, d.name_zh FROM POLICY_DOCUMENT pd
-        JOIN DOCUMENT d USING (doc_id) WHERE pd.policy_id=? AND pd.policy_domain='visa_policy'
+        JOIN DOCUMENT d USING (doc_id) WHERE pd.policy_id=%s AND pd.policy_domain='visa_policy'
         ORDER BY d.code, d.name_zh""", (policy_id,))
     vanished = []
     for row in rows:
         if row["doc_id"] in named:
             continue
         quotes = connection.execute("""SELECT source_id, quote FROM POLICY_EVIDENCE
-            WHERE policy_id=? AND target=? AND kind='value'""",
+            WHERE policy_id=%s AND target=%s AND kind='value'""",
             (policy_id, f"document:{row['doc_id']}")).fetchall()
         vanished.append({**dict(row), "still_quoted": any(
             gate.quote_in_markdown(q["quote"], pages.get(q["source_id"], "")) for q in quotes)})
@@ -273,9 +276,9 @@ def _vanished_documents(connection, policy_id, named, pages):
 def _remove_documents(connection, policy_id, documents):
     for document in documents or []:
         connection.execute("""DELETE FROM POLICY_DOCUMENT
-            WHERE policy_id=? AND policy_domain='visa_policy' AND doc_id=?""",
+            WHERE policy_id=%s AND policy_domain='visa_policy' AND doc_id=%s""",
                            (policy_id, document["doc_id"]))
-        connection.execute("DELETE FROM POLICY_EVIDENCE WHERE policy_id=? AND target=?",
+        connection.execute("DELETE FROM POLICY_EVIDENCE WHERE policy_id=%s AND target=%s",
                            (policy_id, f"document:{document['doc_id']}"))
 
 
@@ -284,21 +287,21 @@ def _replace_evidence(connection, policy_id, target, items):
     items = list(dict.fromkeys(i for i in items if all(i)))
     if not items:
         return
-    connection.execute("DELETE FROM POLICY_EVIDENCE WHERE policy_id=? AND target=?",
+    connection.execute("DELETE FROM POLICY_EVIDENCE WHERE policy_id=%s AND target=%s",
                        (policy_id, target))
     now = _now()
     for kind, source_id, snapshot_id, quote in items:
         evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "|".join(
             ("evidence", policy_id, target, kind, source_id, snapshot_id, quote))))
-        connection.execute("""INSERT OR IGNORE INTO POLICY_EVIDENCE
+        connection.execute("""INSERT INTO POLICY_EVIDENCE
             (evidence_id, policy_id, target, kind, source_id, snapshot_id, quote, recorded_at)
-            VALUES (?,?,?,?,?,?,?,?)""",
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (evidence_id) DO NOTHING""",
             (evidence_id, policy_id, target, kind, source_id, snapshot_id, quote, now))
 
 
 def _record_evidence(connection, policy_id, values, evidence, documents):
     """为行里当前保存的取值（与本次支撑的取值相同）刷新逐字证据。"""
-    row = _row(connection, "SELECT * FROM VISA_POLICY WHERE policy_id=?", (policy_id,))
+    row = _row(connection, "SELECT * FROM VISA_POLICY WHERE policy_id=%s", (policy_id,))
     if row is None:
         return
     by_field = {}
@@ -316,7 +319,7 @@ def _record_evidence(connection, policy_id, values, evidence, documents):
             continue
         link = _document_link(document)
         current = _row(connection, """SELECT required, "condition" FROM POLICY_DOCUMENT
-            WHERE policy_id=? AND policy_domain='visa_policy' AND doc_id=?""",
+            WHERE policy_id=%s AND policy_domain='visa_policy' AND doc_id=%s""",
             (policy_id, link["doc_id"]))
         if current is None or (current["required"], current["condition"]) != (link["required"], link["condition"]):
             continue
@@ -330,21 +333,21 @@ def _record_evidence(connection, policy_id, values, evidence, documents):
 
 
 def _enqueue_review(connection, *, table, key, action, payload, evidence, reason):
-    # Dedup: one OPEN review per (table, key, action); repeat scans reuse it but
-    # refresh the reason/evidence so the open item always reflects the latest run.
-    existing = _row(connection, """SELECT review_id FROM REVIEW_QUEUE
-        WHERE domain_table=? AND record_key=? AND action=? AND status='OPEN'""",
+    # Dedup: one review per (table, key, action) via the admin.review_queue UNIQUE
+    # constraint; repeat scans reuse it but refresh the reason/evidence.
+    existing = _row(connection, """SELECT review_id FROM admin.review_queue
+        WHERE domain_table=%s AND record_key=%s AND action=%s""",
         (table, key, action))
     if existing:
-        connection.execute("""UPDATE REVIEW_QUEUE
-            SET proposed_value=?, evidence_json=?, reason=? WHERE review_id=?""",
+        connection.execute("""UPDATE admin.review_queue
+            SET proposed_value=%s, evidence_json=%s, reason=%s WHERE review_id=%s""",
             (_json(payload), _json(evidence), reason, existing["review_id"]))
         return existing["review_id"]
     review_id = _id("review")
-    connection.execute("""INSERT INTO REVIEW_QUEUE
+    connection.execute("""INSERT INTO admin.review_queue
         (review_id, domain_table, record_key, action, field_path, proposed_value,
-         evidence_json, reason, status, created_at)
-        VALUES (?,?,?,?,?,?,?,?, 'OPEN', ?)""",
+         evidence_json, reason, created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (review_id, table, key, action, None, _json(payload),
          _json(evidence), reason, _now()))
     return review_id
@@ -370,10 +373,10 @@ def _persist_gate_issues(connection, source, snapshot_id, report):
         key = _gate_issue_key(problem)
         seen_keys.append(key)
         existing = _row(connection, """SELECT issue_id FROM GATE_ISSUE
-            WHERE source_id=? AND issue_key=? AND status='OPEN'""", (source_id, key))
+            WHERE source_id=%s AND issue_key=%s AND status='OPEN'""", (source_id, key))
         if existing:
-            connection.execute("""UPDATE GATE_ISSUE SET last_seen_at=?, snapshot_id=?
-                WHERE issue_id=?""", (now, snapshot_id, existing["issue_id"]))
+            connection.execute("""UPDATE GATE_ISSUE SET last_seen_at=%s, snapshot_id=%s
+                WHERE issue_id=%s""", (now, snapshot_id, existing["issue_id"]))
             if existing["issue_id"] not in written:
                 written.append(existing["issue_id"])
             continue
@@ -382,20 +385,20 @@ def _persist_gate_issues(connection, source, snapshot_id, report):
             (issue_id, source_id, snapshot_id, scope, check_name, severity, field,
              value, quote, reason, suggested_action, issue_key, status,
              first_seen_at, last_seen_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'OPEN', ?, ?)""",
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, 'OPEN', %s, %s)""",
             (issue_id, source_id, snapshot_id, problem.get("scope"), problem["check"],
              problem["severity"], problem.get("field"), problem.get("value"),
              problem.get("quote"), problem["reason"], problem.get("suggested_action"),
              key, now, now))
         written.append(issue_id)
     if seen_keys:
-        placeholders = ",".join("?" for _ in seen_keys)
-        connection.execute(f"""UPDATE GATE_ISSUE SET status='RESOLVED', resolved_at=?
-            WHERE source_id=? AND status='OPEN' AND issue_key NOT IN ({placeholders})""",
+        placeholders = ",".join("%s" for _ in seen_keys)
+        connection.execute(f"""UPDATE GATE_ISSUE SET status='RESOLVED', resolved_at=%s
+            WHERE source_id=%s AND status='OPEN' AND issue_key NOT IN ({placeholders})""",
             [now, source_id, *seen_keys])
     else:
-        connection.execute("""UPDATE GATE_ISSUE SET status='RESOLVED', resolved_at=?
-            WHERE source_id=? AND status='OPEN'""", (now, source_id))
+        connection.execute("""UPDATE GATE_ISSUE SET status='RESOLVED', resolved_at=%s
+            WHERE source_id=%s AND status='OPEN'""", (now, source_id))
     return written
 
 
@@ -468,13 +471,12 @@ def _reject_stale_reviews(connection, policy_id):
     a value (or a document requirement) can change and queue an UPDATE review, then
     return to the stored state before a reviewer acts.  Leaving that proposal OPEN
     would let an obsolete value be applied after the later scan already verified the
-    current state, and would keep blocking publish.
+    current state, and would keep blocking publish.  admin.review_queue has no status
+    column, so stale proposals are deleted instead of marked REJECTED.
     """
-    connection.execute("""UPDATE REVIEW_QUEUE
-        SET status='REJECTED', decided_by='system', decided_at=?,
-            decision_note='最新扫描已确认该提案失效，系统自动关闭'
-        WHERE domain_table='VISA_POLICY' AND record_key=? AND status='OPEN'""",
-                       (_now(), policy_id))
+    connection.execute("""DELETE FROM admin.review_queue
+        WHERE domain_table='VISA_POLICY' AND record_key=%s""",
+                       (policy_id,))
 
 
 def _apply_region(connection, region, merged, blocked, region_conflicts=(), named=None, pages=None):
@@ -525,7 +527,7 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
         header = {"policy_id": policy_id, "country": country, "policy_type": "student",
                   "title": f"Student visa: {scope}"}
         evidence = [ev.model_dump() for ev in entry.evidence] + blocked_evidence
-        existing = _row(connection, "SELECT * FROM VISA_POLICY WHERE policy_id=?", (policy_id,))
+        existing = _row(connection, "SELECT * FROM VISA_POLICY WHERE policy_id=%s", (policy_id,))
         result = {"scope": scope, "policy_id": policy_id}
 
         if existing is None:
@@ -533,7 +535,7 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
                 columns = list(clean)
                 connection.execute(f"""INSERT INTO VISA_POLICY
                     (policy_id, country, policy_type, title, {', '.join(columns)})
-                    VALUES (?,?,?,?,{', '.join('?' for _ in columns)})""",
+                    VALUES (%s,%s,%s,%s,{', '.join('%s' for _ in columns)})""",
                     [policy_id, country, "student", header["title"]] + [clean[c] for c in columns])
                 _apply_documents(connection, policy_id, documents)
                 _record_evidence(connection, policy_id, clean, entry.evidence, documents)
@@ -559,8 +561,8 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
         changed = {c: (existing[c], v) for c, v in clean.items()
                    if c != "remark" and existing[c] is not None and existing[c] != v}
         if fill:
-            connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=?' for c in fill)}
-                WHERE policy_id=?""", [*fill.values(), policy_id])
+            connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=%s' for c in fill)}
+                WHERE policy_id=%s""", [*fill.values(), policy_id])
         vanished = _vanished_documents(connection, policy_id, named, pages or {}) \
             if named is not None else []
         new_docs, changed_docs = _sync_documents(connection, policy_id, documents)
@@ -601,7 +603,7 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
 def apply_review(connection, review_id, *, decided_by, note=None,
                  tuition_amount=None, tuition_currency=None, fx_selections=None):
     """Approve one REVIEW_QUEUE row: apply its payload to the domain table."""
-    row = _row(connection, "SELECT * FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'", (review_id,))
+    row = _row(connection, "SELECT * FROM admin.review_queue WHERE review_id=%s", (review_id,))
     if not row:
         raise ValueError(f"没有待处理的审核项：{review_id}")
     if row["domain_table"] == "FX_POLICY":
@@ -620,34 +622,30 @@ def apply_review(connection, review_id, *, decided_by, note=None,
     policy_id = row["record_key"]
     field_columns = [c for c in policy if c in VISA_FIELD_COLUMNS]
     if row["action"] == "CREATE":
-        existing = _row(connection, "SELECT policy_id FROM VISA_POLICY WHERE policy_id=?", (policy_id,))
+        existing = _row(connection, "SELECT policy_id FROM VISA_POLICY WHERE policy_id=%s", (policy_id,))
         if existing:
             raise ValueError(f"目标行已存在：{policy_id}；请用 UPDATE 类审核处理")
         connection.execute(f"""INSERT INTO VISA_POLICY
             (policy_id, country, policy_type, title, {', '.join(field_columns)})
-            VALUES (?,?,?,?,{', '.join('?' for _ in field_columns)})""",
+            VALUES (%s,%s,%s,%s,{', '.join('%s' for _ in field_columns)})""",
             [policy_id, policy.get("country", "unknown"), policy.get("policy_type", "student"),
              policy.get("title", policy_id)] + [policy[c] for c in field_columns])
     elif field_columns:
-        connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=?' for c in field_columns)}
-            WHERE policy_id=?""", [policy[c] for c in field_columns] + [policy_id])
+        connection.execute(f"""UPDATE VISA_POLICY SET {', '.join(f'{c}=%s' for c in field_columns)}
+            WHERE policy_id=%s""", [policy[c] for c in field_columns] + [policy_id])
     _apply_documents(connection, policy_id, payload.get("documents"))
     _remove_documents(connection, policy_id, payload.get("removed_documents"))
     _record_evidence(connection, policy_id, {c: policy[c] for c in field_columns},
                      json.loads(row["evidence_json"] or "[]"), payload.get("documents"))
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""",
-        (decided_by, _now(), note, review_id))
+    connection.execute("DELETE FROM admin.review_queue WHERE review_id=%s", (review_id,))
     return {"review_id": review_id, "action": row["action"], "policy_id": policy_id,
             "applied_fields": field_columns}
 
 
 def reject_review(connection, review_id, *, decided_by, note):
-    row = _row(connection, "SELECT review_id FROM REVIEW_QUEUE WHERE review_id=? AND status='OPEN'", (review_id,))
-    if not row:
+    cur = connection.execute("DELETE FROM admin.review_queue WHERE review_id=%s", (review_id,))
+    if cur.rowcount == 0:
         raise ValueError(f"没有待处理的审核项：{review_id}")
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='REJECTED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""", (decided_by, _now(), note, review_id))
     return {"review_id": review_id, "status": "REJECTED"}
 
 

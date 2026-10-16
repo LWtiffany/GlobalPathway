@@ -9,6 +9,25 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCES_PATH = ROOT / "sources.json"
 LEGACY_MIXED_DB = ROOT / "data" / "agent1.sqlite3"
 
+# PostgreSQL (阿里云 RDS)。ECS 内网直连；本地开发用 SSH 隧道 127.0.0.1:15432 覆盖。
+DB_HOST = os.getenv("AGENT1_DB_HOST", "pgm-2ze9t2uh39o1115k.rwlb.rds.aliyuncs.com")
+DB_PORT = int(os.getenv("AGENT1_DB_PORT", "5432"))
+DB_NAME = os.getenv("AGENT1_DB_NAME", "team03")
+DB_USER = os.getenv("AGENT1_DB_USER", "team03")
+DB_PASSWORD = os.getenv("AGENT1_DB_PASSWORD", "")
+
+
+def _load_db_password():
+    try:
+        from local_secrets import AGENT1_DB_PASSWORD
+        return AGENT1_DB_PASSWORD or ""
+    except ImportError:
+        return ""
+
+
+if not DB_PASSWORD:
+    DB_PASSWORD = _load_db_password()
+
 
 def configure_environment(environment=None):
     global PATHS, ENVIRONMENT, DATA, DB_PATH, LEGACY_DB_PATH

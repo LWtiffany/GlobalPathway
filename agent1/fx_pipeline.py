@@ -44,16 +44,19 @@ def policy_id(country, purpose):
 def _apply_documents(connection, policy_id_, documents):
     for document in documents or []:
         link = fp._document_link(document)
-        connection.execute("INSERT OR IGNORE INTO DOCUMENT (doc_id, code, name_zh) VALUES (?,?,?)",
+        connection.execute("INSERT INTO DOCUMENT (doc_id, code, name_zh) VALUES (%s,%s,%s) "
+                           "ON CONFLICT (doc_id) DO NOTHING",
                            (link["doc_id"], link["code"], link["name_zh"]))
-        connection.execute("""INSERT OR REPLACE INTO POLICY_DOCUMENT
-            (policy_id, policy_domain, doc_id, required, "condition") VALUES (?,?,?,?,?)""",
+        connection.execute('INSERT INTO POLICY_DOCUMENT '
+                           '(policy_id, policy_domain, doc_id, required, "condition") '
+                           'VALUES (%s,%s,%s,%s,%s) ON CONFLICT (policy_id, policy_domain, doc_id) '
+                           'DO UPDATE SET required=EXCLUDED.required, "condition"=EXCLUDED."condition"',
                            (policy_id_, DOMAIN, link["doc_id"], link["required"], link["condition"]))
 
 
 def _current_link(connection, policy_id_, doc_id):
     return fp._row(connection, """SELECT required, "condition" FROM POLICY_DOCUMENT
-        WHERE policy_id=? AND policy_domain=? AND doc_id=?""", (policy_id_, DOMAIN, doc_id))
+        WHERE policy_id=%s AND policy_domain=%s AND doc_id=%s""", (policy_id_, DOMAIN, doc_id))
 
 
 def _sync_documents(connection, policy_id_, documents):
@@ -71,14 +74,14 @@ def _sync_documents(connection, policy_id_, documents):
 
 def _vanished_documents(connection, policy_id_, named, pages):
     rows = connection.execute("""SELECT d.doc_id, d.code, d.name_zh FROM POLICY_DOCUMENT pd
-        JOIN DOCUMENT d USING (doc_id) WHERE pd.policy_id=? AND pd.policy_domain=?
+        JOIN DOCUMENT d USING (doc_id) WHERE pd.policy_id=%s AND pd.policy_domain=%s
         ORDER BY d.code, d.name_zh""", (policy_id_, DOMAIN))
     vanished = []
     for row in rows:
         if row["doc_id"] in named:
             continue
         quotes = connection.execute("""SELECT source_id, quote FROM FX_EVIDENCE
-            WHERE policy_id=? AND target=? AND kind='value'""",
+            WHERE policy_id=%s AND target=%s AND kind='value'""",
             (policy_id_, f"document:{row['doc_id']}")).fetchall()
         vanished.append({**dict(row), "still_quoted": any(
             fx_extract.quote_on_page(q["quote"], pages.get(q["source_id"], "")) for q in quotes)})
@@ -88,9 +91,9 @@ def _vanished_documents(connection, policy_id_, named, pages):
 def _remove_documents(connection, policy_id_, documents):
     for document in documents or []:
         connection.execute("""DELETE FROM POLICY_DOCUMENT
-            WHERE policy_id=? AND policy_domain=? AND doc_id=?""",
+            WHERE policy_id=%s AND policy_domain=%s AND doc_id=%s""",
                            (policy_id_, DOMAIN, document["doc_id"]))
-        connection.execute("DELETE FROM FX_EVIDENCE WHERE policy_id=? AND target=?",
+        connection.execute("DELETE FROM FX_EVIDENCE WHERE policy_id=%s AND target=%s",
                            (policy_id_, f"document:{document['doc_id']}"))
 
 
@@ -99,20 +102,20 @@ def _replace_evidence(connection, policy_id_, target, items):
     items = list(dict.fromkeys(i for i in items if all(i)))
     if not items:
         return
-    connection.execute("DELETE FROM FX_EVIDENCE WHERE policy_id=? AND target=?", (policy_id_, target))
+    connection.execute("DELETE FROM FX_EVIDENCE WHERE policy_id=%s AND target=%s", (policy_id_, target))
     now = fp._now()
     for kind, source_id, snapshot_id, quote in items:
         evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "|".join(
             ("fx_evidence", policy_id_, target, kind, source_id, snapshot_id, quote))))
-        connection.execute("""INSERT OR IGNORE INTO FX_EVIDENCE
+        connection.execute("""INSERT INTO FX_EVIDENCE
             (evidence_id, policy_id, target, kind, source_id, snapshot_id, quote, recorded_at)
-            VALUES (?,?,?,?,?,?,?,?)""",
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (evidence_id) DO NOTHING""",
             (evidence_id, policy_id_, target, kind, source_id, snapshot_id, quote, now))
 
 
 def _record_evidence(connection, policy_id_, evidence, documents):
     """Refresh quotes for the values the row holds now (same value as this run's support)."""
-    row = fp._row(connection, "SELECT * FROM FX_POLICY WHERE policy_id=?", (policy_id_,))
+    row = fp._row(connection, "SELECT * FROM FX_POLICY WHERE policy_id=%s", (policy_id_,))
     if row is None:
         return
     for field, facts in evidence.items():
@@ -146,11 +149,9 @@ def _flat_evidence(evidence):
 
 def _reject_stale_reviews(connection, policy_id_):
     """Close pending proposals when the latest verified state needs no review."""
-    connection.execute("""UPDATE REVIEW_QUEUE
-        SET status='REJECTED', decided_by='system', decided_at=?,
-            decision_note='最新扫描已确认该提案失效，系统自动关闭'
-        WHERE domain_table='FX_POLICY' AND record_key=? AND status='OPEN'""",
-                       (fp._now(), policy_id_))
+    connection.execute("""DELETE FROM admin.review_queue
+        WHERE domain_table='FX_POLICY' AND record_key=%s""",
+                       (policy_id_,))
 
 
 def _apply_country(connection, country, merged, conflicts, named=None, pages=None):
@@ -167,7 +168,7 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
         id_ = policy_id(country, purpose)
         header = {"policy_id": id_, "country": country, "policy_type": POLICY_TYPE,
                   "title": TITLES[purpose], "purpose_code": purpose}
-        existing = fp._row(connection, "SELECT * FROM FX_POLICY WHERE policy_id=?", (id_,))
+        existing = fp._row(connection, "SELECT * FROM FX_POLICY WHERE policy_id=%s", (id_,))
         has_currency = "annual_quota_currency" in clean or (
             existing is not None and existing["annual_quota_currency"] is not None)
         if "annual_quota_amount" in clean and not has_currency:
@@ -180,7 +181,7 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
                 columns = ["policy_id", "country", "policy_type", "title", "purpose_code", *clean]
                 values = [id_, country, POLICY_TYPE, TITLES[purpose], purpose, *clean.values()]
                 connection.execute(f"""INSERT INTO FX_POLICY ({', '.join(columns)})
-                    VALUES ({', '.join('?' for _ in columns)})""", values)
+                    VALUES ({', '.join('%s' for _ in columns)})""", values)
                 _apply_documents(connection, id_, documents)
                 _record_evidence(connection, id_, evidence, documents)
                 result.update(result="inserted", fields=sorted(clean), documents=len(documents))
@@ -206,8 +207,8 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
         changed = {c: (existing[c], v) for c, v in clean.items()
                    if existing[c] is not None and existing[c] != v}
         if fill:
-            connection.execute(f"""UPDATE FX_POLICY SET {', '.join(f'{c}=?' for c in fill)}
-                WHERE policy_id=?""", [*fill.values(), id_])
+            connection.execute(f"""UPDATE FX_POLICY SET {', '.join(f'{c}=%s' for c in fill)}
+                WHERE policy_id=%s""", [*fill.values(), id_])
         vanished = _vanished_documents(connection, id_, named, pages or {}) if named is not None else []
         new_docs, changed_docs = _sync_documents(connection, id_, documents)
         _record_evidence(connection, id_, evidence, documents)
@@ -270,16 +271,16 @@ def apply_review(connection, row, *, decided_by, note=None, selected_fields=None
                 raise ValueError(f"字段 {field} 选择的值不在该审核项的原文证据候选中")
             policy[field] = choices[key]
     if row["action"] == "CREATE":
-        if fp._row(connection, "SELECT policy_id FROM FX_POLICY WHERE policy_id=?", (id_,)):
+        if fp._row(connection, "SELECT policy_id FROM FX_POLICY WHERE policy_id=%s", (id_,)):
             raise ValueError(f"目标行已存在：{id_}；请用 UPDATE 类审核处理")
         insert = ["policy_id", "country", "policy_type", "title", "purpose_code", *columns]
         connection.execute(f"""INSERT INTO FX_POLICY ({', '.join(insert)})
-            VALUES ({', '.join('?' for _ in insert)})""",
+            VALUES ({', '.join('%s' for _ in insert)})""",
             [id_, policy.get("country", "unknown"), policy.get("policy_type", POLICY_TYPE),
              policy.get("title", id_), policy.get("purpose_code")] + [policy[c] for c in columns])
     elif columns:
-        connection.execute(f"""UPDATE FX_POLICY SET {', '.join(f'{c}=?' for c in columns)}
-            WHERE policy_id=?""", [policy[c] for c in columns] + [id_])
+        connection.execute(f"""UPDATE FX_POLICY SET {', '.join(f'{c}=%s' for c in columns)}
+            WHERE policy_id=%s""", [policy[c] for c in columns] + [id_])
     _apply_documents(connection, id_, payload.get("documents"))
     _remove_documents(connection, id_, payload.get("removed_documents"))
     evidence = {}
@@ -287,8 +288,7 @@ def apply_review(connection, row, *, decided_by, note=None, selected_fields=None
         if fact.get("field") in columns:
             evidence.setdefault(fact["field"], []).append(fact)
     _record_evidence(connection, id_, evidence, payload.get("documents"))
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""", (decided_by, fp._now(), note, row["review_id"]))
+    connection.execute("DELETE FROM admin.review_queue WHERE review_id=%s", (row["review_id"],))
     return {"review_id": row["review_id"], "action": row["action"], "policy_id": id_,
             "applied_fields": columns}
 

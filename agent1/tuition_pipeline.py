@@ -85,7 +85,7 @@ def validate_registry(source):
 
 def _upsert_program(connection, sid, school_key, key, name, level, scope):
     connection.execute("""INSERT INTO PROGRAM (program_id, school_id, name, level, scope)
-        VALUES (?,?,?,?,?) ON CONFLICT(program_id) DO UPDATE SET name=excluded.name,
+        VALUES (%s,%s,%s,%s,%s) ON CONFLICT(program_id) DO UPDATE SET name=excluded.name,
         level=COALESCE(excluded.level, PROGRAM.level), scope=excluded.scope""",
         (program_id(school_key, key), sid, name, level, scope))
 
@@ -94,7 +94,7 @@ def _upsert_registry(connection, members, merged):
     """SCHOOL from the registry; PROGRAM from registered programmes and catalog rows."""
     school = members[0]["school"]
     sid = school_id(school["key"])
-    connection.execute("""INSERT INTO SCHOOL (school_id, name, country, city) VALUES (?,?,?,?)
+    connection.execute("""INSERT INTO SCHOOL (school_id, name, country, city) VALUES (%s,%s,%s,%s)
         ON CONFLICT(school_id) DO UPDATE SET name=excluded.name, country=excluded.country,
         city=excluded.city""", (sid, school["name"], school["country"], school.get("city")))
     for source in members:
@@ -118,14 +118,15 @@ def _replace_evidence(connection, tuition_id_, rows):
     items = list(dict.fromkeys(items))
     if not items:
         return
-    connection.execute("DELETE FROM TUITION_EVIDENCE WHERE tuition_id=?", (tuition_id_,))
+    connection.execute("DELETE FROM TUITION_EVIDENCE WHERE tuition_id=%s", (tuition_id_,))
     now = fp._now()
     for kind, source_id, snapshot_id, quote in items:
         evidence_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "|".join(
             ("tuition_evidence", tuition_id_, kind, source_id, snapshot_id, quote))))
-        connection.execute("""INSERT OR IGNORE INTO TUITION_EVIDENCE
+        connection.execute("""INSERT INTO TUITION_EVIDENCE
             (evidence_id, tuition_id, kind, source_id, snapshot_id, quote, recorded_at)
-            VALUES (?,?,?,?,?,?,?)""", (evidence_id, tuition_id_, kind, source_id, snapshot_id, quote, now))
+            VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (evidence_id) DO NOTHING""",
+            (evidence_id, tuition_id_, kind, source_id, snapshot_id, quote, now))
 
 
 def _same_amount(existing, amount, currency):
@@ -141,11 +142,9 @@ def _reject_stale_reviews(connection, tuition_id_):
     amount to be applied after the later scan has already verified the current
     value.
     """
-    connection.execute("""UPDATE REVIEW_QUEUE
-        SET status='REJECTED', decided_by='system', decided_at=?,
-            decision_note='最新扫描已确认该提案失效，系统自动关闭'
-        WHERE domain_table='TUITION' AND record_key=? AND status='OPEN'""",
-                       (fp._now(), tuition_id_))
+    connection.execute("""DELETE FROM admin.review_queue
+        WHERE domain_table='TUITION' AND record_key=%s""",
+                       (tuition_id_,))
 
 
 def _remark(support, sources):
@@ -175,7 +174,7 @@ def _apply_school(connection, school_key, merged, sources):
                   "academic_year": academic_year, "fee_status": fee_status, "fee_basis": fee_basis,
                   "study_mode": study_mode, "rate": rate_label, "amount": entry["amount"],
                   "currency": entry["currency"], "tuition_id": tid}
-        existing = fp._row(connection, "SELECT * FROM TUITION WHERE tuition_id=?", (tid,))
+        existing = fp._row(connection, "SELECT * FROM TUITION WHERE tuition_id=%s", (tid,))
         payload = {"tuition": row, "program_key": program_key, "school_key": school_key}
         if entry["conflict"]:
             values = sorted({f"{r.amount:g} {r.currency}" for r in entry["all_support"]})
@@ -186,7 +185,7 @@ def _apply_school(connection, school_key, merged, sources):
         elif existing is None:
             columns = list(row)
             connection.execute(f"""INSERT INTO TUITION ({', '.join(columns)})
-                VALUES ({', '.join('?' for _ in columns)})""", [row[c] for c in columns])
+                VALUES ({', '.join('%s' for _ in columns)})""", [row[c] for c in columns])
             _replace_evidence(connection, tid, support)
             _reject_stale_reviews(connection, tid)
             result["result"] = "inserted"
@@ -195,7 +194,7 @@ def _apply_school(connection, school_key, merged, sources):
             _reject_stale_reviews(connection, tid)
             result["result"] = "no_change"
         elif existing["amount"] is None:
-            connection.execute("UPDATE TUITION SET amount=?, currency=?, remark=? WHERE tuition_id=?",
+            connection.execute("UPDATE TUITION SET amount=%s, currency=%s, remark=%s WHERE tuition_id=%s",
                                (row["amount"], row["currency"], row["remark"], tid))
             _replace_evidence(connection, tid, support)
             _reject_stale_reviews(connection, tid)
@@ -237,26 +236,25 @@ def apply_review(connection, row, *, decided_by, note=None,
         tuition["amount"] = candidates[choice]
         tuition["currency"] = choice[1]
     tid = row["record_key"]
-    if fp._row(connection, "SELECT program_id FROM PROGRAM WHERE program_id=?", (tuition["program_id"],)) is None:
+    if fp._row(connection, "SELECT program_id FROM PROGRAM WHERE program_id=%s", (tuition["program_id"],)) is None:
         raise ValueError(f"项目不存在：{tuition['program_id']}；请先重新扫描该学校")
-    existing = fp._row(connection, "SELECT tuition_id FROM TUITION WHERE tuition_id=?", (tid,))
+    existing = fp._row(connection, "SELECT tuition_id FROM TUITION WHERE tuition_id=%s", (tid,))
     if row["action"] == "CREATE":
         if existing:
             raise ValueError(f"目标行已存在：{tid}；请用 UPDATE 类审核处理")
         columns = list(tuition)
         connection.execute(f"""INSERT INTO TUITION ({', '.join(columns)})
-            VALUES ({', '.join('?' for _ in columns)})""", [tuition[c] for c in columns])
+            VALUES ({', '.join('%s' for _ in columns)})""", [tuition[c] for c in columns])
     else:
         if not existing:
             raise ValueError(f"目标行不存在：{tid}")
-        connection.execute("UPDATE TUITION SET amount=?, currency=?, remark=? WHERE tuition_id=?",
+        connection.execute("UPDATE TUITION SET amount=%s, currency=%s, remark=%s WHERE tuition_id=%s",
                            (tuition["amount"], tuition["currency"], tuition.get("remark"), tid))
     support = [r for r in evidence
                if float(r.get("amount") or 0) == float(tuition["amount"])
                and r.get("currency") == tuition["currency"]]
     _replace_evidence(connection, tid, support)
-    connection.execute("""UPDATE REVIEW_QUEUE SET status='APPROVED', decided_by=?, decided_at=?,
-        decision_note=? WHERE review_id=?""", (decided_by, fp._now(), note, row["review_id"]))
+    connection.execute("DELETE FROM admin.review_queue WHERE review_id=%s", (row["review_id"],))
     return {"review_id": row["review_id"], "action": row["action"], "tuition_id": tid,
             "applied_fields": ["amount", "currency"]}
 
