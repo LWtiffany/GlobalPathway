@@ -9,8 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
+ARG PIP_INDEX_URL=https://pypi.org/simple/
 COPY requirements.txt .
-RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
+RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r requirements.txt
 RUN playwright install --with-deps chromium
 
 COPY agent1 ./agent1

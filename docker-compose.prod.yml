@@ -1,9 +1,6 @@
 services:
   admin:
-    image: ${ADMIN_IMAGE:-globalpathway/admin:prod}
-    build:
-      context: .
-      dockerfile: Dockerfile.admin
+    image: ${ADMIN_IMAGE:-ghcr.io/lwtiffany/globalpathway/admin:latest}
     network_mode: host
     env_file: .env
     restart: unless-stopped
