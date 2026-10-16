@@ -196,7 +196,10 @@ def _row_values(proposed, *, keep_null=False):
     row = {}
     for column in VISA_FIELD_COLUMNS:
         if column in proposed and (proposed[column] is not None or keep_null):
-            row[column] = proposed[column]
+            value = proposed[column]
+            if isinstance(value, bool):
+                value = int(value)  # VISA_POLICY 布尔列是 INTEGER CHECK(0,1)，PG 不接受 boolean
+            row[column] = value
     conditions = proposed.get("conditions")
     if conditions:
         suffix = CONDITIONS_MARKER + json.dumps(conditions, ensure_ascii=False)
@@ -619,6 +622,8 @@ def apply_review(connection, review_id, *, decided_by, note=None,
         raise ValueError(f"暂不支持审核域表：{row['domain_table']}")
     payload = json.loads(row["proposed_value"])
     policy = payload["policy"]
+    # 布尔字段规范化：与 VISA_POLICY 的 INTEGER CHECK(0,1) 对齐，避免 PG boolean→integer 报错
+    policy = {k: (int(v) if isinstance(v, bool) else v) for k, v in policy.items()}
     policy_id = row["record_key"]
     field_columns = [c for c in policy if c in VISA_FIELD_COLUMNS]
     if row["action"] == "CREATE":
