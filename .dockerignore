@@ -11,7 +11,6 @@ scripts/
 tests/
 docs/
 admin_console/local_secrets.py
-admin_console/web/app.css
 .env
 .env.*
 .github/
