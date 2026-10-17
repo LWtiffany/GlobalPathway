@@ -6,6 +6,7 @@ Login -> list/show pending reviews -> approve (write to the domain table) or rej
 import json
 import secrets
 import time
+from pathlib import Path
 
 from . import apply_review, auth, config, db
 
@@ -23,7 +24,61 @@ class ConsoleError(Exception):
         self.http_status = http_status
 
 
+def _source_index():
+    """sources.json 是网页地址的登记；审核库里不一定存着 URL。"""
+    path = Path(__file__).resolve().parent.parent / "sources.json"
+    if not path.is_file():
+        return {}
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(entries, list):
+        return {}
+    return {entry["id"]: entry for entry in entries if isinstance(entry, dict) and entry.get("id")}
+
+
+def _evidence_for_display(raw):
+    sources = _source_index()
+    shown = []
+    for item in json.loads(raw or "[]"):
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        source = sources.get(row.get("source_id")) or {}
+        row.setdefault("source_url", source.get("url"))
+        row.setdefault("source_name", source.get("name"))
+        shown.append(row)
+    return shown
+
+
+def _group_key(row, payload):
+    """Same universal conflict copied onto several purposes shares one key."""
+    if row["domain_table"] != "FX_POLICY":
+        return None
+    policy = payload.get("policy") or {}
+    choices = {}
+    for fact in json.loads(row["evidence_json"] or "[]"):
+        field = fact.get("field") if isinstance(fact, dict) else None
+        if not field:
+            continue
+        choices.setdefault(field, set()).add(json.dumps(fact.get("value"), ensure_ascii=False, sort_keys=True))
+    multi = {field: sorted(values) for field, values in choices.items() if len(values) > 1}
+    if not multi:
+        return None
+    return json.dumps({
+        "country": policy.get("country"), "action": row["action"],
+        "fields": {field: policy.get(field) for field in multi}, "choices": multi,
+        "documents": payload.get("documents") or [],
+        "removed": payload.get("removed_documents") or [],
+    }, ensure_ascii=False, sort_keys=True)
+
+
 def _summary(domain, payload):
+    shared = payload.get("shared_titles")
+    if shared:
+        country = (payload.get("policy") or {}).get("country")
+        return " · ".join(part for part in (country, "留学购汇：" + "、".join(shared)) if part)
     if domain == "TUITION":
         t = payload.get("tuition") or {}
         amount = t.get("amount")
@@ -92,6 +147,8 @@ class AdminConsole:
                 "record_key": row["record_key"], "action": row["action"], "field_path": row["field_path"],
                 "reason": row["reason"], "created_at": row["created_at"],
                 "summary": _summary(row["domain_table"], payload),
+                "purpose": (payload.get("policy") or {}).get("purpose_code"),
+                "group_key": _group_key(row, payload),
                 "applicable": row["domain_table"] in APPLICABLE}
 
     def list_reviews(self, domain=None):
@@ -122,7 +179,7 @@ class AdminConsole:
                 current = connection.execute(f"SELECT * FROM {row['domain_table']} WHERE {key}=%s",
                                              (row["record_key"],)).fetchone()
             return {**self._brief(row), "proposed_value": json.loads(row["proposed_value"] or "{}"),
-                    "evidence": json.loads(row["evidence_json"] or "[]"),
+                    "evidence": _evidence_for_display(row["evidence_json"]),
                     "current": current}
         finally:
             connection.close()
@@ -148,10 +205,12 @@ class AdminConsole:
         finally:
             connection.close()
 
-    def approve(self, actor, review_id, note=None):
+    def approve(self, actor, review_id, note=None, selections=None):
         note = _note(note, required=False)
+        if selections is not None and not isinstance(selections, dict):
+            raise ConsoleError("INVALID_INPUT", "选定取值须为字段到取值的对象", 400)
         return self._decide(review_id, lambda c: apply_review.apply_review(
-            c, review_id, decided_by=actor, note=note))
+            c, review_id, decided_by=actor, note=note, selections=selections))
 
     def reject(self, actor, review_id, note):
         note = _note(note, required=True)

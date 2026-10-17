@@ -22,6 +22,15 @@ FX_FIELDS = (
     "quota_reset", "over_quota_allowed", "tuition_direct_to_school",
     "remitter_relation", "can_use_family_quota",
 )
+FX_LABELS = {
+    "remitter_relation": "代办人关系",
+    "annual_quota_amount": "年度购汇额度",
+    "annual_quota_currency": "额度币种",
+    "quota_reset": "额度重置方式",
+    "over_quota_allowed": "超过年度额度是否仍可购汇",
+    "tuition_direct_to_school": "学费是否直接汇给学校",
+    "can_use_family_quota": "是否可以使用家人的购汇额度",
+}
 
 
 def _now():
@@ -195,32 +204,80 @@ def _apply_visa_review(connection, row):
             "applied_fields": field_columns}
 
 
-def _apply_fx_review(connection, row):
-    payload = json.loads(row["proposed_value"])
-    policy = payload["policy"]
-    id_ = row["record_key"]
+def _chosen_fx_policy(policy, evidence_rows, selections):
+    """When one field has several verbatim candidates, the reviewer must pick one."""
     columns = [c for c in policy if c in FX_FIELDS]
-    if row["action"] == "CREATE":
-        if _row(connection, "SELECT policy_id FROM FX_POLICY WHERE policy_id=%s", (id_,)):
-            raise ValueError(f"目标行已存在：{id_}；请用 UPDATE 类审核处理")
+    candidates = {}
+    for fact in evidence_rows:
+        field = fact.get("field")
+        if field not in columns:
+            continue
+        key = json.dumps(fact.get("value"), ensure_ascii=False, sort_keys=True)
+        candidates.setdefault(field, {})[key] = fact.get("value")
+    selections = selections or {}
+    chosen = dict(policy)
+    for field in columns:
+        choices = candidates.get(field, {})
+        if len(choices) < 2:
+            continue
+        if field not in selections:
+            label = FX_LABELS.get(field, field)
+            raise ValueError(f"请先选定「{label}」采用哪一种说法")
+        key = json.dumps(selections[field], ensure_ascii=False, sort_keys=True)
+        if key not in choices:
+            raise ValueError(f"「{FX_LABELS.get(field, field)}」选定的取值不在原文候选中")
+        chosen[field] = choices[key]
+    kept = []
+    for fact in evidence_rows:
+        field = fact.get("field")
+        if field not in columns:
+            continue
+        if json.dumps(fact.get("value"), ensure_ascii=False, sort_keys=True) != json.dumps(
+                chosen.get(field), ensure_ascii=False, sort_keys=True):
+            continue
+        kept.append(fact)
+    return chosen, columns, kept
+
+
+def _write_fx_policy(connection, policy_id, action, policy, columns, documents, removed, evidence):
+    if action == "CREATE":
+        if _row(connection, "SELECT policy_id FROM FX_POLICY WHERE policy_id=%s", (policy_id,)):
+            raise ValueError(f"目标行已存在：{policy_id}；请用 UPDATE 类审核处理")
         insert = ["policy_id", "country", "policy_type", "title", "purpose_code", *columns]
         connection.execute(f"INSERT INTO FX_POLICY ({', '.join(insert)}) "
                            f"VALUES ({', '.join('%s' for _ in insert)})",
-                           [id_, policy.get("country", "unknown"), policy.get("policy_type", "study_abroad"),
-                            policy.get("title", id_), policy.get("purpose_code")]
+                           [policy_id, policy.get("country", "unknown"),
+                            policy.get("policy_type", "study_abroad"),
+                            policy.get("title", policy_id), policy.get("purpose_code")]
                            + [policy[c] for c in columns])
     elif columns:
+        if _row(connection, "SELECT policy_id FROM FX_POLICY WHERE policy_id=%s", (policy_id,)) is None:
+            raise ValueError(f"目标行不存在：{policy_id}")
         connection.execute(f"UPDATE FX_POLICY SET {', '.join(f'{c}=%s' for c in columns)} "
-                           "WHERE policy_id=%s", [policy[c] for c in columns] + [id_])
-    _apply_documents(connection, id_, payload.get("documents"), "fx_policy")
-    _remove_documents(connection, id_, payload.get("removed_documents"), "fx_policy")
-    evidence = {}
-    for fact in json.loads(row["evidence_json"] or "[]"):
-        if fact.get("field") in columns:
-            evidence.setdefault(fact["field"], []).append(fact)
-    _record_fx_evidence(connection, id_, evidence, payload.get("documents"))
-    return {"review_id": row["review_id"], "action": row["action"], "policy_id": id_,
-            "applied_fields": columns}
+                           "WHERE policy_id=%s", [policy[c] for c in columns] + [policy_id])
+    _apply_documents(connection, policy_id, documents, "fx_policy")
+    _remove_documents(connection, policy_id, removed, "fx_policy")
+    grouped = {}
+    for fact in evidence:
+        grouped.setdefault(fact["field"], []).append(fact)
+    _record_fx_evidence(connection, policy_id, grouped, documents)
+
+
+def _apply_fx_review(connection, row, selections=None):
+    payload = json.loads(row["proposed_value"])
+    policy, columns, evidence = _chosen_fx_policy(
+        payload["policy"], json.loads(row["evidence_json"] or "[]"), selections)
+    documents, removed = payload.get("documents"), payload.get("removed_documents")
+    targets = [row["record_key"], *(payload.get("also_apply") or [])]
+    for policy_id in targets:
+        written = dict(policy)
+        if policy_id != row["record_key"]:
+            written.pop("title", None)
+            written.pop("purpose_code", None)
+        _write_fx_policy(connection, policy_id, row["action"], written, columns,
+                         documents, removed, evidence)
+    return {"review_id": row["review_id"], "action": row["action"], "policy_id": row["record_key"],
+            "applied_fields": columns, "applied_to": targets}
 
 
 def _apply_tuition_review(connection, row):
@@ -251,14 +308,14 @@ def _apply_tuition_review(connection, row):
             "applied_fields": ["amount", "currency"]}
 
 
-def apply_review(connection, review_id, *, decided_by, note=None):
+def apply_review(connection, review_id, *, decided_by, note=None, selections=None):
     """Approve one admin.review_queue row: apply its payload to the domain table, then drop it."""
     row = _row(connection, "SELECT * FROM admin.review_queue WHERE review_id=%s", (review_id,))
     if not row:
         raise ValueError(f"没有待处理的审核项：{review_id}")
     domain = row["domain_table"]
     if domain == "FX_POLICY":
-        result = _apply_fx_review(connection, row)
+        result = _apply_fx_review(connection, row, selections)
     elif domain == "TUITION":
         result = _apply_tuition_review(connection, row)
     else:
