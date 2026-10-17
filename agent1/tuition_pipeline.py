@@ -17,7 +17,7 @@ quotes land in TUITION_EVIDENCE. Nothing is published.
 import json
 import uuid
 
-from . import config, crawl, formal_pipeline as fp, gate, storage, tuition_extract
+from . import config, crawl, formal_pipeline as fp, gate, review_text, storage, tuition_extract
 from .models import LEVELS
 
 DOMAIN = "tuition"
@@ -181,7 +181,7 @@ def _apply_school(connection, school_key, merged, sources):
             result.update(result="review", review_id=fp._enqueue_review(
                 connection, table="TUITION", key=tid, action="CREATE" if existing is None else "UPDATE",
                 payload=payload, evidence=[r.model_dump() for r in entry["all_support"]],
-                reason=f"跨页面金额冲突：{' / '.join(values)}"))
+                reason=review_text.tuition_conflict_sentence(values)))
         elif existing is None:
             columns = list(row)
             connection.execute(f"""INSERT INTO TUITION ({', '.join(columns)})
