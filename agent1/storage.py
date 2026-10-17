@@ -102,17 +102,80 @@ CREATE TABLE IF NOT EXISTS ACCOUNT_DOC (
 );
 
 CREATE TABLE IF NOT EXISTS CREDIT_CARD (
-    card_id                  TEXT PRIMARY KEY,
-    issuer                   TEXT    NOT NULL,
-    product_name             TEXT    NOT NULL,
-    annual_fee               NUMERIC,
-    fee_waiver_condition     TEXT,
-    target_audience          TEXT,
-    overseas_cashback_rate   NUMERIC CHECK (overseas_cashback_rate IS NULL OR (overseas_cashback_rate BETWEEN 0 AND 1)),
-    fx_markup_rate           NUMERIC CHECK (fx_markup_rate         IS NULL OR (fx_markup_rate         BETWEEN 0 AND 1)),
-    eligibility              TEXT,
-    perks                    TEXT
+    card_id           TEXT PRIMARY KEY,
+    issuing_bank      TEXT NOT NULL,
+    card_network      TEXT NOT NULL,
+    market            TEXT NOT NULL,
+    product_name      TEXT NOT NULL,
+    card_tier         TEXT,
+    product_status    TEXT NOT NULL DEFAULT 'ACTIVE'
+        CHECK (product_status IN ('ACTIVE','SUSPENDED','DISCONTINUED')),
+    target_audience   TEXT,
+    official_url      TEXT,
+    data_status       TEXT NOT NULL DEFAULT 'synthetic'
+        CHECK (data_status IN ('verified','estimated','synthetic')),
+    effective_from    DATE,
+    effective_to      DATE,
+    last_verified_at  TIMESTAMPTZ,
+    UNIQUE (issuing_bank, market, product_name),
+    CHECK (effective_to IS NULL OR effective_from IS NULL OR effective_to >= effective_from)
 );
+
+CREATE TABLE IF NOT EXISTS CARD_REWARD_RULE (
+    reward_rule_id           TEXT PRIMARY KEY,
+    card_id                  TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    spend_category           TEXT NOT NULL,
+    reward_type              TEXT NOT NULL CHECK (reward_type IN ('cashback','points','miles')),
+    reward_rate              NUMERIC CHECK (reward_rate IS NULL OR reward_rate BETWEEN 0 AND 1),
+    points_per_currency_unit NUMERIC CHECK (points_per_currency_unit IS NULL OR points_per_currency_unit >= 0),
+    spend_cap                NUMERIC CHECK (spend_cap IS NULL OR spend_cap >= 0),
+    cap_currency             TEXT CHECK (cap_currency IS NULL OR cap_currency ~ '^[A-Z]{3}$'),
+    cap_period               TEXT CHECK (cap_period IS NULL OR cap_period IN ('transaction','month','quarter','year')),
+    description              TEXT,
+    CHECK (reward_rate IS NOT NULL OR points_per_currency_unit IS NOT NULL),
+    CHECK (spend_cap IS NULL OR cap_currency IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_card_reward_rule_card ON CARD_REWARD_RULE(card_id);
+
+CREATE TABLE IF NOT EXISTS CARD_FEE (
+    fee_id            TEXT PRIMARY KEY,
+    card_id           TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    fee_type          TEXT NOT NULL CHECK (fee_type IN ('annual_fee','foreign_transaction_fee','cash_advance_fee','late_payment_fee','other')),
+    amount            NUMERIC CHECK (amount IS NULL OR amount >= 0),
+    currency          TEXT CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$'),
+    rate              NUMERIC CHECK (rate IS NULL OR rate BETWEEN 0 AND 1),
+    waiver_condition  TEXT,
+    notes             TEXT,
+    CHECK (amount IS NOT NULL OR rate IS NOT NULL),
+    CHECK (amount IS NULL OR currency IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_card_fee_card ON CARD_FEE(card_id);
+
+CREATE TABLE IF NOT EXISTS CARD_BENEFIT (
+    benefit_id    TEXT PRIMARY KEY,
+    card_id       TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    benefit_type  TEXT NOT NULL CHECK (benefit_type IN ('airport_lounge','travel_insurance','concierge','merchant_offer','digital_wallet','dual_currency','other')),
+    benefit_name  TEXT NOT NULL,
+    quantity      NUMERIC CHECK (quantity IS NULL OR quantity >= 0),
+    period        TEXT CHECK (period IS NULL OR period IN ('transaction','month','quarter','year')),
+    description   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_card_benefit_card ON CARD_BENEFIT(card_id);
+
+CREATE TABLE IF NOT EXISTS CARD_ELIGIBILITY_RULE (
+    eligibility_rule_id  TEXT PRIMARY KEY,
+    card_id              TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    rule_type            TEXT NOT NULL CHECK (rule_type IN ('minimum_age','minimum_income','student_status','banking_relationship','credit_assessment','residency','other')),
+    operator             TEXT NOT NULL CHECK (operator IN ('eq','gte','lte','in','required')),
+    value_text           TEXT,
+    value_numeric        NUMERIC,
+    currency             TEXT CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$'),
+    required             INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0,1)),
+    description          TEXT,
+    CHECK (value_text IS NOT NULL OR value_numeric IS NOT NULL),
+    CHECK (currency IS NULL OR value_numeric IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_card_eligibility_card ON CARD_ELIGIBILITY_RULE(card_id);
 
 CREATE TABLE IF NOT EXISTS SCHOOL (
     school_id   TEXT PRIMARY KEY,
