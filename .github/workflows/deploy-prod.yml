@@ -2,7 +2,7 @@ name: Deploy prod
 
 on:
   push:
-    tags: ["v*"]
+    branches: [prod]
   workflow_dispatch:
 
 env:
@@ -63,6 +63,10 @@ jobs:
             set -e
             cd /srv/globalpathway
             git fetch origin prod && git reset --hard origin/prod
+            # 预检：config.py 默认已改为本地 SSH 隧道，prod 必须靠 .env 覆盖 RDS，缺则中止部署
+            for key in ADMIN_DB_HOST ADMIN_DB_PORT; do
+              grep -qE "^${key}=.+" .env || { echo "ERROR: .env 缺少 ${key}，中止部署" >&2; exit 1; }
+            done
             echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
             export ADMIN_IMAGE=${{ env.IMAGE_BASE }}/admin:${{ github.sha }}
