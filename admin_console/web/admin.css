@@ -14,10 +14,11 @@
 .badge.CREATE{border-color:#a9bba9;color:#4f6b52}
 .badge.UPDATE{border-color:#d8c294;color:#8b7140}
 .drawer.wide{width:640px}
+.drawer.wide.compare{width:min(980px,92vw)}
 .sec{font-size:11px;color:#8a8170;letter-spacing:2px;margin:20px 0 8px;border-bottom:1px solid #ece6db;padding-bottom:4px}
 .fields{width:100%;border-collapse:collapse}
 .fields td{border:1px solid #ece6db;padding:5px 8px;font-size:12px;vertical-align:top;word-break:break-word}
-.fields td:first-child{width:34%;color:#9a917f;font-family:Menlo,Consolas,monospace;font-size:11px}
+.fields td:first-child{width:34%;color:#9a917f;font-size:12px}
 .fields td.chg{background:#f8f1e1}
 .docs{margin:0;padding:0;list-style:none}
 .docs li{padding:6px 0;border-top:1px dashed #efe8dc;font-size:12px;line-height:1.6}
@@ -28,7 +29,20 @@
 .ev li{padding:8px 0;border-top:1px solid #f1ece3;font-size:12px}
 .ev li:first-child{border-top:none}
 .ev blockquote{margin:4px 0}
-.ev .src{font-size:10.5px;color:#a59c8a}
+.conflict{border:1px solid #e6dfd2;margin:0 0 12px;background:#fff}
+.conflict h4{margin:0;padding:8px 12px;background:#faf6ef;font-size:13px;font-weight:600}
+.conflict .cols{display:grid;grid-template-columns:1fr 1fr;align-items:stretch}
+.choice{padding:10px 12px;border-left:1px solid #ece6db;min-width:0}
+.cols>.choice:first-child{border-left:none}
+.choice.on{background:#f8f1e1}
+.choice-h{display:flex;justify-content:flex-start;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-bottom:6px}
+.choice-h b{line-height:1.5}
+.choice .btn{padding:4px 10px;font-size:12px;white-space:nowrap}
+.choice mark{background:#f3d48a;color:#3a2a12;padding:0 1px}
+.choice blockquote{margin:8px 0}
+.choice a{display:block;color:#8e1b24;word-break:break-all;font-size:12px}
+.ev a{color:#8e1b24;word-break:break-all}
+.ev .src{font-size:11px;color:#8a8170;word-break:break-all}
 .decide{margin-top:22px;padding:14px;border:1px solid #e6dfd2;background:#faf6ef}
 .decide textarea{width:100%;border:1px solid #d9d1c2;padding:8px 10px;resize:vertical;min-height:60px;background:#fff}
 .decide .btns{display:flex;justify-content:flex-end;gap:10px;margin-top:10px}

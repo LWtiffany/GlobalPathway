@@ -24,12 +24,13 @@ class SmokeTests(unittest.TestCase):
         import admin_console.server
         self.assertTrue(admin_console.__version__)
 
-    def test_config_defaults_point_at_rds(self):
+    def test_config_defaults_point_at_local_tunnel(self):
+        """dev 分支本地默认走 SSH 隧道；prod 部署由 .env 覆盖为 RDS 内网地址。"""
         from admin_console import config
-        self.assertEqual(config.DB_PORT, 5432)
+        self.assertEqual(config.DB_HOST, "127.0.0.1")
+        self.assertEqual(config.DB_PORT, 15432)
         self.assertEqual(config.DB_NAME, "team03")
         self.assertEqual(config.DB_USER, "team03")
-        self.assertIn("aliyuncs.com", config.DB_HOST)
 
     def test_schema_covers_core_tables(self):
         from admin_console.db import SCHEMA

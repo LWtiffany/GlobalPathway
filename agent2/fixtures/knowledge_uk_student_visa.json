@@ -1,0 +1,126 @@
+{
+  "fixture_version": "uk-student-visa-synthetic-v1",
+  "note": "合成演示资料（synthetic=true），不是官方规定，不得作为真实签证依据。",
+  "records": [
+    {
+      "record_id": "fixture-uk-sv-documents",
+      "revision_id": "fixture-uk-sv-documents-r1",
+      "country": "UK",
+      "visa_category": "student_visa",
+      "topic": "documents",
+      "status": "ACTIVE",
+      "synthetic": true,
+      "verified_at": "2026-10-13T00:00:00Z",
+      "effective_from": null,
+      "effective_to": null,
+      "source": {
+        "source_id": "fixture-uk-visa",
+        "name": "合成来源示例：英国 Student visa 材料（模拟资料）",
+        "url": "https://example.invalid/synthetic/uk-student-visa-documents",
+        "authority": "synthetic"
+      },
+      "snapshot": "SYNTHETIC SNAPSHOT - simulated text for development, not an official page.\nDocuments you must provide (synthetic):\nYou must provide a current passport or other valid travel document.\nYou must provide a Confirmation of Acceptance for Studies (CAS) reference number from your course provider.\nYou must provide proof that you have enough money to support yourself and pay for your course.\nYou must provide proof of parental or legal guardian consent if you are under 18.\nYou must provide proof of your relationship to your parent or guardian if you are under 18.\nYou must provide your tuberculosis test results if you live in a country where you have to take the test.\nYou must provide a letter from your loan provider if you are using a student loan.\nYou must provide written consent from your financial sponsor if you have been sponsored.\nYou may need an ATAS certificate depending on your course and nationality.",
+      "requirements": [
+        {
+          "requirement_key": "uk-sv-passport",
+          "document_code": "passport",
+          "name_zh": "护照或有效旅行证件",
+          "name_en": "passport or other valid travel document",
+          "required": true,
+          "applicability_status": "unconditional",
+          "condition": null,
+          "evidence_id": "fixture-ev-passport",
+          "evidence_quote": "You must provide a current passport or other valid travel document."
+        },
+        {
+          "requirement_key": "uk-sv-cas",
+          "document_code": "cas",
+          "name_zh": "录取确认函（CAS）",
+          "name_en": "Confirmation of Acceptance for Studies (CAS)",
+          "required": true,
+          "applicability_status": "unconditional",
+          "condition": null,
+          "evidence_id": "fixture-ev-cas",
+          "evidence_quote": "You must provide a Confirmation of Acceptance for Studies (CAS) reference number from your course provider."
+        },
+        {
+          "requirement_key": "uk-sv-funds",
+          "document_code": "proof_of_funds",
+          "name_zh": "资金证明",
+          "name_en": "proof of funds",
+          "required": true,
+          "applicability_status": "unconditional",
+          "condition": null,
+          "evidence_id": "fixture-ev-funds",
+          "evidence_quote": "You must provide proof that you have enough money to support yourself and pay for your course."
+        },
+        {
+          "requirement_key": "uk-sv-parental-consent",
+          "document_code": "parental_consent",
+          "name_zh": "父母或监护人同意书",
+          "name_en": "parental or legal guardian consent",
+          "required": true,
+          "applicability_status": "conditional",
+          "condition": [{"field": "applicant_age", "op": "lt", "value": 18, "text": "申请人未满 18 岁"}],
+          "evidence_id": "fixture-ev-consent",
+          "evidence_quote": "You must provide proof of parental or legal guardian consent if you are under 18."
+        },
+        {
+          "requirement_key": "uk-sv-relationship",
+          "document_code": "birth_certificate",
+          "name_zh": "出生证明或亲属关系证明",
+          "name_en": "proof of relationship to parent or guardian",
+          "required": true,
+          "applicability_status": "conditional",
+          "condition": [{"field": "applicant_age", "op": "lt", "value": 18, "text": "申请人未满 18 岁"}],
+          "evidence_id": "fixture-ev-relationship",
+          "evidence_quote": "You must provide proof of your relationship to your parent or guardian if you are under 18."
+        },
+        {
+          "requirement_key": "uk-sv-tb",
+          "document_code": "tuberculosis_test_certificate",
+          "name_zh": "肺结核检测证明",
+          "name_en": "tuberculosis test results",
+          "required": true,
+          "applicability_status": "conditional",
+          "condition": [{"field": "tb_listed_country_resident", "op": "is_true", "text": "居住在需做肺结核检测的国家或地区"}],
+          "evidence_id": "fixture-ev-tb",
+          "evidence_quote": "You must provide your tuberculosis test results if you live in a country where you have to take the test."
+        },
+        {
+          "requirement_key": "uk-sv-loan",
+          "document_code": "student_loan_evidence",
+          "name_zh": "学生贷款证明",
+          "name_en": "letter from your loan provider",
+          "required": true,
+          "applicability_status": "conditional",
+          "condition": [{"field": "funding_source", "op": "eq", "value": "student_loan", "text": "使用学生贷款"}],
+          "evidence_id": "fixture-ev-loan",
+          "evidence_quote": "You must provide a letter from your loan provider if you are using a student loan."
+        },
+        {
+          "requirement_key": "uk-sv-sponsor",
+          "document_code": "financial_sponsorship_evidence",
+          "name_zh": "资助方书面同意",
+          "name_en": "written consent from your financial sponsor",
+          "required": true,
+          "applicability_status": "conditional",
+          "condition": [{"field": "funding_source", "op": "eq", "value": "sponsor", "text": "有机构或他人资助"}],
+          "evidence_id": "fixture-ev-sponsor",
+          "evidence_quote": "You must provide written consent from your financial sponsor if you have been sponsored."
+        },
+        {
+          "requirement_key": "uk-sv-atas",
+          "document_code": "atas",
+          "name_zh": "ATAS 证书",
+          "name_en": "ATAS certificate",
+          "required": true,
+          "applicability_status": "unknown",
+          "condition": null,
+          "evidence_id": "fixture-ev-atas",
+          "evidence_quote": "You may need an ATAS certificate depending on your course and nationality."
+        }
+      ]
+    }
+  ]
+}

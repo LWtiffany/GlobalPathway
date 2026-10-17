@@ -67,39 +67,187 @@ CREATE TABLE POLICY_DOCUMENT (
     FOREIGN KEY (doc_id) REFERENCES DOCUMENT(doc_id) ON DELETE RESTRICT
 );
 
-CREATE TABLE ACCOUNT_THRESHOLD (
-    threshold_id          TEXT PRIMARY KEY,
-    bank_code             TEXT    NOT NULL,
-    product_code          TEXT    NOT NULL,
-    country               TEXT    NOT NULL,
-    min_age               INTEGER,
-    min_deposit           NUMERIC,
-    min_deposit_currency  TEXT    CHECK (min_deposit_currency IS NULL OR min_deposit_currency GLOB '[A-Z][A-Z][A-Z]'),
-    residency_note        TEXT,
-    CHECK (min_deposit IS NULL OR min_deposit_currency IS NOT NULL)
+CREATE TABLE ACCOUNT_PRODUCT (
+    account_id                 TEXT PRIMARY KEY,
+    product_code               TEXT NOT NULL UNIQUE,
+    product_name               TEXT NOT NULL,
+    market                     TEXT NOT NULL CHECK (market IN ('UK','US','HK')),
+    account_type               TEXT NOT NULL CHECK (account_type IN ('current','checking','savings','integrated')),
+    customer_segment           TEXT NOT NULL DEFAULT 'general'
+        CHECK (customer_segment IN ('general','student','international_student','premier')),
+    primary_currency           TEXT NOT NULL CHECK (primary_currency GLOB '[A-Z][A-Z][A-Z]'),
+    product_summary            TEXT,
+    dedicated_student_product  INTEGER NOT NULL DEFAULT 0 CHECK (dedicated_student_product IN (0,1)),
+    product_status             TEXT NOT NULL DEFAULT 'ACTIVE'
+        CHECK (product_status IN ('ACTIVE','SUSPENDED','DISCONTINUED')),
+    official_url               TEXT,
+    data_status                TEXT NOT NULL DEFAULT 'verified'
+        CHECK (data_status IN ('verified','partial','estimated')),
+    effective_from             TEXT,
+    effective_to               TEXT,
+    last_verified_at           TEXT NOT NULL,
+    CHECK (effective_to IS NULL OR effective_from IS NULL OR effective_to >= effective_from)
 );
+CREATE INDEX idx_account_product_market ON ACCOUNT_PRODUCT(market, product_status);
 
-CREATE TABLE ACCOUNT_DOC (
-    threshold_id   TEXT NOT NULL,
-    doc_id         TEXT NOT NULL,
-    required       INTEGER NOT NULL CHECK (required IN (0,1)),
-    PRIMARY KEY (threshold_id, doc_id),
-    FOREIGN KEY (threshold_id) REFERENCES ACCOUNT_THRESHOLD(threshold_id) ON DELETE RESTRICT,
-    FOREIGN KEY (doc_id)        REFERENCES DOCUMENT(doc_id)            ON DELETE RESTRICT
+CREATE TABLE ACCOUNT_OPENING_ROUTE (
+    route_id                  TEXT PRIMARY KEY,
+    account_id                TEXT NOT NULL REFERENCES ACCOUNT_PRODUCT(account_id) ON DELETE CASCADE,
+    route_name                TEXT NOT NULL,
+    application_channel       TEXT NOT NULL CHECK (application_channel IN ('mobile_app','online','branch','international_banking')),
+    applicant_location        TEXT,
+    identity_document_type    TEXT,
+    can_apply_before_arrival  INTEGER NOT NULL DEFAULT 0 CHECK (can_apply_before_arrival IN (0,1)),
+    branch_visit_required     INTEGER NOT NULL DEFAULT 0 CHECK (branch_visit_required IN (0,1)),
+    activation_location       TEXT,
+    processing_time_note      TEXT,
+    additional_notes          TEXT,
+    source_url                TEXT,
+    last_verified_at          TEXT NOT NULL
 );
+CREATE INDEX idx_account_route_product ON ACCOUNT_OPENING_ROUTE(account_id);
+
+CREATE TABLE ACCOUNT_ELIGIBILITY_RULE (
+    eligibility_rule_id  TEXT PRIMARY KEY,
+    account_id           TEXT NOT NULL REFERENCES ACCOUNT_PRODUCT(account_id) ON DELETE CASCADE,
+    route_id             TEXT REFERENCES ACCOUNT_OPENING_ROUTE(route_id) ON DELETE CASCADE,
+    rule_type            TEXT NOT NULL CHECK (rule_type IN ('minimum_age','maximum_age','student_status','course_status','residency','residency_duration','nationality','visa_status','applicant_location','minimum_deposit','relationship_balance','income','direct_deposit','existing_customer','other')),
+    operator             TEXT NOT NULL CHECK (operator IN ('eq','neq','gte','lte','in','not_in','required','one_of')),
+    value_text           TEXT,
+    value_numeric        NUMERIC,
+    currency             TEXT CHECK (currency IS NULL OR currency GLOB '[A-Z][A-Z][A-Z]'),
+    required             INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0,1)),
+    description          TEXT NOT NULL,
+    source_url           TEXT,
+    last_verified_at     TEXT NOT NULL,
+    CHECK (value_text IS NOT NULL OR value_numeric IS NOT NULL OR operator = 'required'),
+    CHECK (currency IS NULL OR value_numeric IS NOT NULL)
+);
+CREATE INDEX idx_account_eligibility_product ON ACCOUNT_ELIGIBILITY_RULE(account_id);
+CREATE INDEX idx_account_eligibility_route ON ACCOUNT_ELIGIBILITY_RULE(route_id);
+
+CREATE TABLE ACCOUNT_REQUIRED_DOCUMENT (
+    requirement_id       TEXT PRIMARY KEY,
+    account_id           TEXT NOT NULL REFERENCES ACCOUNT_PRODUCT(account_id) ON DELETE CASCADE,
+    route_id             TEXT REFERENCES ACCOUNT_OPENING_ROUTE(route_id) ON DELETE CASCADE,
+    document_type        TEXT NOT NULL,
+    document_name        TEXT NOT NULL,
+    required             INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0,1)),
+    alternative_group    TEXT,
+    condition_note       TEXT,
+    validity_note        TEXT,
+    source_url           TEXT,
+    last_verified_at     TEXT NOT NULL
+);
+CREATE INDEX idx_account_document_product ON ACCOUNT_REQUIRED_DOCUMENT(account_id);
+CREATE INDEX idx_account_document_route ON ACCOUNT_REQUIRED_DOCUMENT(route_id);
+
+CREATE TABLE ACCOUNT_FEE (
+    fee_id             TEXT PRIMARY KEY,
+    account_id         TEXT NOT NULL REFERENCES ACCOUNT_PRODUCT(account_id) ON DELETE CASCADE,
+    fee_type           TEXT NOT NULL CHECK (fee_type IN ('monthly_fee','below_balance_fee','minimum_opening_deposit','minimum_relationship_balance','international_transfer_fee','incoming_transfer_fee','foreign_transaction_fee','overseas_atm_fee','overdraft_interest','other')),
+    amount             NUMERIC CHECK (amount IS NULL OR amount >= 0),
+    rate               NUMERIC CHECK (rate IS NULL OR rate >= 0),
+    currency           TEXT CHECK (currency IS NULL OR currency GLOB '[A-Z][A-Z][A-Z]'),
+    minimum_amount     NUMERIC,
+    maximum_amount     NUMERIC,
+    waiver_available   INTEGER NOT NULL DEFAULT 0 CHECK (waiver_available IN (0,1)),
+    waiver_condition   TEXT,
+    description        TEXT NOT NULL,
+    source_url         TEXT,
+    last_verified_at   TEXT NOT NULL,
+    CHECK (amount IS NOT NULL OR rate IS NOT NULL),
+    CHECK (amount IS NULL OR currency IS NOT NULL)
+);
+CREATE INDEX idx_account_fee_product ON ACCOUNT_FEE(account_id);
+
+CREATE TABLE ACCOUNT_FEATURE (
+    feature_id         TEXT PRIMARY KEY,
+    account_id         TEXT NOT NULL REFERENCES ACCOUNT_PRODUCT(account_id) ON DELETE CASCADE,
+    feature_type       TEXT NOT NULL CHECK (feature_type IN ('debit_card','mobile_banking','mobile_wallet','multi_currency','international_transfer','global_account_transfer','atm_access','overdraft','interest','deposit_protection','other')),
+    available          INTEGER NOT NULL CHECK (available IN (0,1)),
+    value_text         TEXT,
+    description        TEXT,
+    source_url         TEXT,
+    last_verified_at   TEXT NOT NULL
+);
+CREATE INDEX idx_account_feature_product ON ACCOUNT_FEATURE(account_id);
 
 CREATE TABLE CREDIT_CARD (
-    card_id                  TEXT PRIMARY KEY,
-    issuer                   TEXT    NOT NULL,
-    product_name             TEXT    NOT NULL,
-    annual_fee               NUMERIC,
-    fee_waiver_condition     TEXT,
-    target_audience          TEXT,
-    overseas_cashback_rate   NUMERIC CHECK (overseas_cashback_rate IS NULL OR (overseas_cashback_rate BETWEEN 0 AND 1)),
-    fx_markup_rate           NUMERIC CHECK (fx_markup_rate         IS NULL OR (fx_markup_rate         BETWEEN 0 AND 1)),
-    eligibility              TEXT,
-    perks                    TEXT
+    card_id           TEXT PRIMARY KEY,
+    issuing_bank      TEXT NOT NULL,
+    card_network      TEXT NOT NULL,
+    market            TEXT NOT NULL,
+    product_name      TEXT NOT NULL,
+    card_tier         TEXT,
+    product_status    TEXT NOT NULL DEFAULT 'ACTIVE'
+        CHECK (product_status IN ('ACTIVE','SUSPENDED','DISCONTINUED')),
+    target_audience   TEXT,
+    official_url      TEXT,
+    data_status       TEXT NOT NULL DEFAULT 'synthetic'
+        CHECK (data_status IN ('verified','estimated','synthetic')),
+    effective_from    TEXT,
+    effective_to      TEXT,
+    last_verified_at  TEXT,
+    UNIQUE (issuing_bank, market, product_name),
+    CHECK (effective_to IS NULL OR effective_from IS NULL OR effective_to >= effective_from)
 );
+
+CREATE TABLE CARD_REWARD_RULE (
+    reward_rule_id           TEXT PRIMARY KEY,
+    card_id                  TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    spend_category           TEXT NOT NULL,
+    reward_type              TEXT NOT NULL CHECK (reward_type IN ('cashback','points','miles')),
+    reward_rate              NUMERIC CHECK (reward_rate IS NULL OR reward_rate BETWEEN 0 AND 1),
+    points_per_currency_unit NUMERIC CHECK (points_per_currency_unit IS NULL OR points_per_currency_unit >= 0),
+    spend_cap                NUMERIC CHECK (spend_cap IS NULL OR spend_cap >= 0),
+    cap_currency             TEXT CHECK (cap_currency IS NULL OR cap_currency GLOB '[A-Z][A-Z][A-Z]'),
+    cap_period               TEXT CHECK (cap_period IS NULL OR cap_period IN ('transaction','month','quarter','year')),
+    description              TEXT,
+    CHECK (reward_rate IS NOT NULL OR points_per_currency_unit IS NOT NULL),
+    CHECK (spend_cap IS NULL OR cap_currency IS NOT NULL)
+);
+CREATE INDEX idx_card_reward_rule_card ON CARD_REWARD_RULE(card_id);
+
+CREATE TABLE CARD_FEE (
+    fee_id            TEXT PRIMARY KEY,
+    card_id           TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    fee_type          TEXT NOT NULL CHECK (fee_type IN ('annual_fee','foreign_transaction_fee','cash_advance_fee','late_payment_fee','other')),
+    amount            NUMERIC CHECK (amount IS NULL OR amount >= 0),
+    currency          TEXT CHECK (currency IS NULL OR currency GLOB '[A-Z][A-Z][A-Z]'),
+    rate              NUMERIC CHECK (rate IS NULL OR rate BETWEEN 0 AND 1),
+    waiver_condition  TEXT,
+    notes             TEXT,
+    CHECK (amount IS NOT NULL OR rate IS NOT NULL),
+    CHECK (amount IS NULL OR currency IS NOT NULL)
+);
+CREATE INDEX idx_card_fee_card ON CARD_FEE(card_id);
+
+CREATE TABLE CARD_BENEFIT (
+    benefit_id    TEXT PRIMARY KEY,
+    card_id       TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    benefit_type  TEXT NOT NULL CHECK (benefit_type IN ('airport_lounge','travel_insurance','concierge','merchant_offer','digital_wallet','dual_currency','other')),
+    benefit_name  TEXT NOT NULL,
+    quantity      NUMERIC CHECK (quantity IS NULL OR quantity >= 0),
+    period        TEXT CHECK (period IS NULL OR period IN ('transaction','month','quarter','year')),
+    description   TEXT
+);
+CREATE INDEX idx_card_benefit_card ON CARD_BENEFIT(card_id);
+
+CREATE TABLE CARD_ELIGIBILITY_RULE (
+    eligibility_rule_id  TEXT PRIMARY KEY,
+    card_id              TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    rule_type            TEXT NOT NULL CHECK (rule_type IN ('minimum_age','minimum_income','student_status','banking_relationship','credit_assessment','residency','other')),
+    operator             TEXT NOT NULL CHECK (operator IN ('eq','gte','lte','in','required')),
+    value_text           TEXT,
+    value_numeric        NUMERIC,
+    currency             TEXT CHECK (currency IS NULL OR currency GLOB '[A-Z][A-Z][A-Z]'),
+    required             INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0,1)),
+    description          TEXT,
+    CHECK (value_text IS NOT NULL OR value_numeric IS NOT NULL),
+    CHECK (currency IS NULL OR value_numeric IS NOT NULL)
+);
+CREATE INDEX idx_card_eligibility_card ON CARD_ELIGIBILITY_RULE(card_id);
 
 CREATE TABLE SCHOOL (
     school_id   TEXT PRIMARY KEY,

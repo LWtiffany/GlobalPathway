@@ -72,7 +72,7 @@ def admin_review(console, actor, body, query, review_id):
 
 @route("POST", r"/v1/admin/reviews/(?P<review_id>[\w-]+)/approve")
 def admin_approve(console, actor, body, query, review_id):
-    return 200, console.approve(actor, review_id, body.get("note"))
+    return 200, console.approve(actor, review_id, body.get("note"), body.get("selections"))
 
 
 @route("POST", r"/v1/admin/reviews/(?P<review_id>[\w-]+)/reject")

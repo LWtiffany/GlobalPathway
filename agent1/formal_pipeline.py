@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import config, crawl, formal_extract, gate, incremental, storage
+from . import config, crawl, formal_extract, gate, incremental, review_text, storage
 from .extract import ExtractionError
 from .models import VISA_FIELDS, VisaPatch, VisaPolicyData, VisaPolicyEntry
 
@@ -338,6 +338,11 @@ def _record_evidence(connection, policy_id, values, evidence, documents):
 def _enqueue_review(connection, *, table, key, action, payload, evidence, reason):
     # Dedup: one review per (table, key, action) via the admin.review_queue UNIQUE
     # constraint; repeat scans reuse it but refresh the reason/evidence.
+    try:
+        sources = load_sources()
+    except (OSError, ValueError, KeyError):
+        sources = {}
+    evidence = review_text.stamp_source_urls(evidence, sources)
     existing = _row(connection, """SELECT review_id FROM admin.review_queue
         WHERE domain_table=%s AND record_key=%s AND action=%s""",
         (table, key, action))
@@ -520,7 +525,7 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
         for field, conflict in conflicted.items():
             if field in proposed:
                 blocked_fields[field] = proposed.pop(field)
-                blocked_reasons.append(f"跨页面冲突 {field}：{conflict['values']}")
+                blocked_reasons.append(review_text.conflict_sentence(field, conflict["values"]))
         clean = _row_values(proposed)
         blocked_row = _row_values(blocked_fields)
         if entry.policy.applies_to_city:
@@ -579,8 +584,7 @@ def _apply_region(connection, region, merged, blocked, region_conflicts=(), name
             if blocked_reasons:
                 parts.append(f"门控 {len(blocked_reasons)} 个错误：" + "；".join(blocked_reasons))
             if changed:
-                parts.append(f"字段变更 {len(changed)} 项：" + "; ".join(
-                    f"{c}: {before!r} → {after!r}" for c, (before, after) in changed.items()))
+                parts.append(review_text.change_sentence(changed))
             if changed_docs:
                 parts.append("材料要求变更：" + "、".join(d["name_zh"] for d in changed_docs))
             gone = [d["name_zh"] for d in vanished if not d["still_quoted"]]

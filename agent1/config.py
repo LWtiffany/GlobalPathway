@@ -9,9 +9,11 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCES_PATH = ROOT / "sources.json"
 LEGACY_MIXED_DB = ROOT / "data" / "agent1.sqlite3"
 
-# PostgreSQL (阿里云 RDS)。ECS 内网直连；本地开发用 SSH 隧道 127.0.0.1:15432 覆盖。
-DB_HOST = os.getenv("AGENT1_DB_HOST", "pgm-2ze9t2uh39o1115k.rwlb.rds.aliyuncs.com")
-DB_PORT = int(os.getenv("AGENT1_DB_PORT", "5432"))
+# PostgreSQL 连接默认走本地 SSH 隧道（127.0.0.1:15432 → ECS 内网 PostgreSQL），
+# 让 dev 分支本地直接跑即可连库。prod 分支在 ECS 上运行时用环境变量
+# AGENT1_DB_HOST/AGENT1_DB_PORT 覆盖为阿里云 RDS 内网地址。两分支默认值一致，合并无差异。
+DB_HOST = os.getenv("AGENT1_DB_HOST", "127.0.0.1")
+DB_PORT = int(os.getenv("AGENT1_DB_PORT", "15432"))
 DB_NAME = os.getenv("AGENT1_DB_NAME", "team03")
 DB_USER = os.getenv("AGENT1_DB_USER", "team03")
 DB_PASSWORD = os.getenv("AGENT1_DB_PASSWORD", "")

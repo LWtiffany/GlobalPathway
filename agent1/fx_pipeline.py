@@ -15,7 +15,7 @@ policy_domain 'fx_policy'; verbatim quotes in FX_EVIDENCE. Nothing is published.
 import json
 import uuid
 
-from . import config, crawl, formal_pipeline as fp, fx_extract, gate, storage
+from . import config, crawl, formal_pipeline as fp, fx_extract, gate, review_text, storage
 from .models import FX_FIELDS, FX_PURPOSES
 
 DOMAIN = "fx_policy"
@@ -163,7 +163,7 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
         evidence = _evidence_json(bucket["evidence"])
         clean = {f: v for f, v in bucket["fields"].items() if f not in bucket["conflicted"]}
         blocked = {f: v for f, v in bucket["fields"].items() if f in bucket["conflicted"]}
-        reasons = [f"冲突 {c['field']}：{c['values']}" for c in conflicts
+        reasons = [review_text.conflict_sentence(c["field"], c["values"]) for c in conflicts
                    if c["field"] in blocked and c["scope"] in (None, purpose)]
         id_ = policy_id(country, purpose)
         header = {"policy_id": id_, "country": country, "policy_type": POLICY_TYPE,
@@ -173,7 +173,7 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
             existing is not None and existing["annual_quota_currency"] is not None)
         if "annual_quota_amount" in clean and not has_currency:
             blocked["annual_quota_amount"] = clean.pop("annual_quota_amount")
-            reasons.append("annual_quota_amount 缺少可入库的币种")
+            reasons.append(review_text.missing_currency_sentence())
         result = {"purpose": purpose, "policy_id": id_}
 
         if existing is None:
@@ -218,8 +218,7 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
         if review_row or changed_docs or vanished:
             parts = list(reasons)
             if changed:
-                parts.append(f"字段变更 {len(changed)} 项：" + "; ".join(
-                    f"{c}: {before!r} → {after!r}" for c, (before, after) in changed.items()))
+                parts.append(review_text.change_sentence(changed))
             if changed_docs:
                 parts.append("材料要求变更：" + "、".join(d["name_zh"] for d in changed_docs))
             gone = [d["name_zh"] for d in vanished if not d["still_quoted"]]
@@ -239,7 +238,59 @@ def _apply_country(connection, country, merged, conflicts, named=None, pages=Non
             result["result"] = "updated" if fill or new_docs else "no_change"
             _reject_stale_reviews(connection, id_)
         results.append(result)
+    _collapse_shared_reviews(connection, results)
     return results
+
+
+def _collapse_shared_reviews(connection, results):
+    """A rule with no purpose is copied onto tuition and living. Keep one review."""
+    rows = []
+    for result in results:
+        review_id = result.get("review_id")
+        if not review_id:
+            continue
+        row = fp._row(connection, "SELECT * FROM admin.review_queue WHERE review_id=%s", (review_id,))
+        if row:
+            rows.append(row)
+    if len(rows) < 2:
+        return
+
+    def signature(row):
+        payload = json.loads(row["proposed_value"] or "{}")
+        policy = payload.get("policy") or {}
+        fields = {name: policy.get(name) for name in FX_FIELDS if name in policy}
+        choices = {}
+        for fact in json.loads(row["evidence_json"] or "[]"):
+            if fact.get("field") in fields:
+                choices.setdefault(fact["field"], set()).add(
+                    json.dumps(fact.get("value"), ensure_ascii=False, sort_keys=True))
+        return json.dumps({
+            "fields": fields,
+            "choices": {name: sorted(values) for name, values in choices.items()},
+            "documents": payload.get("documents") or [],
+            "removed": payload.get("removed_documents") or [],
+        }, ensure_ascii=False, sort_keys=True)
+
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(signature(row), []).append(row)
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        keep, *rest = group
+        payload = json.loads(keep["proposed_value"] or "{}")
+        titles = []
+        for row in group:
+            title = (json.loads(row["proposed_value"] or "{}").get("policy") or {}).get("title") or ""
+            label = title.split("：", 1)[-1]
+            if label and label not in titles:
+                titles.append(label)
+        payload["also_apply"] = [row["record_key"] for row in rest]
+        payload["shared_titles"] = titles
+        connection.execute("UPDATE admin.review_queue SET proposed_value=%s WHERE review_id=%s",
+                           (json.dumps(payload, ensure_ascii=False), keep["review_id"]))
+        for row in rest:
+            connection.execute("DELETE FROM admin.review_queue WHERE review_id=%s", (row["review_id"],))
 
 
 def apply_review(connection, row, *, decided_by, note=None, selected_fields=None):

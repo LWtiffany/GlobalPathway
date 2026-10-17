@@ -12,3 +12,4 @@ __pycache__/
 .workbuddy/
 .env
 local_secrets.py
+scripts/_watch_deploy.py
