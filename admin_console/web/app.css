@@ -171,6 +171,10 @@ a{color:#8b7140}
 .drawer .kv{display:grid;grid-template-columns:84px 1fr;gap:8px 12px;font-size:12px;margin:14px 0}
 .drawer .kv>span:nth-child(odd){color:#9a917f}
 .drawer blockquote{margin:10px 0;padding:10px 14px;background:#f8f4ec;border-left:3px solid #b89b6a;white-space:pre-wrap;line-height:1.7;font-size:12.5px}
+.source-links{display:grid;gap:7px;margin:8px 0 14px}
+.source-links a{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border:1px solid #ded6c8;background:#fff;color:#5e574a;text-decoration:none;font-size:12px;line-height:1.45;word-break:break-word}
+.source-links a:hover{border-color:#b89b6a;color:#8e1b24;background:#fffaf2}
+.source-links .external{flex:none;color:#b89b6a;font-size:14px}
 .drawer .close{float:right;background:none;border:none;font-size:18px;color:#9a917f}
 .modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:620px;max-width:94vw;max-height:88vh;overflow:auto;background:#fffdf9;border:1px solid #e6dfd2;z-index:21;padding:24px 28px}
 .modal h3{margin:0 0 16px;font-weight:400;font-size:18px;border-bottom:1px solid #22201c;padding-bottom:10px}

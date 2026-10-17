@@ -322,6 +322,30 @@ function docList(docs, gone) {
     doc.condition_quote ? h("span", { class: "q" }, "条件：" + doc.condition_quote) : null)));
 }
 
+function sourceLinksView(reviews) {
+  const sources = new Map();
+  const add = (url, name) => {
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url) || sources.has(url)) return;
+    let label = name;
+    if (!label) {
+      try { label = new URL(url).hostname; } catch (_) { label = "查看原文"; }
+    }
+    sources.set(url, label);
+  };
+  for (const review of reviews) {
+    for (const evidence of review.evidence || []) add(evidence.source_url, evidence.source_name);
+    const proposed = review.proposed_value || {};
+    add(proposed.source_url, proposed.source_name);
+    add((proposed.tuition || {}).source_url, proposed.school_key || proposed.program_key);
+    add((proposed.policy || {}).source_url, (proposed.policy || {}).title);
+  }
+  if (!sources.size) return [];
+  return [h("div", { class: "sec" }, "政策原文"),
+    h("div", { class: "source-links" }, [...sources].map(([url, name]) =>
+      h("a", { href: url, target: "_blank", rel: "noopener noreferrer", title: url },
+        h("span", null, name), h("span", { class: "external", "aria-hidden": "true" }, "↗"))))];
+}
+
 function proposedView(r) {
   const p = r.proposed_value || {};
   const parts = [];
@@ -462,6 +486,7 @@ function renderDrawer() {
       })))),
       h("div", { class: "kv" }, kv.map(([k, v]) => [h("span", null, k), h("span", null, v)])),
       h("div", { class: "sec" }, "为什么需要人工确认"), h("blockquote", null, explainReason(r.reason)),
+      sourceLinksView(members),
       conflictView(A.conflicts || []),
       proposedView(r),
       r.current ? [h("div", { class: "sec" }, "目前库里的内容"), fieldTable(r.current)]
