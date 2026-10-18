@@ -143,6 +143,8 @@ FIELDS = {
         "内地消费付款方式", _enum("mobile_or_qr", "physical_card", "mixed_or_unsure"),
         "ask_mainland_payment_method", "你在中国内地消费时通常怎样付款？"),
     "full_time_student": ("是否全日制学生", _bool, "ask_full_time_student", "你目前是全日制大专或大学生吗？"),
+    "student_institution_eligible": ("是否就读 HSBC 指定院校", _bool, "ask_student_institution_eligible",
+                                     "你是否就读于 HSBC 指定名单内的香港全日制院校课程？"),
     "premier_relationship": ("是否为卓越理财客户", _bool, "ask_premier_relationship",
                              "你目前是否持有符合条件的 HSBC Premier 卓越理财关系？"),
     "hsbc_relationship_balance_band": (
@@ -228,11 +230,12 @@ FINANCIAL_FIELDS = frozenset({"annual_income_hkd", "annual_income_band_hkd", "as
                               "hsbc_relationship_balance_band", "hsbc_premier_path",
                               "monthly_card_spend_band_hkd", "repayment_mode", "amount"})
 PERSONAL_FIELDS = frozenset({"applicant_age", "applicant_age_band", "residence_region",
-                             "applicant_residence", "hk_resident", "full_time_student"})
+                             "applicant_residence", "hk_resident", "full_time_student",
+                             "student_institution_eligible"})
 VOLATILE_FIELDS = {"annual_income_hkd": 365, "annual_income_band_hkd": 365, "asset_band": 365,
                    "repayment_mode": 365, "monthly_card_spend_band_hkd": 365,
                    "mainland_payment_method": 365,
-                   "full_time_student": 365,
+                   "full_time_student": 365, "student_institution_eligible": 365,
                    "premier_relationship": 180, "hsbc_relationship_balance_band": 180,
                    "hsbc_premier_path": 180, "hk_resident": 365, "offer_status": 90}
 
@@ -245,6 +248,7 @@ def field_definitions():
                    if code in (*rule.must_have, *rule.nice_to_have)] if "CONDITION_TABLE" in globals() else []
         if code in {"application_region", "applicant_age_band", "annual_income_band_hkd", "asset_band",
                     "repayment_mode", "spending_scenarios", "reward_preference", "full_time_student",
+                    "student_institution_eligible",
                     "premier_relationship", "hsbc_relationship_balance_band", "hsbc_premier_path",
                     "monthly_card_spend_band_hkd", "mainland_payment_method", "hk_resident"}:
             domains.append("credit_card")
