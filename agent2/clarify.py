@@ -126,8 +126,8 @@ FIELDS = {
                           "你的税前年收入大约是多少港币？可以填估算金额。"),
     "annual_income_band_hkd": ("税前年收入区间（港币）", _income_band_hkd,
                                "ask_annual_income_band_hkd", "请选择税前年收入所在区间。"),
-    "asset_band": ("可支配资产区间", _enum("none", "under_100k", "100k_500k", "500k_plus"),
-                   "ask_asset_band", "你的可支配资产大致在哪个区间？此项仅在产品有资产门槛时询问。"),
+    "asset_band": ("可证明资产区间", _enum("none", "under_100k", "100k_500k", "500k_plus"),
+                   "ask_asset_band", "你能否提供最近3个月的银行资产证明？可证明资产大致在哪个区间？"),
     "repayment_mode": ("还款方式", _enum("full", "sometimes_carry", "usually_carry"),
                        "ask_repayment_mode", "你通常会每月全额还款，还是可能分期或保留余额？"),
     "spending_scenarios": ("主要消费场景",
@@ -136,9 +136,24 @@ FIELDS = {
                            "ask_spending_scenarios", "请选择最主要的两到三个消费场景。"),
     "reward_preference": ("奖励偏好", _enum("cashback", "points", "miles", "no_preference"),
                           "ask_reward_preference", "你更偏好返现、积分、里程，还是都可以？"),
+    "monthly_card_spend_band_hkd": (
+        "每月信用卡消费区间", _enum("under_2k", "2k_5k", "5k_10k", "10k_20k", "20k_plus"),
+        "ask_monthly_card_spend_band_hkd", "你预计每月信用卡消费大约在哪个区间？"),
+    "mainland_payment_method": (
+        "内地消费付款方式", _enum("mobile_or_qr", "physical_card", "mixed_or_unsure"),
+        "ask_mainland_payment_method", "你在中国内地消费时通常怎样付款？"),
     "full_time_student": ("是否全日制学生", _bool, "ask_full_time_student", "你目前是全日制大专或大学生吗？"),
     "premier_relationship": ("是否为卓越理财客户", _bool, "ask_premier_relationship",
                              "你目前是否持有符合条件的 HSBC Premier 卓越理财关系？"),
+    "hsbc_relationship_balance_band": (
+        "HSBC 总关系结余区间", _enum("under_100k", "100k_999k", "1m_plus"),
+        "ask_hsbc_relationship_balance_band", "请选择你在 HSBC 的总关系结余区间。"),
+    "hsbc_premier_path": (
+        "HSBC Premier 资格路径",
+        _enum("existing_premier", "can_qualify_with_1m_trb", "not_applicable"),
+        "ask_hsbc_premier_path", "请选择与你相符的 HSBC Premier 情况。"),
+    "hk_resident": ("是否为香港居民", _bool, "ask_hk_resident",
+                    "你目前是否为香港特别行政区居民？"),
 }
 
 
@@ -158,12 +173,34 @@ OPTION_LABELS = {
     "applicant_identity": {"student": "学生本人", "parent": "家长", "other": "其他"},
     "application_region": {"UK": "英国", "US": "美国", "CN-HK": "中国香港", "CN": "中国内地"},
     "applicant_age_band": {"under_18": "18 岁以下", "18_or_over": "18 岁或以上"},
-    "asset_band": {"none": "暂无", "under_100k": "10 万以下", "100k_500k": "10–50 万",
-                   "500k_plus": "50 万以上"},
+    "asset_band": {"none": "目前无法提供银行资产证明", "under_100k": "可证明资产少于 10 万",
+                   "100k_500k": "可证明资产 10–50 万", "500k_plus": "可证明资产 50 万以上"},
     "repayment_mode": {"full": "每月全额还款", "sometimes_carry": "偶尔分期或保留余额",
                        "usually_carry": "通常会保留余额"},
     "reward_preference": {"cashback": "返现", "points": "积分", "miles": "里程",
                           "no_preference": "都可以"},
+    "monthly_card_spend_band_hkd": {
+        "under_2k": "少于 HK$2,000",
+        "2k_5k": "HK$2,000–4,999",
+        "5k_10k": "HK$5,000–9,999",
+        "10k_20k": "HK$10,000–19,999",
+        "20k_plus": "HK$20,000 或以上",
+    },
+    "mainland_payment_method": {
+        "mobile_or_qr": "主要使用手机支付或银联二维码",
+        "physical_card": "主要刷实体卡",
+        "mixed_or_unsure": "两者差不多，或暂不确定",
+    },
+    "hsbc_relationship_balance_band": {
+        "under_100k": "少于 HK$100,000",
+        "100k_999k": "HK$100,000–999,999",
+        "1m_plus": "HK$1,000,000 或以上",
+    },
+    "hsbc_premier_path": {
+        "existing_premier": "已经是 HSBC Premier 客户，并可满足信用卡关系结余要求",
+        "can_qualify_with_1m_trb": "可在 HSBC 维持 HK$1,000,000 总关系结余，并愿意先升级 Premier",
+        "not_applicable": "以上均不适用，或不考虑 Premier",
+    },
     "spending_scenarios": {"online": "网购", "dining": "餐饮", "travel": "旅行",
                            "overseas": "境外消费", "mainland_china": "内地消费",
                            "tuition": "学费", "retail": "日常零售"},
@@ -188,12 +225,16 @@ def field_catalog():
 
 
 FINANCIAL_FIELDS = frozenset({"annual_income_hkd", "annual_income_band_hkd", "asset_band",
-                              "repayment_mode", "amount"})
+                              "hsbc_relationship_balance_band", "hsbc_premier_path",
+                              "monthly_card_spend_band_hkd", "repayment_mode", "amount"})
 PERSONAL_FIELDS = frozenset({"applicant_age", "applicant_age_band", "residence_region",
-                             "applicant_residence", "full_time_student"})
+                             "applicant_residence", "hk_resident", "full_time_student"})
 VOLATILE_FIELDS = {"annual_income_hkd": 365, "annual_income_band_hkd": 365, "asset_band": 365,
-                   "repayment_mode": 365, "full_time_student": 365,
-                   "premier_relationship": 180, "offer_status": 90}
+                   "repayment_mode": 365, "monthly_card_spend_band_hkd": 365,
+                   "mainland_payment_method": 365,
+                   "full_time_student": 365,
+                   "premier_relationship": 180, "hsbc_relationship_balance_band": 180,
+                   "hsbc_premier_path": 180, "hk_resident": 365, "offer_status": 90}
 
 
 def field_definitions():
@@ -204,7 +245,8 @@ def field_definitions():
                    if code in (*rule.must_have, *rule.nice_to_have)] if "CONDITION_TABLE" in globals() else []
         if code in {"application_region", "applicant_age_band", "annual_income_band_hkd", "asset_band",
                     "repayment_mode", "spending_scenarios", "reward_preference", "full_time_student",
-                    "premier_relationship"}:
+                    "premier_relationship", "hsbc_relationship_balance_band", "hsbc_premier_path",
+                    "monthly_card_spend_band_hkd", "mainland_payment_method", "hk_resident"}:
             domains.append("credit_card")
         result[code] = {**item, "domains": sorted(set(domains)),
                         "sensitivity": "financial" if code in FINANCIAL_FIELDS else

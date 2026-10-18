@@ -2,11 +2,13 @@
 
 import re
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from agent2.models import AnswerBody, FollowUpQuestion, Notice
 
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
-from .credit_card_engine import recommend
+from .credit_card_engine import assess_eligibility, needs_asset_information, recommend
+from .credit_card_models import CreditCardRecommendationSet
 from .credit_card_repository import (CreditCardRepository, CreditCardRepositoryError,
                                      RdsCreditCardRepository)
 
@@ -23,16 +25,15 @@ REGION_WORDS = {"CN-HK": ("香港", "hong kong", "hk"), "UK": ("英国", "uk"),
                 "US": ("美国", "us"), "CN": ("内地", "大陆", "中国")}
 
 
-def extract_credit_card_facts(text: str, asked_fields=()):
+def extract_credit_card_facts(text: str):
     lower = text.casefold()
     facts, basis = {}, {}
     for region, words in REGION_WORDS.items():
         word = next((word for word in words if word.casefold() in lower), None)
         position = lower.find(word.casefold()) if word else -1
         card_positions = [match.start() for match in re.finditer(r"信用卡|credit\s*card", lower, re.I)]
-        region_was_asked = "application_region" in asked_fields
         near_card_intent = any(abs(position - card_position) <= 8 for card_position in card_positions)
-        if word and (region_was_asked or near_card_intent):
+        if word and near_card_intent:
             facts["application_region"], basis["application_region"] = region, word
             break
     income = re.search(r"(?:年收入|年薪)\D{0,8}(\d+(?:\.\d+)?)\s*(万|[kK])?", text)
@@ -40,16 +41,6 @@ def extract_credit_card_facts(text: str, asked_fields=()):
         value = float(income.group(1))
         value *= 10000 if income.group(2) == "万" else 1000 if income.group(2) else 1
         facts["annual_income_hkd"], basis["annual_income_hkd"] = int(value), income.group(0)
-    elif "annual_income_hkd" in asked_fields:
-        amount = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(万|[kK])?(?:港币|HKD)?\s*", text, re.I)
-        if amount:
-            value = float(amount.group(1))
-            value *= 10000 if amount.group(2) == "万" else 1000 if amount.group(2) else 1
-            facts["annual_income_hkd"], basis["annual_income_hkd"] = int(value), text.strip()
-    if "applicant_age" in asked_fields and "applicant_age" not in facts:
-        age = re.search(r"(?:申请人年龄\D{0,4})?(\d{1,3})\s*(?:岁)?", text)
-        if age:
-            facts["applicant_age"], basis["applicant_age"] = int(age.group(1)), text.strip()
     if re.search(r"每月.{0,4}全额还|全额还款|pay.{0,4}full", text, re.I):
         facts["repayment_mode"], basis["repayment_mode"] = "full", "全额还款"
     elif re.search(r"经常分期|通常分期|最低还款|保留余额|欠款", text):
@@ -99,6 +90,34 @@ QUESTION_OPTIONS = {
     "application_region": [{"value": "CN-HK", "label": "中国香港"}],
     "applicant_age_band": [{"value": "under_18", "label": "18 岁以下"},
                            {"value": "18_or_over", "label": "18 岁或以上"}],
+    "hk_resident": [{"value": True, "label": "是，我是香港居民"},
+                    {"value": False, "label": "否，我不是香港居民"}],
+    "hsbc_relationship_balance_band": [
+        {"value": "under_100k", "label": "少于 HK$100,000"},
+        {"value": "100k_999k", "label": "HK$100,000–999,999"},
+        {"value": "1m_plus", "label": "HK$1,000,000 或以上"},
+    ],
+    "hsbc_premier_path": [
+        {"value": "existing_premier",
+         "label": "已经是 HSBC Premier 客户，并可满足信用卡关系结余要求"},
+        {"value": "can_qualify_with_1m_trb",
+         "label": "可在 HSBC 维持 HK$1,000,000 总关系结余，并愿意先升级 Premier"},
+        {"value": "not_applicable", "label": "以上均不适用，或不考虑 Premier"},
+    ],
+    "asset_band": [
+        {"value": "none", "label": "目前无法提供银行资产证明"},
+        {"value": "under_100k", "label": "可证明资产少于 HK$100,000"},
+        {"value": "100k_500k", "label": "可证明资产 HK$100,000–500,000"},
+        {"value": "500k_plus", "label": "可证明资产 HK$500,000 或以上"},
+    ],
+    "full_time_student": [
+        {"value": True, "label": "是，我是全日制学生"},
+        {"value": False, "label": "否，我不是全日制学生"},
+    ],
+    "student_institution_eligible": [
+        {"value": True, "label": "是，我就读 HSBC 指定名单内的香港院校课程"},
+        {"value": False, "label": "否，或暂不确定"},
+    ],
     "repayment_mode": [{"value": "full", "label": "每月全额还款"},
                        {"value": "sometimes_carry", "label": "偶尔分期或保留余额"},
                        {"value": "usually_carry", "label": "通常会保留余额"}],
@@ -109,6 +128,24 @@ QUESTION_OPTIONS = {
                            {"value": "mainland_china", "label": "内地消费"},
                            {"value": "tuition", "label": "学费"},
                            {"value": "retail", "label": "日常零售"}],
+    "monthly_card_spend_band_hkd": [
+        {"value": "under_2k", "label": "少于 HK$2,000"},
+        {"value": "2k_5k", "label": "HK$2,000–4,999"},
+        {"value": "5k_10k", "label": "HK$5,000–9,999"},
+        {"value": "10k_20k", "label": "HK$10,000–19,999"},
+        {"value": "20k_plus", "label": "HK$20,000 或以上"},
+    ],
+    "mainland_payment_method": [
+        {"value": "mobile_or_qr", "label": "主要使用手机支付或银联二维码"},
+        {"value": "physical_card", "label": "主要刷实体卡"},
+        {"value": "mixed_or_unsure", "label": "两者差不多，或暂不确定"},
+    ],
+    "reward_preference": [
+        {"value": "cashback", "label": "现金回赠"},
+        {"value": "points", "label": "积分 / MoneyBack Points"},
+        {"value": "miles", "label": "航空里程"},
+        {"value": "no_preference", "label": "没有偏好，按预计价值比较"},
+    ],
 }
 
 
@@ -118,7 +155,12 @@ class CreditCardWorkflow:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def run(self, task: DomainTask, request: OrchestrationInput) -> DomainResult:
-        extracted, basis = extract_credit_card_facts(request.text, request.asked_fields)
+        if request.input_mode == "free_text":
+            rule_facts, rule_basis = extract_credit_card_facts(request.text)
+        else:
+            rule_facts, rule_basis = {}, {}
+        extracted = {**rule_facts, **request.understood_facts}
+        basis = {**rule_basis, **request.understood_basis}
         facts = {**request.profile_values, **task.facts, **extracted}
 
         if facts.get("application_region") is None:
@@ -154,27 +196,6 @@ class CreditCardWorkflow:
             return self._needs_input(task, request, extracted, basis, ["applicant_age_band"],
                                      {"applicant_age_band": "你目前是否已满 18 岁？"}, QUESTION_OPTIONS)
 
-        missing = [field for field in ("repayment_mode", "spending_scenarios") if not facts.get(field)]
-        if missing:
-            prompts = {
-                "repayment_mode": "你通常会每月全额还款，还是可能分期或保留余额？",
-                "spending_scenarios": "最主要的两到三个消费场景是什么？例如网购、餐饮、旅行、内地消费或学费。",
-            }
-            return self._needs_input(task, request, extracted, basis, missing, prompts, QUESTION_OPTIONS)
-
-        if facts["repayment_mode"] != "full":
-            return DomainResult(
-                task_id=task.task_id, domain="credit_card", status="needs_verification",
-                answer=AnswerBody(
-                    summary="你可能分期或保留余额，应优先比较借款成本；当前 RDS 没有 APR、分期利率和免息期数据。",
-                    limitations=["在借款成本资料补齐前，不按返现或积分推荐信用卡。"],
-                ),
-                missing_fields=["card_apr_data"],
-                next_actions=["补齐信用卡 APR、分期手续费和免息期数据后重新比较。"],
-                notices=[Notice(code="borrowing_cost_data_missing", message="RDS 缺少信用卡借款成本字段")],
-                observed_facts=extracted, observed_basis=basis,
-            )
-
         if catalog is None:
             try:
                 catalog = await self.repository.active_products(facts["application_region"], self.clock())
@@ -183,47 +204,284 @@ class CreditCardWorkflow:
             if not catalog.products:
                 return self._empty_catalog(task, catalog, extracted, basis)
 
-        scenarios = facts["spending_scenarios"] if isinstance(facts["spending_scenarios"], list) else \
-            [item for item in str(facts["spending_scenarios"]).split(",") if item]
-        result = recommend(catalog.products, facts, scenarios, facts.get("reward_preference", "no_preference"))
-        if result.primary is None:
+        requires_residency = any(
+            rule.required and rule.rule_type == "residency"
+            for product in catalog.products for rule in product.eligibility_rules
+        )
+        if requires_residency and facts.get("hk_resident") is None:
+            return self._needs_input(
+                task, request, extracted, basis, ["hk_resident"],
+                {"hk_resident": (
+                    "你目前是否为香港特别行政区居民？HSBC 将其列为基本卡申请条件。"
+                )},
+                QUESTION_OPTIONS,
+            )
+
+        early_assessments = [assess_eligibility(product, facts) for product in catalog.products]
+        if early_assessments and all(item.status == "ineligible" for item in early_assessments):
+            excluded = {
+                product.card_id: assessment.reasons
+                for product, assessment in zip(catalog.products, early_assessments)
+            }
+            steps = [
+                f"{product.product_name}：{'；'.join(excluded[product.card_id])}"
+                for product in catalog.products
+            ]
             return DomainResult(
                 task_id=task.task_id, domain="credit_card", status="cannot_answer",
-                answer=AnswerBody(summary="现有产品均明确不满足你的申请门槛。"),
-                payload={"recommendations": result.model_dump(mode="json")},
+                answer=AnswerBody(summary="现有产品均明确不满足你的申请门槛。", steps=steps),
+                payload={"recommendations": CreditCardRecommendationSet(
+                    excluded=excluded).model_dump(mode="json"),
+                         "catalog": self._catalog_summary(catalog)},
+                knowledge_read_id=catalog.read_id, observed_facts=extracted, observed_basis=basis,
+            )
+
+        has_premier_path = any(
+            rule.required and rule.rule_type == "banking_relationship"
+            for product in catalog.products for rule in product.eligibility_rules
+        )
+        if (has_premier_path and facts.get("hsbc_premier_path") is None
+                and facts.get("premier_relationship") is None):
+            return self._needs_input(
+                task, request, extracted, basis, ["hsbc_premier_path"],
+                {"hsbc_premier_path": (
+                    "以下哪种 HSBC Premier 情况与你相符？这里的 HK$1,000,000 指在 HSBC 的"
+                    "总关系结余，不是年收入。"
+                )},
+                QUESTION_OPTIONS,
+            )
+
+        if (facts.get("premier_relationship") is True
+                and facts.get("hsbc_total_relationship_balance_hkd") is None
+                and facts.get("hsbc_relationship_balance_band") is None):
+            return self._needs_input(
+                task, request, extracted, basis, ["hsbc_relationship_balance_band"],
+                {"hsbc_relationship_balance_band": (
+                    "你已确认是 HSBC Premier 客户。为核对 Premier Mastercard 的申请条件，"
+                    "请选择你在 HSBC 的总关系结余区间。"
+                )},
+                QUESTION_OPTIONS,
+            )
+
+        needs_asset = any(needs_asset_information(product, facts) for product in catalog.products)
+        if needs_asset and facts.get("asset_band") is None:
+            return self._needs_input(
+                task, request, extracted, basis, ["asset_band"],
+                {"asset_band": (
+                    "你的收入未达到部分卡的公开门槛。你能否提供最近3个月的银行资产证明，"
+                    "以及可证明资产大致在哪个区间？这条路径仍需HSBC个案审批。"
+                )},
+                QUESTION_OPTIONS,
+            )
+
+        student_questions = self._student_questions_needed(catalog.products, facts)
+        if student_questions:
+            prompts = {
+                "full_time_student": (
+                    "你的收入未达到一般信用卡的公开门槛。你是否为全日制学生？"
+                    "学生信用卡不设收入要求。"
+                ),
+                "student_institution_eligible": (
+                    "你是否就读于 HSBC 指定名单内的香港全日制院校课程？"
+                ),
+            }
+            return self._needs_input(
+                task, request, extracted, basis, student_questions, prompts, QUESTION_OPTIONS)
+
+        required_usage_fields = ["repayment_mode", "spending_scenarios"]
+        scenarios_so_far = facts.get("spending_scenarios") or []
+        if isinstance(scenarios_so_far, str):
+            scenarios_so_far = [item for item in scenarios_so_far.split(",") if item]
+        if "mainland_china" in scenarios_so_far:
+            required_usage_fields.append("mainland_payment_method")
+        required_usage_fields += ["monthly_card_spend_band_hkd", "reward_preference"]
+        missing = [field for field in required_usage_fields if not facts.get(field)]
+        if missing:
+            prompts = {
+                "repayment_mode": "你通常会每月全额还款，还是可能分期或保留余额？",
+                "spending_scenarios": (
+                    "请按重要程度选择最主要的两到三个消费场景；先选的场景权重更高。"
+                    "例如网购、餐饮、旅行、内地消费或学费。"
+                ),
+                "monthly_card_spend_band_hkd": (
+                    "你预计每月信用卡消费大约在哪个区间？这用于计算奖励上限、年费和外币手续费。"
+                ),
+                "reward_preference": "你更偏好现金回赠、积分、航空里程，还是按预计价值比较？",
+                "mainland_payment_method": (
+                    "你在中国内地消费时通常怎样付款？Pulse 的 4.4% 是组合上限，"
+                    "需要符合手机/二维码支付及自选奖赏类别条件。"
+                ),
+            }
+            return self._needs_input(task, request, extracted, basis, missing, prompts, QUESTION_OPTIONS)
+
+        if facts["repayment_mode"] != "full" and not all(
+                any(term.term_type == kind for term in product.borrowing_terms)
+                for product in catalog.products
+                for kind in ("purchase_apr", "interest_free_period", "spending_instalment")):
+            return DomainResult(
+                task_id=task.task_id, domain="credit_card", status="needs_verification",
+                answer=AnswerBody(
+                    summary="你可能分期或保留余额，应优先比较借款成本；RDS 的借款成本资料还不完整。",
+                    limitations=["借款成本资料补齐前，不按返现或积分给出确定推荐。"],
+                ),
+                missing_fields=["card_apr_data"],
+                next_actions=["补齐信用卡 APR、分期手续费和免息期数据后重新比较。"],
+                notices=[Notice(code="borrowing_cost_data_missing", message="RDS 缺少信用卡借款成本字段")],
+                observed_facts=extracted, observed_basis=basis,
+            )
+
+        scenarios = facts["spending_scenarios"] if isinstance(facts["spending_scenarios"], list) else \
+            [item for item in str(facts["spending_scenarios"]).split(",") if item]
+        result = recommend(catalog.products, facts, scenarios,
+                           facts.get("reward_preference", "no_preference"), now=self.clock())
+        if result.primary is None:
+            names = {product.card_id: product.product_name for product in catalog.products}
+            steps = [
+                f"{names.get(card_id, card_id)}：{'；'.join(reasons)}"
+                for card_id, reasons in result.excluded.items()
+            ]
+            return DomainResult(
+                task_id=task.task_id, domain="credit_card", status="cannot_answer",
+                answer=AnswerBody(summary="现有产品均明确不满足你的申请门槛。", steps=steps),
+                payload={"recommendations": result.model_dump(mode="json"),
+                         "catalog": self._catalog_summary(catalog)},
                 knowledge_read_id=catalog.read_id, observed_facts=extracted, observed_basis=basis,
             )
 
         recommendations = [result.primary, *result.supplements, *result.alternatives]
         now = self.clock()
         by_id = {product.card_id: product for product in catalog.products}
-        data_ready = all(
-            card.data_status == "verified" and card.official_url
+        product_data_ready = all(
+            card.official_url
             and by_id[card.card_id].last_verified_at
-            and now - by_id[card.card_id].last_verified_at <= timedelta(hours=24)
+            and now - by_id[card.card_id].last_verified_at <= timedelta(days=30)
+            and all(item.source_url and item.last_verified_at
+                    for item in [*by_id[card.card_id].reward_rules,
+                                 *by_id[card.card_id].fees,
+                                 *by_id[card.card_id].benefits])
             for card in recommendations
         )
         steps = [self._format_card(result.primary)]
         steps += [self._format_card(card) for card in result.supplements]
+        if facts["repayment_mode"] != "full":
+            steps.insert(0, self._format_borrowing_costs(by_id[result.primary.card_id]))
         if result.alternatives:
             steps.append("免年费备选：" + "、".join(card.product_name for card in result.alternatives))
         limitations = list(dict.fromkeys(limit for card in recommendations for limit in card.limitations))
-        if not data_ready:
-            limitations.insert(0, "【模拟推荐】RDS 当前信用卡记录均为 synthetic，且缺少官方链接和核验时间。")
-        evidence = [card.official_url for card in recommendations
-                    if card.data_status == "verified" and card.official_url]
+        if not product_data_ready:
+            limitations.insert(0, "产品奖励和年费资料尚未逐项完成官方核验；借款成本使用下列 HSBC 官方来源。")
+        # Time-limited promotional layers must be disclosed, not buried in a rate.
+        promo_notes = list(dict.fromkeys(
+            note for card in recommendations for note in card.promo_rules))
+        if promo_notes:
+            limitations.append(
+                "估算含以下限时推广奖赏，推广期结束后该部分按基础率计算："
+                + "；".join(promo_notes) + "。")
+        # Rewards of Your Choice caps are shared per HKID across cards, so a
+        # multi-card combination must not double-count the accelerated layer.
+        combo = [result.primary, *result.supplements]
+        yc_cards = [card for card in combo if any(
+            rule.qualification_type == "selected_category"
+            for rule in by_id[card.card_id].reward_rules)]
+        if len(yc_cards) > 1:
+            limitations.append(
+                "「最红自主奖赏」自选类别的每年首 HK$100,000 加速奖赏以身份证合计、"
+                "跨卡共享；多卡组合时不能各自再享一次上限。")
+        limitations.append("目前仅覆盖 HSBC 香港信用卡，暂不比较其他发卡机构的产品。")
+        limitations.append(
+            "迎新礼遇（如首年额外现金回赠或飞行里程）属一次性优惠，未计入年度净值估算；"
+            "申请前可在官网查看最新迎新条款。")
+        evidence = list(dict.fromkeys(
+            [card.official_url for card in recommendations if card.official_url]
+            + [source for card in recommendations for source in card.borrowing_sources]))
         return DomainResult(
             task_id=task.task_id, domain="credit_card",
-            status="answered" if data_ready else "needs_verification",
+            status="answered" if product_data_ready else "needs_verification",
             answer=AnswerBody(summary=f"主推荐：{result.primary.product_name}", steps=steps,
                               limitations=limitations),
             evidence_refs=evidence,
             next_actions=["申请前在发卡机构官网确认资格、年费、奖励上限和最新条款。"],
-            notices=[] if data_ready else [Notice(code="synthetic_card_catalog",
-                                                   message="推荐使用了 RDS synthetic 信用卡数据")],
-            payload={"recommendations": result.model_dump(mode="json"), "market": catalog.market},
+            notices=[] if product_data_ready else [Notice(
+                code="card_product_fields_need_verification",
+                message="信用卡奖励和年费字段尚未逐项完成官方核验")],
+            payload={"recommendations": result.model_dump(mode="json"), "market": catalog.market,
+                     "catalog": self._catalog_summary(catalog)},
             knowledge_read_id=catalog.read_id, observed_facts=extracted, observed_basis=basis,
         )
+
+    @staticmethod
+    def _student_questions_needed(products, facts) -> list[str]:
+        """Ask about student status only when income rules out non-student cards.
+
+        The student card is the only eligible route for applicants below the
+        lowest non-student income threshold, so mainstream applicants never
+        see these questions.
+        """
+        if facts.get("full_time_student") is not None:
+            if facts["full_time_student"] and facts.get("student_institution_eligible") is None:
+                return ["student_institution_eligible"]
+            return []
+        student_ids = {product.card_id for product in products if any(
+            rule.required and rule.rule_type == "student_status"
+            for rule in product.eligibility_rules)}
+        if not student_ids:
+            return []
+        non_student_thresholds = [
+            rule.value_numeric for product in products if product.card_id not in student_ids
+            for rule in product.eligibility_rules
+            if rule.required and rule.rule_type == "minimum_income"
+            and rule.value_numeric is not None]
+        if not non_student_thresholds:
+            return []
+        threshold = min(non_student_thresholds)
+        income = facts.get("annual_income_hkd")
+        if income is not None:
+            below = Decimal(str(income)) < threshold
+        else:
+            band = str(facts.get("annual_income_band_hkd") or "")
+            parts = band.split("_")
+            if parts[0] == "lt":
+                below = Decimal(parts[1]) <= threshold
+            elif parts[0] == "range":
+                below = Decimal(parts[2]) < threshold
+            else:
+                below = False
+        return ["full_time_student"] if below else []
+
+    @staticmethod
+    def _catalog_summary(catalog):
+        return {
+            "market": catalog.market,
+            "returned_products": len(catalog.products),
+            "source_total": catalog.source_total,
+            "source_active": catalog.source_active,
+            "source_filtered": catalog.source_filtered,
+        }
+
+    @staticmethod
+    def _format_borrowing_costs(product):
+        by_type = {}
+        for term in product.borrowing_terms:
+            by_type.setdefault(term.term_type, []).append(term)
+        purchase = by_type["purchase_apr"][0]
+        free = by_type["interest_free_period"][0]
+        cash_examples = sorted((term for term in by_type.get("cash_instalment_example", [])
+                                if term.available and term.apr is not None
+                                and term.total_repayment is not None),
+                               key=lambda item: item.tenor_months or 0)
+        examples = "；".join(
+            f"{term.tenor_months}期 APR {term.apr * 100:.2f}%、总还款 HK${term.total_repayment:,.0f}"
+            for term in cash_examples)
+        spending = by_type["spending_instalment"][0]
+        cash_offer = by_type["cash_instalment_offer"][0]
+        instalment = (
+            f"现金分期当前公布每月手续费低至 {cash_offer.monthly_fee_rate * 100:.2f}%；"
+            f"HK$100,000 官方示例：{examples}。消费分期手续费为个人报价，"
+            "需在 HSBC HK App、Reward+ 或热线确认。"
+            if spending.available else "HSBC 条款列明此卡不适用现金分期和消费分期。"
+        )
+        return (f"借款成本：消费 APR {purchase.apr * 100:.2f}%，最长免息期 "
+                f"{free.max_interest_free_days} 天。{instalment}")
 
     @staticmethod
     def _needs_input(task, request, extracted, basis, missing, prompts, options):
@@ -268,4 +526,29 @@ class CreditCardWorkflow:
             f"年费 {card.annual_fee:g} {card.annual_fee_currency or ''}".strip()
         if card.annual_fee_waiver:
             fee += f"；减免条件：{card.annual_fee_waiver}"
-        return f"{label}：{card.product_name}；匹配场景：{scenes}；{fee}；资格：{card.eligibility.status}。"
+        if (card.ongoing_annual_fee_hkd is not None and card.ongoing_annual_fee_hkd > 0
+                and card.estimated_annual_fee_hkd == 0):
+            fee += f"；豁免期后年费 HK${card.ongoing_annual_fee_hkd:,.0f}/年"
+        eligibility = {
+            "eligible": "符合公开门槛（最终仍以银行审批为准）",
+            "needs_bank_assessment": "可提交资产证明，需HSBC个案审批",
+            "unknown": "尚缺申请资格资料",
+            "ineligible": "不符合公开门槛",
+        }[card.eligibility.status]
+        reasons = "；".join(card.eligibility.reasons)
+        basis = f"；门槛依据：{reasons}" if reasons else ""
+        value = ""
+        if card.estimated_annual_net_value_hkd is not None:
+            value = (f"；按每月约 HK${card.estimated_monthly_spend_hkd:,.0f} 估算，年度奖励 "
+                     f"HK${card.estimated_annual_reward_hkd:,.0f}，年费成本 "
+                     f"HK${card.estimated_annual_fee_hkd:,.0f}，相关外币手续费约 "
+                     f"HK${card.estimated_annual_fx_cost_hkd:,.0f}，年度净值约 "
+                     f"HK${card.estimated_annual_net_value_hkd:,.0f}")
+            miles = card.reward_units.get("miles")
+            points = card.reward_units.get("points")
+            if miles is not None and miles > 0:
+                value += f"；约值每年 {miles:,.0f} 飞行里程"
+            elif points is not None and points > 0:
+                value += f"；约值每年 {points:,.0f} 奖赏积分"
+        return (f"{label}：{card.product_name}；匹配场景：{scenes}；{fee}{value}；"
+                f"资格：{eligibility}{basis}。")
