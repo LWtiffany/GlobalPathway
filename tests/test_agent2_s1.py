@@ -35,6 +35,15 @@ class S1Base(unittest.TestCase):
 
 
 class S1Cases(S1Base):
+    def test_unimplemented_domain_message_does_not_claim_region_is_missing(self):
+        self.make()
+        _, _, answer = self.ask("我想了解在香港境外消费怎么刷卡")
+
+        self.assertEqual("cannot_answer", answer.status)
+        self.assertIn("境外消费与支付流程尚未接入", answer.answer.summary)
+        self.assertIn("不表示所选地区不受支持", answer.answer.summary)
+        self.assertNotIn("只覆盖", answer.answer.summary)
+
     def test_s1_01_unknown_category_asks_only_for_it_then_answers_and_history_restores(self):
         self.make()
         profile, conversation, answer = self.ask("去英国办签证要什么材料")

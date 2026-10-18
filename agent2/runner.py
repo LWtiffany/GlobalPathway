@@ -17,6 +17,13 @@ from .retrieve import retrieve
 MAX_MESSAGE_CHARS = 2000
 TOPIC_ADVICE = {"visa_documents": "visa"}
 KNOWLEDGE_TOPIC = {"visa_documents": "documents"}
+UNIMPLEMENTED_TOPIC_SUMMARY = {
+    "remittance_tuition": "学费汇款流程尚未接入，当前不能生成确定建议。",
+    "remittance_living": "生活费汇款流程尚未接入，当前不能生成确定建议。",
+    "overseas_spending": "境外消费与支付流程尚未接入，当前不能生成确定建议；这不表示所选地区不受支持。",
+    "hsbc_account": "银行开户流程尚未接入，当前不能生成确定建议。",
+    "credit_card": "信用卡流程应由 Agent2 v2 处理，本轮路由异常，未生成建议。",
+}
 OFFICIAL_ENTRY = {
     ("UK", "student_visa"): "GOV.UK Student visa 官方页面（https://www.gov.uk/student-visa）",
     ("US", "student_visa"): "美国国务院学生签证页面（https://travel.state.gov/content/travel/en/us-visas/study/student-visa.html）"
@@ -119,7 +126,8 @@ class Agent2Runner:
 
         facts = {k: f.value for k, f in assessment.facts.items()}
         if topic not in KNOWLEDGE_TOPIC:
-            out = result("cannot_answer", "该主题的已发布资料尚未接入（目前只覆盖英国、美国、香港学生签证材料），暂不作确定回答。",
+            out = result("cannot_answer", UNIMPLEMENTED_TOPIC_SUMMARY.get(
+                topic, "该领域流程尚未接入，当前不能生成确定建议。"),
                          notices=notices)
             return self._finish(out, timer, turn.facts, turn.basis, topic)
 
