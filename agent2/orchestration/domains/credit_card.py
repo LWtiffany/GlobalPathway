@@ -212,7 +212,8 @@ class CreditCardWorkflow:
             return self._needs_input(
                 task, request, extracted, basis, ["hk_resident"],
                 {"hk_resident": (
-                    "你目前是否为香港特别行政区居民？HSBC 将其列为基本卡申请条件。"
+                    "你目前是否为香港特别行政区居民？HSBC 将其列为基本卡申请条件；"
+                    "非香港居民仍可尝试申请，但获批几率很低，将按个案审批展示。"
                 )},
                 QUESTION_OPTIONS,
             )
@@ -368,6 +369,13 @@ class CreditCardWorkflow:
         if result.alternatives:
             steps.append("免年费备选：" + "、".join(card.product_name for card in result.alternatives))
         limitations = list(dict.fromkeys(limit for card in recommendations for limit in card.limitations))
+        # Non-resident applicants: HSBC lists HK residency as a written basic
+        # requirement, yet a small number of cases do get approved. The cards
+        # stay recommended with a prominent low-approval-chance disclosure.
+        if any(card.eligibility.low_approval_chance for card in recommendations):
+            limitations.insert(0, (
+                "你选择了「非香港居民」：HSBC 香港成文条件要求基本卡申请人为香港特别行政区"
+                "居民；实践中仅有低几率个案通过。以下推荐仅为参考，最终由银行审批。"))
         if not product_data_ready:
             limitations.insert(0, "产品奖励和年费资料尚未逐项完成官方核验；借款成本使用下列 HSBC 官方来源。")
         # Time-limited promotional layers must be disclosed, not buried in a rate.
@@ -531,7 +539,10 @@ class CreditCardWorkflow:
             fee += f"；豁免期后年费 HK${card.ongoing_annual_fee_hkd:,.0f}/年"
         eligibility = {
             "eligible": "符合公开门槛（最终仍以银行审批为准）",
-            "needs_bank_assessment": "可提交资产证明，需HSBC个案审批",
+            "needs_bank_assessment": (
+                "非香港居民：不符合成文条件，获批几率很低，需HSBC个案审批"
+                if card.eligibility.low_approval_chance
+                else "可提交资产证明，需HSBC个案审批"),
             "unknown": "尚缺申请资格资料",
             "ineligible": "不符合公开门槛",
         }[card.eligibility.status]

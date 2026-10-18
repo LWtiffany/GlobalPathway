@@ -130,6 +130,11 @@ class EligibilityAssessment(CardModel):
     reasons: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
     matched_path: str | None = None
+    # True when the only failing written criterion is HK residency: HSBC Hong
+    # Kong lists it as a basic requirement, yet a small number of non-resident
+    # applications do get approved case by case. The card stays recommended
+    # with a low-approval-chance disclosure instead of being excluded.
+    low_approval_chance: bool = False
 
 
 class CardRecommendation(CardModel):

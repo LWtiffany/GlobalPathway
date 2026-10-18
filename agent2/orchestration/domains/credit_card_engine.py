@@ -81,6 +81,15 @@ def needs_asset_information(product: CreditCardProduct, facts: dict) -> bool:
     return False
 
 
+# HSBC Hong Kong lists HK residency as a written basic requirement, yet a
+# small number of non-resident applications are approved case by case. A
+# failed residency check therefore downgrades instead of excluding.
+NON_RESIDENT_REASON = (
+    "非香港居民：不符合成文条件（基本卡申请人须为香港特别行政区居民）；"
+    "实践中仅有低几率个案通过，最终由银行审批。"
+)
+
+
 def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAssessment:
     grouped = {}
     for rule in product.eligibility_rules:
@@ -188,10 +197,17 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
         return "missing" if value is None else "passed" if passed else "failed", field
 
     hard_reasons, hard_missing = [], []
+    resident_failed = False
     for rule in grouped.pop("hard", []):
         state, field = evaluate(rule)
         if state == "failed":
-            hard_reasons.append(f"不满足：{rule.description or rule.rule_type}")
+            if rule.rule_type == "residency":
+                # Soft gate: keep the card recommended with a low-approval
+                # disclosure instead of a hard exclusion.
+                resident_failed = True
+                hard_reasons.append(NON_RESIDENT_REASON)
+            else:
+                hard_reasons.append(f"不满足：{rule.description or rule.rule_type}")
         elif state == "missing":
             hard_missing.append(field)
             hard_reasons.append(f"缺少门槛信息：{rule.description or rule.rule_type}")
@@ -199,9 +215,12 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
         return EligibilityAssessment(status="ineligible", reasons=hard_reasons,
                                      missing_fields=list(dict.fromkeys(hard_missing)))
     if not grouped:
+        status = "unknown" if hard_missing else \
+            ("needs_bank_assessment" if resident_failed else "eligible")
         return EligibilityAssessment(
-            status="unknown" if hard_missing else "eligible", reasons=hard_reasons,
-            missing_fields=list(dict.fromkeys(hard_missing)), matched_path="hard")
+            status=status, reasons=hard_reasons,
+            missing_fields=list(dict.fromkeys(hard_missing)), matched_path="hard",
+            low_approval_chance=resident_failed)
 
     passed_paths, incomplete_paths = [], []
     failed_reasons = []
@@ -220,6 +239,11 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
     review = next((item for item in passed_paths if item[1] == "needs_bank_assessment"), None)
     if hard_missing:
         status, matched = "unknown", None
+    elif resident_failed and (public or review):
+        # Residency is the only failing written criterion: downgrade the
+        # passed path to case-by-case review instead of a hard exclusion.
+        passed = public or review
+        status, matched = "needs_bank_assessment", passed[0]
     elif public:
         status, matched = "eligible", public[0]
     elif review:
@@ -239,6 +263,11 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
     if status == "eligible" and public:
         path_reasons = [f"满足：{rule.description or rule.rule_type}" for rule in public[2]]
         reasons = hard_reasons + path_reasons
+    elif status == "needs_bank_assessment" and resident_failed and (public or review):
+        passed = public or review
+        prefix = "满足" if passed is public else "满足替代路径"
+        path_reasons = [f"{prefix}：{rule.description or rule.rule_type}" for rule in passed[2]]
+        reasons = hard_reasons + failed_reasons + path_reasons
     elif status == "needs_bank_assessment" and review:
         path_reasons = [f"满足替代路径：{rule.description or rule.rule_type}" for rule in review[2]]
         reasons = hard_reasons + failed_reasons + path_reasons + [
@@ -247,7 +276,8 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
     else:
         reasons = hard_reasons + failed_reasons
     return EligibilityAssessment(status=status, reasons=list(dict.fromkeys(reasons)),
-                                 missing_fields=list(dict.fromkeys(missing)), matched_path=matched)
+                                 missing_fields=list(dict.fromkeys(missing)), matched_path=matched,
+                                 low_approval_chance=resident_failed)
 
 
 def _fee(product, fee_type):

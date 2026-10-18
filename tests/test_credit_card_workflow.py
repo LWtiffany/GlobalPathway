@@ -399,6 +399,60 @@ class CreditCardEngineEdgeCaseTests(unittest.TestCase):
         self.assertIn("hk_resident", missing.missing_fields)
         self.assertEqual("eligible", passed.status)
 
+    def test_non_resident_is_recommended_with_low_approval_disclosure(self):
+        card = product("resident_card", "online", "0.04")
+        card = card.model_copy(update={"eligibility_rules": list(card.eligibility_rules) + [
+            EligibilityRule(rule_id="resident", rule_type="residency", operator="eq",
+                            value_text="Hong Kong resident"),
+        ]})
+
+        assessment = assess_eligibility(
+            card, {"applicant_age": 25, "annual_income_hkd": 200000, "hk_resident": False})
+
+        # 明文条件未满足，但不硬拒：降级为个案审批并标记低通过率。
+        self.assertEqual("needs_bank_assessment", assessment.status)
+        self.assertTrue(assessment.low_approval_chance)
+        self.assertTrue(any("非香港居民" in reason for reason in assessment.reasons))
+        self.assertTrue(any("低几率" in reason for reason in assessment.reasons))
+
+        result = recommend([card], {"applicant_age": 25, "annual_income_hkd": 200000,
+                                    "hk_resident": False,
+                                    "monthly_card_spend_band_hkd": "5k_10k"}, ["online"])
+        self.assertIsNotNone(result.primary)
+        self.assertEqual("needs_bank_assessment", result.primary.eligibility.status)
+
+    def test_non_resident_downgrades_passed_income_path_to_review(self):
+        card = asset_review_product()
+        card = card.model_copy(update={"eligibility_rules": list(card.eligibility_rules) + [
+            EligibilityRule(rule_id="resident", rule_type="residency", operator="eq",
+                            value_text="Hong Kong resident", path_id="hard"),
+        ]})
+
+        non_resident = assess_eligibility(
+            card, {"applicant_age": 25, "annual_income_hkd": 200000, "hk_resident": False})
+        resident = assess_eligibility(
+            card, {"applicant_age": 25, "annual_income_hkd": 200000, "hk_resident": True})
+
+        # 收入路径已通过也只按个案审批展示；居民身份正常时同一张卡 eligible。
+        self.assertEqual("needs_bank_assessment", non_resident.status)
+        self.assertEqual("income", non_resident.matched_path)
+        self.assertTrue(non_resident.low_approval_chance)
+        self.assertEqual("eligible", resident.status)
+        self.assertFalse(resident.low_approval_chance)
+
+    def test_non_resident_below_income_threshold_stays_ineligible(self):
+        # 软门槛只放宽居民身份这一项；其余成文条件（收入路径）失败仍然出局。
+        card = product("resident_card", "online", "0.04", income=100000)
+        card = card.model_copy(update={"eligibility_rules": list(card.eligibility_rules) + [
+            EligibilityRule(rule_id="resident", rule_type="residency", operator="eq",
+                            value_text="Hong Kong resident"),
+        ]})
+
+        assessment = assess_eligibility(
+            card, {"applicant_age": 25, "annual_income_hkd": 50000, "hk_resident": False})
+
+        self.assertEqual("ineligible", assessment.status)
+
     def test_premier_relationship_balance_band_is_not_inferred_from_income(self):
         card = product("premier_card", "travel_and_dining", "0.024")
         card = card.model_copy(update={"eligibility_rules": list(card.eligibility_rules) + [
@@ -863,6 +917,55 @@ class CreditCardStudentServiceIntegrationTests(unittest.TestCase):
         self.assertIn("主推荐：Normal Card", final.answer.steps[0])
         # 学生卡仍以 eligible 身份出现在答案里（免年费备选或候选）。
         self.assertIn("Student Card", " ".join(final.answer.steps))
+
+
+class CreditCardNonResidentServiceIntegrationTests(unittest.TestCase):
+    """非香港居民：不再整体拒答，继续推荐并披露获批几率很低（真实 post_message 链路）。"""
+
+    def setUp(self):
+        self.store = Store()
+        self.addCleanup(self.store.close)
+        card = product("resident_card", "online", "0.04")
+        card = card.model_copy(update={"eligibility_rules": list(card.eligibility_rules) + [
+            EligibilityRule(rule_id="resident", rule_type="residency", operator="eq",
+                            value_text="Hong Kong resident"),
+        ]})
+        self.repository = FakeRepository([card])
+        self.service = Agent2Service(self.store, FixtureKnowledgeRead.from_file(),
+                                     clock=lambda: NOW, credit_card_repository=self.repository,
+                                     llm_components=LlmComponents())
+        self.user = self.service.demo_login("non-resident-test")["user_id"]
+        profile = self.service.create_profile(self.user, synthetic=True)
+        self.conversation = self.service.create_conversation(
+            self.user, profile.profile_id)["conversation_id"]
+
+    def ask(self, text, key, **kwargs):
+        return self.service.post_message(self.user, self.conversation, text, key, **kwargs)
+
+    def test_non_resident_gets_recommendations_with_low_chance_disclosure(self):
+        first = self.ask("我想在香港办一张信用卡，年薪30万，每月全额还款，主要网购", "n1")
+        self.assertEqual(["applicant_age_band"], [q.field for q in first.follow_up_questions])
+        second = self.ask("18 岁或以上", "n2",
+                          confirmed_fields={"applicant_age_band": "18_or_over"},
+                          expected_profile_version=1)
+        self.assertEqual(["hk_resident"], [q.field for q in second.follow_up_questions])
+        third = self.ask("否，我不是香港居民", "n3",
+                         confirmed_fields={"hk_resident": False},
+                         expected_profile_version=2)
+        self.assertEqual(["monthly_card_spend_band_hkd", "reward_preference"],
+                         [q.field for q in third.follow_up_questions])
+        final = self.ask("月消费五千至一万；按预计价值比较", "n4",
+                         confirmed_fields={"monthly_card_spend_band_hkd": "5k_10k",
+                                           "reward_preference": "no_preference"},
+                         expected_profile_version=3)
+        # 关键行为：非居民不再触发 cannot_answer，仍给出推荐。
+        self.assertEqual("answered", final.status)
+        self.assertIn("主推荐：Resident Card", final.answer.steps[0])
+        self.assertIn("非香港居民", final.answer.steps[0])
+        self.assertIn("几率很低", final.answer.steps[0])
+        joined = " ".join(final.answer.limitations)
+        self.assertIn("你选择了「非香港居民」", joined)
+        self.assertIn("最终由银行审批", joined)
 
 
 if __name__ == "__main__":
