@@ -66,3 +66,7 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     return {"serve": cmd_serve, "eval-m06": cmd_eval_m06}[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
