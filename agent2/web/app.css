@@ -136,8 +136,14 @@ a{color:#8b7140}
 .fq{margin-top:10px}
 .fq .q{font-weight:bold}
 .chips{display:flex;flex-wrap:wrap;align-items:center}
-.chips button{display:inline-block;border:1px solid #cfc6b5;background:transparent;padding:4px 16px;margin:8px 8px 0 0;font-size:12px;color:#22201c}
-.chips button:hover,.chips .s{border-color:#8e1b24;color:#8e1b24}
+.chips button{display:inline-block;border:1px solid #cfc6b5;background:transparent;padding:4px 16px;margin:8px 8px 0 0;font-size:12px;color:#22201c;transition:background .15s,color .15s,border-color .15s}
+.chips button:hover{border-color:#8e1b24;color:#8e1b24}
+.chips button.on{background:#8e1b24;border-color:#8e1b24;color:#fbf7f0}
+.chips button.on:hover{background:#a3242e}
+@keyframes chipdeny{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+.chips button.deny{animation:chipdeny .3s;border-color:#e2b8b3;color:#8e1b24}
+.chips .s{border-color:#8e1b24;color:#8e1b24}
+.chips .s[disabled]{border-color:#cfc6b5;color:#b6ad9c;cursor:not-allowed}
 .chips input{border:1px solid #cfc6b5;padding:4px 10px;margin:8px 8px 0 0;width:150px;background:#fff}
 .prop{margin-top:10px;padding:8px 10px;background:#f8f1e1;border:1px solid #e3d3ad;font-size:12px}
 .prop .btns{margin-top:6px;display:flex;gap:8px}

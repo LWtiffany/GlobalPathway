@@ -720,6 +720,10 @@ function followUp(q) {
         if (selected.has(o.value)) { selected.delete(o.value); button.classList.remove("on"); }
         else if (!q.max_selections || selected.size < q.max_selections) {
           selected.set(o.value, o.label); button.classList.add("on");
+        } else {
+          // At the cap: flash the button so the rejected click is not silent.
+          button.classList.add("deny");
+          setTimeout(() => button.classList.remove("deny"), 350);
         }
         confirm.disabled = selected.size === 0;
       } }, o.label);
