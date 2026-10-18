@@ -48,7 +48,9 @@ def me(service, user_id, body, query):
 
 @route("POST", r"/v1/profiles")
 def create_profile(service, user_id, body, query):
-    return 201, service.create_profile(user_id, body.get("fields") or {}, synthetic=bool(body.get("synthetic")))
+    return 201, service.create_profile(user_id, body.get("fields") or {},
+                                       synthetic=bool(body.get("synthetic")),
+                                       display_name=body.get("display_name"))
 
 
 @route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)")
@@ -78,25 +80,32 @@ def dismiss_proposal(service, user_id, body, query, proposal_id):
     return 200, service.dismiss_proposal(user_id, proposal_id)
 
 
-@route("POST", r"/v1/conversations")
+@route("POST", r"/v1/conversations")  # compatibility alias
+@route("POST", r"/v1/sessions")
 def create_conversation(service, user_id, body, query):
     return 201, service.create_conversation(user_id, body.get("profile_id"))
 
 
-@route("GET", r"/v1/conversations")
+@route("GET", r"/v1/conversations")  # compatibility alias
+@route("GET", r"/v1/sessions")
 def list_conversations(service, user_id, body, query):
     return 200, service.list_conversations(user_id)
 
 
-@route("GET", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")
+@route("GET", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")  # compatibility alias
+@route("GET", r"/v1/sessions/(?P<conversation_id>[\w-]+)/messages")
 def list_messages(service, user_id, body, query, conversation_id):
     return 200, service.list_messages(user_id, conversation_id, after_seq=int(query.get("after_seq", 0)),
                                       limit=int(query.get("limit", 50)))
 
 
-@route("POST", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")
+@route("POST", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")  # compatibility alias
+@route("POST", r"/v1/sessions/(?P<conversation_id>[\w-]+)/messages")
 def post_message(service, user_id, body, query, conversation_id):
-    return 200, service.post_message(user_id, conversation_id, body.get("text"), body.get("client_message_id"))
+    return 200, service.post_message(
+        user_id, conversation_id, body.get("text"), body.get("client_message_id"),
+        confirmed_fields=body.get("confirmed_fields") or {},
+        expected_profile_version=body.get("expected_profile_version"))
 
 
 @route("POST", r"/v1/messages/(?P<message_id>[\w-]+)/reaction")
@@ -124,7 +133,8 @@ def list_profiles(service, user_id, body, query):
     return 200, service.list_profiles(user_id)
 
 
-@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/conversation")
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/conversation")  # compatibility alias
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/session")
 def profile_conversation(service, user_id, body, query, profile_id):
     return 200, service.profile_conversation(user_id, profile_id)
 

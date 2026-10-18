@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from . import clarify, gate as gate_mod
-from .generate import COUNTRY_ZH, VISA_ZH, TemplateGenerator
+from .generate import COUNTRY_ZH, PROMPT_VERSION, VISA_ZH, TemplateGenerator
 from .intent import classify
 from .models import AnswerBody, AnswerResult, Notice
 from .retrieve import retrieve
@@ -35,6 +35,8 @@ class RunOutput:
     topic: str | None
     knowledge_read_id: str | None = None
     model_version: str = "none"
+    prompt_version: str = PROMPT_VERSION
+    gate_version: str = gate_mod.GATE_VERSION
     advice: dict | None = None
     stage_ms: dict = field(default_factory=dict)
     assessments: list = field(default_factory=list)

@@ -58,6 +58,25 @@ def _currency(v):
     return None if isinstance(v, str) and re.fullmatch(r"[A-Z]{3}", v) else "必须是 ISO 4217 三字母币种"
 
 
+def _multi_enum(*values, max_items=None):
+    allowed = set(values)
+    def check(v):
+        if not isinstance(v, list) or not v:
+            return "必须至少选择一项"
+        if max_items is not None and len(v) > max_items:
+            return f"最多选择 {max_items} 项"
+        return None if len(v) == len(set(v)) and set(v) <= allowed else "包含未登记或重复的选项"
+    check.values = values
+    check.multi = True
+    check.max_items = max_items
+    return check
+
+
+def _income_band_hkd(v):
+    return None if isinstance(v, str) and re.fullmatch(r"(?:lt|gte|range)_\d+(?:_\d+)?", v) \
+        else "收入区间格式不正确"
+
+
 # field_code -> (中文名, 校验, question_code, 追问文本)
 FIELDS = {
     "role": ("角色", _enum("student", "parent"), "ask_role", "你是学生本人还是家长？"),
@@ -72,6 +91,8 @@ FIELDS = {
                      "你目前拿到的是无条件 offer、有条件 offer，还是还没有 offer？"),
     "planned_start_date": ("预计入学时间", _iso_date, "ask_planned_start_date", "课程预计哪天开学？"),
     "applicant_age": ("申请人年龄", _age, "ask_applicant_age", "申请人现在多大？（是否未满 18 岁会影响材料要求）"),
+    "applicant_age_band": ("年龄区间", _enum("under_18", "18_or_over"), "ask_applicant_age_band",
+                           "你目前是否已满 18 岁？"),
     "funding_source": ("资金来源", _enum("own_or_parents", "student_loan", "sponsor", "scholarship"),
                        "ask_funding_source",
                        "学费和生活费的资金来自哪里？本人或父母存款、学生贷款，还是机构资助/奖学金？"),
@@ -101,6 +122,23 @@ FIELDS = {
     "card_product_scope": ("信用卡产品范围", _text, "ask_card_product_scope", "你想比较哪些信用卡产品？"),
     "application_region": ("申请地区", _enum("UK", "US", "CN-HK", "CN"), "ask_application_region",
                            "你打算在哪个地区申请信用卡？"),
+    "annual_income_hkd": ("税前年收入（港币）", _amount, "ask_annual_income_hkd",
+                          "你的税前年收入大约是多少港币？可以填估算金额。"),
+    "annual_income_band_hkd": ("税前年收入区间（港币）", _income_band_hkd,
+                               "ask_annual_income_band_hkd", "请选择税前年收入所在区间。"),
+    "asset_band": ("可支配资产区间", _enum("none", "under_100k", "100k_500k", "500k_plus"),
+                   "ask_asset_band", "你的可支配资产大致在哪个区间？此项仅在产品有资产门槛时询问。"),
+    "repayment_mode": ("还款方式", _enum("full", "sometimes_carry", "usually_carry"),
+                       "ask_repayment_mode", "你通常会每月全额还款，还是可能分期或保留余额？"),
+    "spending_scenarios": ("主要消费场景",
+                           _multi_enum("online", "dining", "travel", "overseas", "mainland_china",
+                                       "tuition", "retail", max_items=3),
+                           "ask_spending_scenarios", "请选择最主要的两到三个消费场景。"),
+    "reward_preference": ("奖励偏好", _enum("cashback", "points", "miles", "no_preference"),
+                          "ask_reward_preference", "你更偏好返现、积分、里程，还是都可以？"),
+    "full_time_student": ("是否全日制学生", _bool, "ask_full_time_student", "你目前是全日制大专或大学生吗？"),
+    "premier_relationship": ("是否为卓越理财客户", _bool, "ask_premier_relationship",
+                             "你目前是否持有符合条件的 HSBC Premier 卓越理财关系？"),
 }
 
 
@@ -119,6 +157,16 @@ OPTION_LABELS = {
     "account_region": {"UK": "英国", "US": "美国", "CN-HK": "中国香港", "CN": "中国内地"},
     "applicant_identity": {"student": "学生本人", "parent": "家长", "other": "其他"},
     "application_region": {"UK": "英国", "US": "美国", "CN-HK": "中国香港", "CN": "中国内地"},
+    "applicant_age_band": {"under_18": "18 岁以下", "18_or_over": "18 岁或以上"},
+    "asset_band": {"none": "暂无", "under_100k": "10 万以下", "100k_500k": "10–50 万",
+                   "500k_plus": "50 万以上"},
+    "repayment_mode": {"full": "每月全额还款", "sometimes_carry": "偶尔分期或保留余额",
+                       "usually_carry": "通常会保留余额"},
+    "reward_preference": {"cashback": "返现", "points": "积分", "miles": "里程",
+                          "no_preference": "都可以"},
+    "spending_scenarios": {"online": "网购", "dining": "餐饮", "travel": "旅行",
+                           "overseas": "境外消费", "mainland_china": "内地消费",
+                           "tuition": "学费", "retail": "日常零售"},
     "applicant_residence": {"CN": "中国内地", "MO": "澳门", "TW": "台湾", "other": "其他地区"},
     "hk_sponsor": {"institution": "录取院校", "individual": "个人"},
 }
@@ -133,9 +181,37 @@ def field_catalog():
         values = getattr(check, "values", None)
         options = [{"value": v, "label": OPTION_LABELS.get(code, {}).get(v, v)} for v in values] if values else \
             [{"value": True, "label": "是"}, {"value": False, "label": "否"}] if check is _bool else []
-        catalog[code] = {"label": label_zh, "kind": "enum" if values else kinds.get(check, "text"),
-                         "options": options, "question": question}
+        kind = "multi_enum" if getattr(check, "multi", False) else "enum" if values else kinds.get(check, "text")
+        catalog[code] = {"label": label_zh, "kind": kind, "options": options, "question": question,
+                         "max_selections": getattr(check, "max_items", None)}
     return catalog
+
+
+FINANCIAL_FIELDS = frozenset({"annual_income_hkd", "annual_income_band_hkd", "asset_band",
+                              "repayment_mode", "amount"})
+PERSONAL_FIELDS = frozenset({"applicant_age", "applicant_age_band", "residence_region",
+                             "applicant_residence", "full_time_student"})
+VOLATILE_FIELDS = {"annual_income_hkd": 365, "annual_income_band_hkd": 365, "asset_band": 365,
+                   "repayment_mode": 365, "full_time_student": 365,
+                   "premier_relationship": 180, "offer_status": 90}
+
+
+def field_definitions():
+    """Versioned registry persisted by the service for audit and UI rendering."""
+    result = {}
+    for code, item in field_catalog().items():
+        domains = [name for name, rule in CONDITION_TABLE.items()
+                   if code in (*rule.must_have, *rule.nice_to_have)] if "CONDITION_TABLE" in globals() else []
+        if code in {"application_region", "applicant_age_band", "annual_income_band_hkd", "asset_band",
+                    "repayment_mode", "spending_scenarios", "reward_preference", "full_time_student",
+                    "premier_relationship"}:
+            domains.append("credit_card")
+        result[code] = {**item, "domains": sorted(set(domains)),
+                        "sensitivity": "financial" if code in FINANCIAL_FIELDS else
+                                       "personal" if code in PERSONAL_FIELDS else "standard",
+                        "freshness_days": VOLATILE_FIELDS.get(code), "ask_priority": 0,
+                        "ask_only_when_needed": True}
+    return result
 
 
 @dataclass(frozen=True)
@@ -194,8 +270,13 @@ def validate(field_code, value):
 
 def _question(field_code, rule, version, text=None):
     _, _, code, default = FIELDS[field_code]
+    item = field_catalog()[field_code]
+    input_type = "multi_select" if item["kind"] == "multi_enum" else \
+        "single_select" if item["options"] else item["kind"] if item["kind"] in ("date",) else "text"
     return FollowUpQuestion(question_code=code, field=field_code, text=text or default,
-                            rule=rule, profile_version=version)
+                            rule=rule, profile_version=version, input_type=input_type,
+                            options=item["options"], max_selections=item["max_selections"],
+                            persist_mode="save_on_select" if item["options"] else "proposal")
 
 
 def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expected_profile_version=None,

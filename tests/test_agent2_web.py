@@ -94,6 +94,15 @@ class StaticFileCases(unittest.TestCase):
         self.assertEqual(api.static_file("/app.js")[1], "text/javascript; charset=utf-8")
         self.assertEqual(api.static_file("/report/abc?x=1")[0], index)
 
+    def test_follow_up_choices_use_atomic_message_profile_update(self):
+        source = api.static_file("/app.js")[0].decode("utf-8")
+        answer_field = source.split("async function answerField", 1)[1].split("function proposalCard", 1)[0]
+        self.assertNotIn('api("PATCH"', answer_field)
+        self.assertIn("await send", answer_field)
+        send = source.split("async function send", 1)[1]
+        self.assertIn("confirmed_fields", send)
+        self.assertIn("expected_profile_version", send)
+
     def test_paths_outside_web_root_never_escape(self):
         index = api.static_file("/")[0]
         for path in ("/../local_secrets.py", "/../../etc/passwd", "/..%2f..%2fagent2/api.py", "/../agent2/api.py"):

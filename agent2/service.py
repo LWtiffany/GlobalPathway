@@ -6,11 +6,9 @@ import json
 import secrets
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import clarify
-from .gate import GATE_VERSION
-from .generate import PROMPT_VERSION
 from .models import AnswerResult, Profile, ProfileChangeProposal, ProfileField
 from .runner import Agent2Runner
 from .store import dumps
@@ -47,6 +45,26 @@ class Agent2Service:
         self.clock = clock
         self.demo_enabled = demo_enabled
         self.runner = Agent2Runner(knowledge, clock, generator=generator, suggest=suggest)
+        self._sync_field_definitions()
+
+    def _sync_field_definitions(self):
+        now = self._ts()
+        with self.store.transaction() as db:
+            for code, item in clarify.field_definitions().items():
+                db.execute("""INSERT INTO profile_field_definitions
+                    (field_code,display_name,value_type,options_json,domains_json,sensitivity,freshness_days,
+                     ask_priority,ask_only_when_needed,question_template,schema_version,active,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?)
+                    ON CONFLICT(field_code) DO UPDATE SET display_name=excluded.display_name,
+                    value_type=excluded.value_type, options_json=excluded.options_json,
+                    domains_json=excluded.domains_json, sensitivity=excluded.sensitivity,
+                    freshness_days=excluded.freshness_days, ask_priority=excluded.ask_priority,
+                    ask_only_when_needed=excluded.ask_only_when_needed,
+                    question_template=excluded.question_template, schema_version=excluded.schema_version,
+                    active=excluded.active, updated_at=excluded.updated_at""",
+                           (code, item["label"], item["kind"], dumps(item["options"]),
+                            dumps(item["domains"]), item["sensitivity"], item["freshness_days"],
+                            item["ask_priority"], int(item["ask_only_when_needed"]), item["question"], now))
 
     def _ts(self):
         return self.clock().isoformat()
@@ -66,12 +84,12 @@ class Agent2Service:
                 db.execute("INSERT INTO users (user_id, external_subject, display_name, synthetic) VALUES (?,?,?,1)",
                            (user_id, subject, name.strip()))
             token = secrets.token_urlsafe(24)
-            db.execute("INSERT INTO sessions VALUES (?,?,?)", (token, user_id, self._ts()))
+            db.execute("INSERT INTO auth_sessions VALUES (?,?,?)", (token, user_id, self._ts()))
         return {"token": token, "user_id": user_id, "synthetic": True,
                 "notice": "模拟身份，仅用于 Demo，不是真实银行账户登录。"}
 
     def user_for_token(self, token):
-        row = self.store.one("SELECT user_id FROM sessions WHERE token=?", (token or "",))
+        row = self.store.one("SELECT user_id FROM auth_sessions WHERE token=?", (token or "",))
         if not row:
             raise ServiceError("UNAUTHENTICATED", "需要登录", 401)
         return row["user_id"]
@@ -91,11 +109,20 @@ class Agent2Service:
 
     def get_profile(self, user_id, profile_id):
         row = self._owned_profile_row(user_id, profile_id)
-        fields = {r["field_code"]: ProfileField(value=json.loads(r["value_json"]) if r["value_json"] else None,
-                                                status=r["status"], source=r["source"],
-                                                confirmed_at=r["confirmed_at"])
-                  for r in self.store.all("SELECT * FROM profile_fields WHERE profile_id=?", (profile_id,))}
+        fields = {}
+        for r in self.store.all("SELECT * FROM profile_field_values WHERE profile_id=?", (profile_id,)):
+            status = r["status"]
+            if status == "confirmed" and r["expires_at"]:
+                expires = datetime.fromisoformat(r["expires_at"])
+                if expires <= self.clock():
+                    status = "stale"
+            fields[r["field_code"]] = ProfileField(
+                value=json.loads(r["value_json"]) if r["value_json"] else None,
+                status=status, source_type=r["source_type"], confirmed_at=r["confirmed_at"],
+                expires_at=r["expires_at"], source_message_id=r["source_message_id"],
+                field_version=r["field_version"], sensitivity=r["sensitivity"])
         return Profile(profile_id=profile_id, user_id=user_id, version=row["version"],
+                       display_name=row["display_name"], status=row["status"],
                        synthetic=bool(row["synthetic"]), fields=fields)
 
     def list_profiles(self, user_id):
@@ -112,24 +139,69 @@ class Agent2Service:
             if error:
                 raise bad_request(f"{clarify.label(code)}：{error}")
 
-    def _write_fields(self, db, profile_id, values, source):
+    @staticmethod
+    def _value_type(value):
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, list):
+            return "multi_enum"
+        if isinstance(value, (int, float)):
+            return "number"
+        if isinstance(value, dict):
+            return "object"
+        return "string"
+
+    def _write_fields(self, db, profile_id, values, source_type, *, source_message_id=None,
+                      profile_version=None, actor_type="user"):
         now = self._ts()
         for code, value in values.items():
-            db.execute("""INSERT INTO profile_fields VALUES (?,?,?, 'confirmed', ?, ?)
+            old = db.execute("SELECT value_json, field_version FROM profile_field_values "
+                             "WHERE profile_id=? AND field_code=?", (profile_id, code)).fetchone()
+            definition = db.execute("SELECT sensitivity, freshness_days FROM profile_field_definitions "
+                                    "WHERE field_code=?", (code,)).fetchone()
+            field_version = (old["field_version"] if old else 0) + 1
+            sensitivity = definition["sensitivity"] if definition else "standard"
+            expires_at = (self.clock() + timedelta(days=definition["freshness_days"])).isoformat() \
+                if definition and definition["freshness_days"] is not None else None
+            db.execute("""INSERT INTO profile_field_values
+                (profile_id, field_code, value_json, value_type, status, source_type, confirmed_at,
+                 expires_at, source_message_id, field_version, sensitivity, updated_at)
+                VALUES (?,?,?,?, 'confirmed', ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(profile_id, field_code) DO UPDATE SET value_json=excluded.value_json,
-                status='confirmed', source=excluded.source, confirmed_at=excluded.confirmed_at""",
-                       (profile_id, code, dumps(value), source, now))
+                value_type=excluded.value_type, status='confirmed', source_type=excluded.source_type,
+                confirmed_at=excluded.confirmed_at, expires_at=excluded.expires_at,
+                source_message_id=excluded.source_message_id, field_version=excluded.field_version,
+                sensitivity=excluded.sensitivity, updated_at=excluded.updated_at""",
+                       (profile_id, code, dumps(value), self._value_type(value), source_type, now,
+                        expires_at, source_message_id, field_version, sensitivity, now))
+            db.execute("""INSERT INTO profile_field_events
+                (event_id, profile_id, field_code, old_value_json, new_value_json, action, source_type,
+                 source_message_id, actor_type, profile_version, created_at)
+                VALUES (?,?,?,?,?,'set',?,?,?,?,?)""",
+                       (_new_id(), profile_id, code, old["value_json"] if old else None, dumps(value),
+                        source_type, source_message_id, actor_type, profile_version or 1, now))
 
-    def create_profile(self, user_id, fields=None, *, synthetic=False):
+    def create_profile(self, user_id, fields=None, *, synthetic=False, display_name=None):
         values = fields or {}
         self._check_values(values)
+        if display_name is not None and (not isinstance(display_name, str) or not display_name.strip()):
+            raise bad_request("display_name 必须是非空文本")
         profile_id = _new_id()
         now = self._ts()
         with self.store.transaction() as db:
-            db.execute("INSERT INTO profiles VALUES (?,?,1,?,?,?)", (profile_id, user_id, int(synthetic), now, now))
+            db.execute("""INSERT INTO profiles
+                (profile_id,user_id,display_name,version,status,synthetic,created_at,updated_at)
+                VALUES (?,?,?,1,'active',?,?,?)""",
+                       (profile_id, user_id, display_name.strip() if display_name else None,
+                        int(synthetic), now, now))
             for code in DEFAULT_PROFILE_FIELDS:
-                db.execute("INSERT INTO profile_fields VALUES (?,?,NULL,'unknown',NULL,NULL)", (profile_id, code))
-            self._write_fields(db, profile_id, values, "demo" if synthetic else "user")
+                db.execute("""INSERT INTO profile_field_values
+                    (profile_id,field_code,value_json,value_type,status,source_type,confirmed_at,expires_at,
+                     source_message_id,field_version,sensitivity,updated_at)
+                    VALUES (?,?,NULL,'json','unknown',NULL,NULL,NULL,NULL,0,'standard',?)""",
+                           (profile_id, code, now))
+            self._write_fields(db, profile_id, values, "demo" if synthetic else "user_edit",
+                               profile_version=1)
         return self.get_profile(user_id, profile_id)
 
     def patch_profile(self, user_id, profile_id, *, expected_version, set_fields=None, clear_fields=()):
@@ -138,17 +210,34 @@ class Agent2Service:
         unknown = [c for c in clear_fields if c not in clarify.FIELDS]
         if unknown:
             raise bad_request(f"未知字段：{', '.join(unknown)}")
+        overlap = set(set_fields) & set(clear_fields)
+        if overlap:
+            raise bad_request(f"同一字段不能同时设置和清空：{', '.join(sorted(overlap))}")
         with self.store.transaction() as db:
             row = db.execute("SELECT version FROM profiles WHERE profile_id=? AND user_id=?",
                              (profile_id, user_id)).fetchone()
             if not row:
                 raise not_found("档案")
             self._bump(db, profile_id, row["version"], expected_version)
-            self._write_fields(db, profile_id, set_fields, "user")
+            self._write_fields(db, profile_id, set_fields, "user_edit", profile_version=row["version"] + 1)
             for code in clear_fields:
-                db.execute("""INSERT INTO profile_fields VALUES (?,?,NULL,'unknown',NULL,NULL)
+                old = db.execute("SELECT value_json FROM profile_field_values WHERE profile_id=? AND field_code=?",
+                                 (profile_id, code)).fetchone()
+                now = self._ts()
+                db.execute("""INSERT INTO profile_field_values
+                    (profile_id,field_code,value_json,value_type,status,source_type,confirmed_at,expires_at,
+                     source_message_id,field_version,sensitivity,updated_at)
+                    VALUES (?,?,NULL,'json','unknown',NULL,NULL,NULL,NULL,0,'standard',?)
                     ON CONFLICT(profile_id, field_code) DO UPDATE SET value_json=NULL, status='unknown',
-                    source=NULL, confirmed_at=NULL""", (profile_id, code))
+                    source_type=NULL, confirmed_at=NULL, expires_at=NULL, source_message_id=NULL,
+                    field_version=profile_field_values.field_version+1, updated_at=excluded.updated_at""",
+                           (profile_id, code, now))
+                db.execute("""INSERT INTO profile_field_events
+                    (event_id,profile_id,field_code,old_value_json,new_value_json,action,source_type,
+                     source_message_id,actor_type,profile_version,created_at)
+                    VALUES (?,?,?,?,NULL,'clear','user_edit',NULL,'user',?,?)""",
+                           (_new_id(), profile_id, code, old["value_json"] if old else None,
+                            row["version"] + 1, now))
         return self.get_profile(user_id, profile_id)
 
     def _bump(self, db, profile_id, current, expected):
@@ -186,7 +275,9 @@ class Agent2Service:
         with self.store.transaction() as db:
             current = db.execute("SELECT version FROM profiles WHERE profile_id=?", (row["profile_id"],)).fetchone()
             self._bump(db, row["profile_id"], current["version"], expected_version)
-            self._write_fields(db, row["profile_id"], {row["field_code"]: json.loads(row["new_value"])}, "user")
+            self._write_fields(db, row["profile_id"], {row["field_code"]: json.loads(row["new_value"])},
+                               "user_message", source_message_id=row["source_message_id"],
+                               profile_version=current["version"] + 1)
             db.execute("UPDATE profile_change_proposals SET status='confirmed', decided_at=? WHERE proposal_id=?",
                        (self._ts(), proposal_id))
         return self.get_profile(user_id, row["profile_id"])
@@ -202,26 +293,39 @@ class Agent2Service:
 
     def create_conversation(self, user_id, profile_id):
         profile = self._owned_profile_row(user_id, profile_id)
+        existing = self.store.one("SELECT session_id, profile_id, profile_version FROM sessions "
+                                  "WHERE user_id=? AND profile_id=?", (user_id, profile_id))
+        if existing:
+            return {"session_id": existing["session_id"], "conversation_id": existing["session_id"],
+                    "profile_id": existing["profile_id"],
+                    "profile_version": existing["profile_version"]}
         conversation_id = _new_id()
         with self.store.transaction() as db:
-            db.execute("INSERT INTO conversations VALUES (?,?,?,?,?)",
+            db.execute("INSERT INTO sessions VALUES (?,?,?,?,?)",
                        (conversation_id, user_id, profile_id, profile["version"], self._ts()))
-        return {"conversation_id": conversation_id, "profile_id": profile_id,
+        return {"session_id": conversation_id, "conversation_id": conversation_id, "profile_id": profile_id,
                 "profile_version": profile["version"]}
 
     def profile_conversation(self, user_id, profile_id):
         """每个档案一条主会话：已有则返回最早那条，否则新建。"""
         self._owned_profile_row(user_id, profile_id)
-        row = self.store.one("SELECT conversation_id, profile_id, profile_version FROM conversations "
+        row = self.store.one("SELECT session_id AS conversation_id, profile_id, profile_version FROM sessions "
                              "WHERE user_id=? AND profile_id=? ORDER BY created_at LIMIT 1", (user_id, profile_id))
-        return row or self.create_conversation(user_id, profile_id)
+        if row:
+            row["session_id"] = row["conversation_id"]
+            return row
+        return self.create_conversation(user_id, profile_id)
 
     def list_conversations(self, user_id):
-        return self.store.all("SELECT conversation_id, profile_id, profile_version, created_at "
-                              "FROM conversations WHERE user_id=? ORDER BY created_at", (user_id,))
+        rows = self.store.all("SELECT session_id, profile_id, profile_version, created_at "
+                              "FROM sessions WHERE user_id=? ORDER BY created_at", (user_id,))
+        for row in rows:
+            row["conversation_id"] = row["session_id"]
+        return rows
 
     def _owned_conversation(self, user_id, conversation_id):
-        row = self.store.one("SELECT * FROM conversations WHERE conversation_id=? AND user_id=?",
+        row = self.store.one("SELECT session_id AS conversation_id, user_id, profile_id, profile_version, created_at "
+                             "FROM sessions WHERE session_id=? AND user_id=?",
                              (conversation_id, user_id))
         if not row:
             raise not_found("会话")
@@ -230,7 +334,7 @@ class Agent2Service:
     def list_messages(self, user_id, conversation_id, *, after_seq=0, limit=50):
         self._owned_conversation(user_id, conversation_id)
         rows = self.store.all("""SELECT message_id, seq, role, client_message_id, reply_to, body_json, status,
-            created_at FROM message_index WHERE conversation_id=? AND seq>? ORDER BY seq LIMIT ?""",
+            created_at FROM message_index WHERE session_id=? AND seq>? ORDER BY seq LIMIT ?""",
                               (conversation_id, after_seq, min(max(int(limit), 1), 200)))
         for row in rows:
             row["body"] = json.loads(row.pop("body_json"))
@@ -238,7 +342,7 @@ class Agent2Service:
 
     def _conversation_context(self, conversation_id):
         facts, topic, asked, last_version = {}, None, (), None
-        for row in self.store.all("SELECT role, body_json FROM message_index WHERE conversation_id=? ORDER BY seq",
+        for row in self.store.all("SELECT role, body_json FROM message_index WHERE session_id=? ORDER BY seq",
                                   (conversation_id,)):
             body = json.loads(row["body_json"])
             if row["role"] == "user":
@@ -251,29 +355,56 @@ class Agent2Service:
 
     def _stored_reply(self, conversation_id, client_message_id):
         row = self.store.one("""SELECT a.body_json FROM message_index u JOIN message_index a
-            ON a.reply_to=u.message_id WHERE u.conversation_id=? AND u.role='user' AND u.client_message_id=?""",
+            ON a.reply_to=u.message_id WHERE u.session_id=? AND u.role='user' AND u.client_message_id=?""",
                              (conversation_id, client_message_id))
         return AnswerResult.model_validate_json(row["body_json"]) if row else None
 
-    def post_message(self, user_id, conversation_id, text, client_message_id):
+    def post_message(self, user_id, conversation_id, text, client_message_id, *, confirmed_fields=None,
+                     expected_profile_version=None):
         conversation = self._owned_conversation(user_id, conversation_id)
         if not isinstance(client_message_id, str) or not client_message_id.strip():
             raise bad_request("需要 client_message_id（幂等键）")
         stored = self._stored_reply(conversation_id, client_message_id)
         if stored:
             return stored
-        profile = self.get_profile(user_id, conversation["profile_id"])
         facts, topic, asked, last_version = self._conversation_context(conversation_id)
         user_message_id, answer_id = _new_id(), _new_id()
+        confirmed_fields = confirmed_fields or {}
+        if confirmed_fields:
+            if not isinstance(confirmed_fields, dict) or not set(confirmed_fields) <= set(asked):
+                raise bad_request("只能保存当前追问要求的画像字段")
+            self._check_values(confirmed_fields)
+        profile = self.get_profile(user_id, conversation["profile_id"])
+        if confirmed_fields:
+            if expected_profile_version != profile.version:
+                raise ServiceError("VERSION_CONFLICT", f"档案已更新到 v{profile.version}，请刷新后再提交", 409)
+            profile = profile.model_copy(deep=True)
+            profile.version += 1
+            for code, value in confirmed_fields.items():
+                profile.fields[code] = ProfileField(value=value, status="confirmed",
+                    source_type="user_selection", confirmed_at=self._ts(), source_message_id=user_message_id,
+                    field_version=(profile.fields.get(code).field_version if profile.fields.get(code) else 0) + 1,
+                    sensitivity=clarify.field_definitions()[code]["sensitivity"])
         output = self.runner.run(profile=profile, text=text, conversation_facts=facts, conversation_topic=topic,
                                  asked_fields=asked,
                                  expected_profile_version=last_version or conversation["profile_version"],
                                  message_id=answer_id)
         answer = output.result
+        if confirmed_fields:
+            equivalent = {"applicant_age_band": "applicant_age",
+                          "annual_income_band_hkd": "annual_income_hkd"}
+            for code in confirmed_fields:
+                output.turn_facts.pop(code, None)
+                output.turn_basis.pop(code, None)
+                alternate = equivalent.get(code)
+                if alternate:
+                    output.turn_facts.pop(alternate, None)
+                    output.turn_basis.pop(alternate, None)
         answer.profile_change_proposals = self._proposals_for(profile, output, user_message_id)
         try:
             with self.store.transaction() as db:
-                self._persist(db, conversation_id, profile, text, client_message_id, user_message_id, output)
+                self._persist(db, conversation_id, profile, text, client_message_id, user_message_id, output,
+                              confirmed_fields=confirmed_fields)
         except sqlite3.IntegrityError:
             stored = self._stored_reply(conversation_id, client_message_id)
             if stored:
@@ -295,10 +426,20 @@ class Agent2Service:
                 basis=f"用户消息：「{output.turn_basis.get(code, '')}」"))
         return proposals
 
-    def _persist(self, db, conversation_id, profile, text, client_message_id, user_message_id, output):
+    def _persist(self, db, conversation_id, profile, text, client_message_id, user_message_id, output,
+                 *, confirmed_fields=None):
         answer = output.result
         now = self._ts()
-        seq = db.execute("SELECT COALESCE(MAX(seq),0) FROM message_index WHERE conversation_id=?",
+        confirmed_fields = confirmed_fields or {}
+        if confirmed_fields:
+            current = db.execute("SELECT version FROM profiles WHERE profile_id=?", (profile.profile_id,)).fetchone()
+            expected = profile.version - 1
+            self._bump(db, profile.profile_id, current["version"], expected)
+            self._write_fields(db, profile.profile_id, confirmed_fields, "user_selection",
+                               source_message_id=user_message_id, profile_version=profile.version)
+            db.execute("UPDATE sessions SET profile_version=? WHERE session_id=?",
+                       (profile.version, conversation_id))
+        seq = db.execute("SELECT COALESCE(MAX(seq),0) FROM message_index WHERE session_id=?",
                          (conversation_id,)).fetchone()[0]
         user_body = {"text": text, "facts": output.turn_facts, "topic": output.topic}
         db.execute("INSERT INTO message_index VALUES (?,?,?,?,?,?,?,?,?)",
@@ -310,7 +451,8 @@ class Agent2Service:
                     body, "delivered", now))
         db.execute("INSERT INTO answer_runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                    (_new_id(), answer.message_id, profile.version, output.knowledge_read_id, output.model_version,
-                    PROMPT_VERSION, GATE_VERSION, answer.status, answer.trace_id, dumps(output.stage_ms), now))
+                    output.prompt_version, output.gate_version, answer.status, answer.trace_id,
+                    dumps(output.stage_ms), now))
         citations = {c.citation_id: c for c in answer.citations}
         for claim in answer.claims:
             for cid in claim.citation_ids:
@@ -339,8 +481,8 @@ class Agent2Service:
     # ---------- reactions / M11 / snapshots ----------
 
     def react(self, user_id, message_id, kind):
-        row = self.store.one("""SELECT m.message_id FROM message_index m JOIN conversations c USING(conversation_id)
-            WHERE m.message_id=? AND c.user_id=? AND m.role='assistant'""", (message_id, user_id))
+        row = self.store.one("""SELECT m.message_id FROM message_index m JOIN sessions s USING(session_id)
+            WHERE m.message_id=? AND s.user_id=? AND m.role='assistant'""", (message_id, user_id))
         if not row:
             raise not_found("消息")
         if kind not in ("like", "dislike"):

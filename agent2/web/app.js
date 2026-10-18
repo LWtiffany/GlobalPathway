@@ -329,7 +329,7 @@ async function renderOnboarding() {
 // ---------- /chat ----------
 
 async function loadMessages() {
-  S.messages = (await api("GET", `/conversations/${S.conv.conversation_id}/messages?limit=200`)).messages;
+  S.messages = (await api("GET", `/sessions/${S.conv.session_id || S.conv.conversation_id}/messages?limit=200`)).messages;
 }
 async function loadAdvice() { S.advice = (await api("GET", `/profiles/${S.pid}/advice`)).advice; }
 async function loadPlan() { S.plan = (await api("GET", `/profiles/${S.pid}/plan`)).items; }
@@ -369,7 +369,7 @@ async function renderChat(pidArg) {
   S.pid = pid;
   localStorage.setItem("gp_pid", pid);
   S.profile = S.profiles.find((p) => p.profile_id === pid);
-  S.conv = await api("POST", `/profiles/${pid}/conversation`);
+  S.conv = await api("POST", `/profiles/${pid}/session`);
   await Promise.all([loadMessages(), loadAdvice(), loadPlan(), loadProposals()]);
   deriveMissing();
   drawChatPage();
@@ -640,7 +640,10 @@ function drawChat({ keep } = {}) {
       const p = S.pending;
       items.push(h("div", { class: "m err" }, h("p", null, p.error.message),
         h("div", { class: "chips" },
-          h("button", { class: "s", onclick: () => { S.pending = null; send(p.text, p.cid); } }, "重试"),
+          h("button", { class: "s", onclick: () => {
+            S.pending = null;
+            send(p.text, p.cid, p.changed, p.confirmedFields, p.expectedProfileVersion);
+          } }, "重试"),
           h("button", { onclick: () => { S.pending = null; drawChat(); } }, "放弃"))));
     } else {
       items.push(stepsLine(pendingSteps(S.pending.k)));
@@ -707,9 +710,28 @@ function materialItem(m, cmap) {
 
 function followUp(q) {
   const f = S.fields[q.field] || { kind: "text", options: [], label: q.field };
+  const options = (q.options && q.options.length) ? q.options : f.options;
   const chips = h("div", { class: "chips" });
-  if (f.options.length) {
-    f.options.forEach((o) => chips.append(h("button", { onclick: () => answerField(q.field, o.value, o.label) }, o.label)));
+  if (q.input_type === "multi_select") {
+    const selected = new Map();
+    const confirm = h("button", { class: "s", disabled: true }, "确认并保存到画像");
+    options.forEach((o) => {
+      const button = h("button", { onclick: () => {
+        if (selected.has(o.value)) { selected.delete(o.value); button.classList.remove("on"); }
+        else if (!q.max_selections || selected.size < q.max_selections) {
+          selected.set(o.value, o.label); button.classList.add("on");
+        }
+        confirm.disabled = selected.size === 0;
+      } }, o.label);
+      chips.append(button);
+    });
+    confirm.addEventListener("click", () => answerField(
+      q.field, [...selected.keys()], [...selected.values()].join("、"), q.persist_mode));
+    chips.append(confirm);
+  } else if (options.length) {
+    options.forEach((o) => chips.append(h("button", {
+      onclick: () => answerField(q.field, o.value, o.label, q.persist_mode)
+    }, o.label)));
   } else {
     const input = h("input", { type: f.kind === "date" ? "date" : f.kind === "age" ? "number" : "text", placeholder: f.label });
     input.dataset.field = q.field;
@@ -736,30 +758,14 @@ function typedAnswers(except) {
   return out;
 }
 
-async function answerField(code, value, text) {
+async function answerField(code, value, text, persistMode) {
   if (S.busy) { toast("上一条还在处理中，请稍候再提交"); return; }
   const typed = typedAnswers(code);
   const fields = { ...typed, [code]: value };
-  try {
-    S.profile = await api("PATCH", `/profiles/${S.pid}`,
-      { expected_version: S.profile.version, fields });
-  } catch (e) {
-    if (e.code === "VERSION_CONFLICT") {
-      await refreshProfile();
-      drawSheet();
-      toast("档案刚刚更新过，已刷新，请再选一次");
-    } else {
-      toast(e.message, true);
-    }
-    return;
-  }
-  syncProfile();
-  Object.keys(fields).forEach((c) => S.missing.delete(c));
-  drawSheet();
-  drawSide();
   const parts = Object.entries(typed).map(([c, v]) => `${label(c)}：${valueLabel(c, v)}`);
   parts.push(`${label(code)}：${text}`);
-  await send(parts.join("；"), null, Object.keys(fields));
+  const confirmed = persistMode === "save_on_select" ? { [code]: value } : {};
+  await send(parts.join("；"), null, Object.keys(fields), confirmed, S.profile.version);
 }
 
 function proposalCard(p) {
@@ -830,19 +836,21 @@ async function feedback(b, kind, note) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function send(text, retryCid, changed) {
+async function send(text, retryCid, changed, confirmedFields, expectedProfileVersion) {
   if (S.busy) return;
   S.busy = true;
   S.el.sendBtn.disabled = true;
   S.highlight = new Set(changed || []);
-  S.pending = { text, cid: retryCid || uuid(), k: 0, error: null };
+  S.pending = { text, cid: retryCid || uuid(), k: 0, error: null, changed,
+    confirmedFields: confirmedFields || {}, expectedProfileVersion };
   drawChat();
   const ticker = setInterval(() => {
     if (S.pending && !S.pending.error && S.pending.k < 3) { S.pending.k += 1; drawChat(); }
   }, 600);
   try {
-    const res = await api("POST", `/conversations/${S.conv.conversation_id}/messages`,
-      { text, client_message_id: S.pending.cid }, { timeout: 90000 });
+    const res = await api("POST", `/sessions/${S.conv.session_id || S.conv.conversation_id}/messages`,
+      { text, client_message_id: S.pending.cid, confirmed_fields: S.pending.confirmedFields,
+        expected_profile_version: S.pending.expectedProfileVersion }, { timeout: 90000 });
     clearInterval(ticker);
     S.pending = null;
     await Promise.all([loadMessages(), refreshProfile(), loadAdvice(), loadProposals()]);

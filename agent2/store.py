@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
     synthetic        INTEGER NOT NULL CHECK (synthetic IN (0,1)),
     status           TEXT NOT NULL DEFAULT 'active'
 );
-CREATE TABLE IF NOT EXISTS sessions (
+CREATE TABLE IF NOT EXISTS auth_sessions (
     token      TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(user_id),
     created_at TEXT NOT NULL
@@ -24,19 +24,58 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS profiles (
     profile_id TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(user_id),
+    display_name TEXT,
     version    INTEGER NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
     synthetic  INTEGER NOT NULL CHECK (synthetic IN (0,1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS profile_fields (
+CREATE TABLE IF NOT EXISTS profile_field_values (
     profile_id   TEXT NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
     field_code   TEXT NOT NULL,
     value_json   TEXT,
-    status       TEXT NOT NULL CHECK (status IN ('confirmed','unknown')),
-    source       TEXT CHECK (source IS NULL OR source IN ('user','import','demo')),
+    value_type   TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN
+        ('unknown','inferred','proposed','confirmed','stale','disputed')),
+    source_type  TEXT CHECK (source_type IS NULL OR source_type IN
+        ('user_selection','user_message','user_edit','document_import','system_derived','agent_inference','demo')),
     confirmed_at TEXT,
+    expires_at   TEXT,
+    source_message_id TEXT,
+    field_version INTEGER NOT NULL DEFAULT 0,
+    sensitivity TEXT NOT NULL DEFAULT 'standard' CHECK (sensitivity IN
+        ('standard','personal','financial','sensitive')),
+    updated_at   TEXT NOT NULL,
     PRIMARY KEY (profile_id, field_code)
+);
+CREATE TABLE IF NOT EXISTS profile_field_definitions (
+    field_code       TEXT PRIMARY KEY,
+    display_name     TEXT NOT NULL,
+    value_type       TEXT NOT NULL,
+    options_json     TEXT NOT NULL,
+    domains_json     TEXT NOT NULL,
+    sensitivity      TEXT NOT NULL CHECK (sensitivity IN ('standard','personal','financial','sensitive')),
+    freshness_days   INTEGER,
+    ask_priority     INTEGER NOT NULL DEFAULT 0,
+    ask_only_when_needed INTEGER NOT NULL DEFAULT 1 CHECK (ask_only_when_needed IN (0,1)),
+    question_template TEXT NOT NULL,
+    schema_version   INTEGER NOT NULL,
+    active           INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+    updated_at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS profile_field_events (
+    event_id         TEXT PRIMARY KEY,
+    profile_id       TEXT NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
+    field_code       TEXT NOT NULL,
+    old_value_json   TEXT,
+    new_value_json   TEXT,
+    action           TEXT NOT NULL CHECK (action IN ('set','confirm','clear','expire','reject')),
+    source_type      TEXT NOT NULL,
+    source_message_id TEXT,
+    actor_type       TEXT NOT NULL CHECK (actor_type IN ('user','agent','system')),
+    profile_version  INTEGER NOT NULL,
+    created_at       TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS profile_change_proposals (
     proposal_id       TEXT PRIMARY KEY,
@@ -50,16 +89,17 @@ CREATE TABLE IF NOT EXISTS profile_change_proposals (
     created_at        TEXT NOT NULL,
     decided_at        TEXT
 );
-CREATE TABLE IF NOT EXISTS conversations (
-    conversation_id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id      TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL REFERENCES users(user_id),
-    profile_id      TEXT NOT NULL REFERENCES profiles(profile_id),
+    profile_id      TEXT NOT NULL UNIQUE REFERENCES profiles(profile_id),
     profile_version INTEGER NOT NULL,
     created_at      TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_profile ON sessions(profile_id);
 CREATE TABLE IF NOT EXISTS message_index (
     message_id        TEXT PRIMARY KEY,
-    conversation_id   TEXT NOT NULL REFERENCES conversations(conversation_id),
+    session_id        TEXT NOT NULL REFERENCES sessions(session_id),
     seq               INTEGER NOT NULL,
     role              TEXT NOT NULL CHECK (role IN ('user','assistant')),
     client_message_id TEXT,
@@ -67,8 +107,8 @@ CREATE TABLE IF NOT EXISTS message_index (
     body_json         TEXT NOT NULL,
     status            TEXT NOT NULL,
     created_at        TEXT NOT NULL,
-    UNIQUE (conversation_id, seq),
-    UNIQUE (conversation_id, role, client_message_id)
+    UNIQUE (session_id, seq),
+    UNIQUE (session_id, role, client_message_id)
 );
 CREATE TABLE IF NOT EXISTS answer_runs (
     run_id            TEXT PRIMARY KEY,
@@ -149,8 +189,54 @@ class Store:
         self._connection = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys=ON")
+        self._migrate_legacy_names()
         self._connection.executescript(SCHEMA)
+        self._migrate_legacy_profile_fields()
         self._lock = threading.RLock()
+
+    def _table_columns(self, table):
+        return {row[1] for row in self._connection.execute(f"PRAGMA table_info({table})")}
+
+    def _migrate_legacy_names(self):
+        """Rename the original auth/conversation tables before creating the v2 schema."""
+        tables = {row[0] for row in self._connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "profiles" in tables:
+            columns = self._table_columns("profiles")
+            if "display_name" not in columns:
+                self._connection.execute("ALTER TABLE profiles ADD COLUMN display_name TEXT")
+            if "status" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE profiles ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        if "sessions" in tables and "token" in self._table_columns("sessions"):
+            if "auth_sessions" not in tables:
+                self._connection.execute("ALTER TABLE sessions RENAME TO auth_sessions")
+            else:
+                self._connection.execute("DROP TABLE sessions")
+            tables.discard("sessions")
+            tables.add("auth_sessions")
+        if "conversations" in tables and "sessions" not in tables:
+            self._connection.execute("ALTER TABLE conversations RENAME TO sessions")
+            if "conversation_id" in self._table_columns("sessions"):
+                self._connection.execute("ALTER TABLE sessions RENAME COLUMN conversation_id TO session_id")
+            if "message_index" in tables and "conversation_id" in self._table_columns("message_index"):
+                self._connection.execute("ALTER TABLE message_index RENAME COLUMN conversation_id TO session_id")
+
+    def _migrate_legacy_profile_fields(self):
+        tables = {row[0] for row in self._connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "profile_fields" not in tables:
+            return
+        now = "1970-01-01T00:00:00+00:00"
+        self._connection.execute("""INSERT OR IGNORE INTO profile_field_values
+            (profile_id, field_code, value_json, value_type, status, source_type, confirmed_at,
+             expires_at, source_message_id, field_version, sensitivity, updated_at)
+            SELECT profile_id, field_code, value_json, 'json', status,
+              CASE source WHEN 'user' THEN 'user_edit' WHEN 'import' THEN 'document_import'
+                   WHEN 'demo' THEN 'demo' ELSE NULL END,
+              confirmed_at, NULL, NULL, CASE WHEN status='confirmed' THEN 1 ELSE 0 END,
+              'standard', COALESCE(confirmed_at, ?)
+            FROM profile_fields""", (now,))
 
     @contextmanager
     def transaction(self):
