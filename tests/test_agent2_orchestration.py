@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from agent2.models import AnswerBody
 from agent2.orchestration import OrchestrationInput, build_default_workflow
 from agent2.orchestration.contracts import DomainResult
+from agent2.orchestration.planner import RuleTaskPlanner
 from agent2.orchestration.quality import DefaultQualityGate
 
 
@@ -40,6 +41,21 @@ class Agent2OrchestrationTests(unittest.TestCase):
 
         self.assertEqual(["credit_card"],
                          [item.domain for item in output.snapshot.task_plan.tasks])
+
+    def test_structured_credit_card_choices_cannot_create_fx_intent(self):
+        request = OrchestrationInput(
+            text="每月全额还款；网购；境外消费；内地消费",
+            profile_id="profile-1",
+            profile_version=3,
+            conversation_intents=["credit_card"],
+            asked_fields=["repayment_mode", "spending_scenarios"],
+            input_mode="structured_selection",
+        )
+
+        plan = asyncio.run(RuleTaskPlanner().plan(request))
+
+        self.assertEqual(["credit_card"], [task.domain for task in plan.tasks])
+        self.assertEqual(["credit_card"], [task.intent for task in plan.tasks])
 
     def test_profile_and_plan_changes_are_candidates_only(self):
         output = build_default_workflow().run(self.request("25岁，想汇学费"))

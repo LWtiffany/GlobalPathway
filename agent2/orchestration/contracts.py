@@ -79,6 +79,7 @@ class AnswerSnapshot(FrozenModel):
     gate_version: str
     knowledge_read_ids: dict[str, str] = Field(default_factory=dict)
     model_versions: dict[str, str] = Field(default_factory=dict)
+    prompt_versions: dict[str, str] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -114,6 +115,9 @@ class OrchestrationInput(FrozenModel):
     profile_values: dict[str, Any] = Field(default_factory=dict)
     conversation_intents: list[str] = Field(default_factory=list)
     asked_fields: list[str] = Field(default_factory=list)
+    input_mode: Literal["free_text", "structured_selection"] = "free_text"
+    understood_facts: dict[str, Any] = Field(default_factory=dict)
+    understood_basis: dict[str, str] = Field(default_factory=dict)
 
 
 class OrchestrationOutput(FrozenModel):

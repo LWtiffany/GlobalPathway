@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from . import clarify
 from .models import AnswerResult, Profile, ProfileChangeProposal, ProfileField
 from .intent import classify
+from .llm import build_llm_components
 from .orchestration import build_default_workflow
 from .orchestration.legacy_adapter import run_credit_card
 from .runner import Agent2Runner
@@ -43,13 +44,18 @@ def utc_now():
 
 class Agent2Service:
     def __init__(self, store, knowledge, *, clock=utc_now, generator=None, demo_enabled=True, suggest=None,
-                 credit_card_repository=None):
+                 credit_card_repository=None, llm_components=None):
         self.store = store
         self.knowledge = knowledge
         self.clock = clock
         self.demo_enabled = demo_enabled
         self.runner = Agent2Runner(knowledge, clock, generator=generator, suggest=suggest)
-        self.v2_workflow = build_default_workflow(credit_card_repository=credit_card_repository)
+        llm = llm_components if llm_components is not None else build_llm_components()
+        self.v2_workflow = build_default_workflow(
+            credit_card_repository=credit_card_repository,
+            understanding=llm.understanding,
+            writer=llm.writer,
+        )
         self._sync_field_definitions()
 
     def _sync_field_definitions(self):
@@ -391,11 +397,18 @@ class Agent2Service:
                     field_version=(profile.fields.get(code).field_version if profile.fields.get(code) else 0) + 1,
                     sensitivity=clarify.field_definitions()[code]["sensitivity"])
         classified = classify(text, asked_fields=asked)
-        resolved_topic = topic if classified.intent in ("follow_up", "other") and topic else classified.intent
+        # A pending structured question belongs to the active domain. Option labels such as
+        # "境外消费" must not be reclassified as a new remittance/visa request mid-flow.
+        if asked and topic:
+            resolved_topic = topic
+        else:
+            resolved_topic = topic if classified.intent in ("follow_up", "other") and topic \
+                else classified.intent
         if resolved_topic == "credit_card":
             output = run_credit_card(self.v2_workflow, profile=profile, text=text,
                                      conversation_facts=facts, asked_fields=asked,
-                                     message_id=answer_id)
+                                     message_id=answer_id,
+                                     structured_selection=bool(asked))
         else:
             output = self.runner.run(profile=profile, text=text, conversation_facts=facts, conversation_topic=topic,
                                      asked_fields=asked,

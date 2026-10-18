@@ -7,7 +7,7 @@ from .contracts import OrchestrationInput
 
 
 def run_credit_card(workflow, *, profile, text, conversation_facts, asked_fields,
-                    message_id):
+                    message_id, structured_selection=False):
     profile_values = {code: field.value for code, field in profile.fields.items()
                       if field.status == "confirmed" and field.value is not None}
     profile_values.update(conversation_facts or {})
@@ -18,12 +18,12 @@ def run_credit_card(workflow, *, profile, text, conversation_facts, asked_fields
         profile_values=profile_values,
         conversation_intents=["credit_card"],
         asked_fields=list(asked_fields),
+        input_mode="structured_selection" if structured_selection else "free_text",
     )
     orchestrated = workflow.run(request)
     unified = orchestrated.answer
     facts = {item.field_code: item.new_value for item in orchestrated.lifecycle.profile_change_candidates}
     basis = {item.field_code: item.basis for item in orchestrated.lifecycle.profile_change_candidates}
-    synthetic = any(note.code == "synthetic_card_catalog" for note in unified.notices)
     advice = None
     advice_updates = []
     domain_payload = unified.domain_results[0].payload if unified.domain_results else {}
@@ -46,19 +46,21 @@ def run_credit_card(workflow, *, profile, text, conversation_facts, asked_fields
         next_actions=unified.next_actions,
         notices=unified.notices,
         advice_updates=advice_updates,
-        synthetic=synthetic,
+        synthetic=False,
         trace_id=orchestrated.trace_id,
         stage_ms=orchestrated.stage_ms,
     )
     read_ids = orchestrated.snapshot.knowledge_read_ids
+    llm_models = [value for value in orchestrated.snapshot.model_versions.values() if value != "none"]
+    llm_prompts = list(orchestrated.snapshot.prompt_versions.values())
     return RunOutput(
         result=result,
         turn_facts=facts,
         turn_basis=basis,
         topic="credit_card",
         knowledge_read_id=next(iter(read_ids.values()), None),
-        model_version="credit-card-rules-1",
-        prompt_version="credit-card-template-1",
+        model_version="+".join(dict.fromkeys(["credit-card-rules-1", *llm_models])),
+        prompt_version="+".join(dict.fromkeys(["credit-card-template-1", *llm_prompts])),
         gate_version=orchestrated.snapshot.gate_version,
         advice=advice,
         stage_ms=orchestrated.stage_ms,
