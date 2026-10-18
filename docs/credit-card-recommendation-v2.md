@@ -88,6 +88,12 @@ CARD_ELIGIBILITY_RULE 示例（Visa Signature）
   不会再作为"缺资料"出现在推荐里。
 - **`outcome_if_met` 区分公开门槛与个案审批**。资产路径满足的卡标记
   `needs_bank_assessment`，回答文本固定披露"可提交资产证明，最终由 HSBC 个案审批"。
+- **香港居民身份是软门槛**。HSBC 成文条件要求香港居民，但实践中存在低几率个案通过：
+  `hk_resident=False` 不会把卡排除，而是把评估降级为 `needs_bank_assessment` 并标记
+  `low_approval_chance=True`；答案在卡级资格（"非香港居民：不符合成文条件，获批几率
+  很低，需 HSBC 个案审批"）和答案级限制（"你选择了「非香港居民」……以下推荐仅为
+  参考，最终由银行审批"）两处披露。软门槛只放宽居民身份这一项——收入、年龄等其他
+  成文条件失败仍然出局。
 
 ### 规则类型
 
@@ -101,7 +107,7 @@ CARD_ELIGIBILITY_RULE 示例（Visa Signature）
 | `institution_status` | `student_institution_eligible` | HSBC 指定院校名单 |
 | `banking_relationship` | `hsbc_premier_path` / `premier_relationship` | Premier Mastercard 路径 |
 | `relationship_balance` | `hsbc_total_relationship_balance_hkd` / 区间 | Premier TRB 门槛 |
-| `residency` | `hk_resident` | 香港居民基本条件 |
+| `residency` | `hk_resident` | 香港居民基本条件；失败为软门槛（降级个案审批+低通过率披露，不排除） |
 | `credit_assessment` | `credit_history_band` | 预留 |
 
 ### 学生与资产的门控逻辑
@@ -262,6 +268,8 @@ QR 推广层 2.0% × min(360k, 80k 上限)  = 1,600   （stacking=extra，限时
 ## 已知边界
 
 - 仅覆盖 HSBC 香港；暂不比较其他发卡机构。
+- 香港居民身份按软门槛建模：非居民继续获得推荐但披露"获批几率很低"，真实通过率
+  无公开数据，答案不做任何几率量化，最终由银行个案审批。
 - "等额理财替代收入"没有公开数字依据：Signature 40 万是唯一公开资产门槛，其他卡按
   个案审批建模，不虚构确定金额。
 - 迎新礼遇未计入年度净值；申请前以官网最新条款为准。
