@@ -895,28 +895,23 @@ class CreditCardStudentServiceIntegrationTests(unittest.TestCase):
         second = self.ask("18 岁或以上", "t2",
                           confirmed_fields={"applicant_age_band": "18_or_over"},
                           expected_profile_version=1)
-        self.assertEqual(["student_institution_eligible"],
-                         [q.field for q in second.follow_up_questions])
-        third = self.ask("在指定院校就读", "t3",
-                         confirmed_fields={"student_institution_eligible": True},
-                         expected_profile_version=2)
-        # 开场文本已给消费场景（网购），本轮只补还款方式和月消费区间。
         self.assertEqual(["repayment_mode", "monthly_card_spend_band_hkd"],
+                         [q.field for q in second.follow_up_questions])
+        third = self.ask("每月全额还款；月消费五千至一万", "t3",
+                         confirmed_fields={"repayment_mode": "full",
+                                           "monthly_card_spend_band_hkd": "5k_10k"},
+                         expected_profile_version=2)
+        self.assertEqual(["reward_preference"],
                          [q.field for q in third.follow_up_questions])
-        fourth = self.ask("每月全额还款；月消费五千至一万", "t4",
-                          confirmed_fields={"repayment_mode": "full",
-                                            "monthly_card_spend_band_hkd": "5k_10k"},
+        final = self.ask("按预计价值比较", "t4",
+                          confirmed_fields={"reward_preference": "no_preference"},
                           expected_profile_version=3)
-        self.assertEqual(["reward_preference"], [q.field for q in fourth.follow_up_questions])
-        final = self.ask("按预计价值比较", "t5",
-                         confirmed_fields={"reward_preference": "no_preference"},
-                         expected_profile_version=4)
         self.assertEqual("answered", final.status)
         # 年收入 8 万 ≥ 6 万：普通卡凭收入 eligible 且净值更高——有收入的学生
         # 得到的是普通卡主推，而非被默认成无收入人群只看学生卡。
         self.assertIn("主推荐：Normal Card", final.answer.steps[0])
-        # 学生卡仍以 eligible 身份出现在答案里（免年费备选或候选）。
-        self.assertIn("Student Card", " ".join(final.answer.steps))
+        # 普通卡路径已经足够，系统不额外收集学生院校资格，也不把学生卡伪装成已符合资格的备选。
+        self.assertNotIn("Student Card", " ".join(final.answer.steps))
 
 
 class CreditCardNonResidentServiceIntegrationTests(unittest.TestCase):

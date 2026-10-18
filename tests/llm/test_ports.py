@@ -48,6 +48,6 @@ class LlmPortTests(unittest.TestCase):
         self.assertEqual(["需审批"], actual.limitations)
         self.assertEqual(
             "主推荐：A 卡；资格：可提交资产证明，需银行个案审批。", actual.steps[0])
-        self.assertIn("建议先核对申请材料。", actual.steps)
+        self.assertNotIn("建议先核对申请材料。", actual.steps)
         self.assertEqual("write_answer", model.calls[0]["operation"])
         model.assert_complete()

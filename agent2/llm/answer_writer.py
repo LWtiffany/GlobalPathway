@@ -39,12 +39,17 @@ class LlmAnswerWriter:
         )
         written = await self.model.parse(prompt=prompt, output_type=WrittenAnswer,
                                          operation="write_answer")
-        # Eligibility, fees and borrowing costs are deterministic decision facts. Keep them
-        # verbatim; the model may add a clearer explanation but cannot erase these details.
+        # Eligibility, fees and borrowing costs are deterministic decision facts.
+        # The LLM may refine the summary, but appending near-duplicate prose to
+        # these locked steps produced repeated card recommendations in real runs.
         steps = list(verified_answer.answer.steps)
-        steps.extend(step for step in written.steps if step not in steps)
+        # Credit-card output contains regulated product terms. A model summary
+        # can sound fluent while adding an unmodelled promotion or condition,
+        # so both its heading and decision steps remain deterministic.
+        credit_card_answer = any(item.domain == "credit_card"
+                                 for item in verified_answer.domain_results)
         candidate = AnswerBody(
-            summary=written.summary,
+            summary=(verified_answer.answer.summary if credit_card_answer else written.summary),
             steps=steps,
             materials=verified_answer.answer.materials,
             limitations=verified_answer.answer.limitations,

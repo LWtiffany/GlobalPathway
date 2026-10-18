@@ -425,10 +425,6 @@ class CreditCardWorkflow:
         lowest non-student income threshold, so mainstream applicants never
         see these questions.
         """
-        if facts.get("full_time_student") is not None:
-            if facts["full_time_student"] and facts.get("student_institution_eligible") is None:
-                return ["student_institution_eligible"]
-            return []
         student_ids = {product.card_id for product in products if any(
             rule.required and rule.rule_type == "student_status"
             for rule in product.eligibility_rules)}
@@ -454,7 +450,14 @@ class CreditCardWorkflow:
                 below = Decimal(parts[2]) < threshold
             else:
                 below = False
-        return ["full_time_student"] if below else []
+        if not below:
+            return []
+        if facts.get("full_time_student") is True:
+            return (["student_institution_eligible"]
+                    if facts.get("student_institution_eligible") is None else [])
+        if facts.get("full_time_student") is False:
+            return []
+        return ["full_time_student"]
 
     @staticmethod
     def _catalog_summary(catalog):

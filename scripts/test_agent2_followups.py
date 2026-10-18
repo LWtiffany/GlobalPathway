@@ -32,7 +32,8 @@ CREDIT_CARD_FIELDS = {
     "application_region", "applicant_age", "applicant_age_band",
     "annual_income_hkd", "annual_income_band_hkd", "asset_band",
     "repayment_mode", "spending_scenarios", "reward_preference",
-    "full_time_student", "premier_relationship", "hsbc_relationship_balance_band",
+    "full_time_student", "student_institution_eligible", "premier_relationship",
+    "hsbc_relationship_balance_band",
     "hsbc_premier_path", "hk_resident",
     "monthly_card_spend_band_hkd",
     "mainland_payment_method",
@@ -258,6 +259,7 @@ def chosen_value(question):
         "hsbc_relationship_balance_band": "1m_plus",
         "hsbc_premier_path": "not_applicable",
         "asset_band": "under_100k",
+        "student_institution_eligible": True,
         "repayment_mode": "full",
         "spending_scenarios": ["online", "dining"],
         "monthly_card_spend_band_hkd": "5k_10k",
@@ -279,7 +281,9 @@ def run_structured_choices(profile_values=None):
                                    llm_calls=llm_calls, workflow_outputs=workflow_outputs)
         turns.append(record)
         turn = 2
-        while answer.status == "needs_input" and turn <= 6:
+        # Eligibility, Premier and conditional reward questions can take seven
+        # structured turns; keep the automated path aligned with interactive mode.
+        while answer.status == "needs_input" and turn <= 8:
             selected = {question.field: chosen_value(question)
                         for question in answer.follow_up_questions}
             labels = []
