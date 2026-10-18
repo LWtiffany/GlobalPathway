@@ -10,6 +10,9 @@ from datetime import datetime, timedelta, timezone
 
 from . import clarify
 from .models import AnswerResult, Profile, ProfileChangeProposal, ProfileField
+from .intent import classify
+from .orchestration import build_default_workflow
+from .orchestration.legacy_adapter import run_credit_card
 from .runner import Agent2Runner
 from .store import dumps
 
@@ -39,12 +42,14 @@ def utc_now():
 
 
 class Agent2Service:
-    def __init__(self, store, knowledge, *, clock=utc_now, generator=None, demo_enabled=True, suggest=None):
+    def __init__(self, store, knowledge, *, clock=utc_now, generator=None, demo_enabled=True, suggest=None,
+                 credit_card_repository=None):
         self.store = store
         self.knowledge = knowledge
         self.clock = clock
         self.demo_enabled = demo_enabled
         self.runner = Agent2Runner(knowledge, clock, generator=generator, suggest=suggest)
+        self.v2_workflow = build_default_workflow(credit_card_repository=credit_card_repository)
         self._sync_field_definitions()
 
     def _sync_field_definitions(self):
@@ -385,10 +390,17 @@ class Agent2Service:
                     source_type="user_selection", confirmed_at=self._ts(), source_message_id=user_message_id,
                     field_version=(profile.fields.get(code).field_version if profile.fields.get(code) else 0) + 1,
                     sensitivity=clarify.field_definitions()[code]["sensitivity"])
-        output = self.runner.run(profile=profile, text=text, conversation_facts=facts, conversation_topic=topic,
-                                 asked_fields=asked,
-                                 expected_profile_version=last_version or conversation["profile_version"],
-                                 message_id=answer_id)
+        classified = classify(text, asked_fields=asked)
+        resolved_topic = topic if classified.intent in ("follow_up", "other") and topic else classified.intent
+        if resolved_topic == "credit_card":
+            output = run_credit_card(self.v2_workflow, profile=profile, text=text,
+                                     conversation_facts=facts, asked_fields=asked,
+                                     message_id=answer_id)
+        else:
+            output = self.runner.run(profile=profile, text=text, conversation_facts=facts, conversation_topic=topic,
+                                     asked_fields=asked,
+                                     expected_profile_version=last_version or conversation["profile_version"],
+                                     message_id=answer_id)
         answer = output.result
         if confirmed_fields:
             equivalent = {"applicant_age_band": "applicant_age",

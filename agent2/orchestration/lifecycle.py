@@ -3,7 +3,12 @@
 from .contracts import (AdviceUpdate, LifecycleActions, OrchestrationInput, PlanItemCandidate,
                         ProfileChangeCandidate, TaskPlan, UnifiedAnswer)
 
-PROFILE_FIELDS_BY_DOMAIN = {}
+PROFILE_FIELDS_BY_DOMAIN = {
+    "credit_card": {"application_region", "applicant_age", "applicant_age_band",
+                    "annual_income_hkd", "annual_income_band_hkd", "asset_band",
+                    "repayment_mode", "spending_scenarios", "reward_preference",
+                    "full_time_student", "premier_relationship"},
+}
 
 
 class DefaultLifecyclePlanner:

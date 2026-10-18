@@ -396,6 +396,21 @@ def session(paths=None, readonly=True):
         connection.close()
 
 
+@contextmanager
+def read_session():
+    """Read an already-initialized RDS schema without running startup DDL."""
+    connection = _connect()
+    try:
+        connection.read_only = True
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def initialize(paths=None):
     """幂等初始化 schema（建表 + 触发器），无业务数据写入。"""
     connection = _connect()

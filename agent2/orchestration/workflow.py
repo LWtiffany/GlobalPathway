@@ -131,10 +131,10 @@ class Agent2Workflow:
         return asyncio.run(self.run_async(request))
 
 
-def build_default_workflow() -> Agent2Workflow:
+def build_default_workflow(*, credit_card_repository=None) -> Agent2Workflow:
     return Agent2Workflow(WorkflowDependencies(
         planner=RuleTaskPlanner(),
-        domains=default_domain_workflows(),
+        domains=default_domain_workflows(credit_card_repository=credit_card_repository),
         gate=DefaultQualityGate(),
         composer=DefaultResponseComposer(),
         lifecycle=DefaultLifecyclePlanner(),

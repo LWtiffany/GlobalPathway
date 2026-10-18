@@ -32,7 +32,7 @@ class Agent2OrchestrationTests(unittest.TestCase):
         )
         self.assertEqual("已按领域拆分并汇总。", output.answer.answer.summary)
         self.assertEqual(4, len(output.answer.domain_results))
-        self.assertEqual(["cannot_answer", "cannot_answer", "cannot_answer", "cannot_answer"],
+        self.assertEqual(["cannot_answer", "cannot_answer", "cannot_answer", "needs_input"],
                          [item.status for item in output.answer.domain_results])
 
     def test_credit_card_account_phrase_is_one_domain(self):

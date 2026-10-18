@@ -25,3 +25,4 @@ jobs:
           tests.test_agent2_m06
           tests.test_agent2_web
           tests.test_agent2_orchestration
+          tests.test_credit_card_workflow
