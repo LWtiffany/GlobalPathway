@@ -105,7 +105,8 @@ def post_message(service, user_id, body, query, conversation_id):
     return 200, service.post_message(
         user_id, conversation_id, body.get("text"), body.get("client_message_id"),
         confirmed_fields=body.get("confirmed_fields") or {},
-        expected_profile_version=body.get("expected_profile_version"))
+        expected_profile_version=body.get("expected_profile_version"),
+        cleared_fields=body.get("cleared_fields") or [])
 
 
 @route("POST", r"/v1/messages/(?P<message_id>[\w-]+)/reaction")

@@ -55,6 +55,8 @@ const S = {
   token: localStorage.getItem("gp_token"), user: null, fields: null, profiles: [], pid: localStorage.getItem("gp_pid"),
   profile: null, conv: null, messages: [], advice: {}, plan: [], proposals: [], missing: new Set(),
   highlight: new Set(), flash: [], busy: false, pending: null, sheetH: null, collapsed: false, fb: {}, el: {},
+  // One-question-at-a-time follow-ups; trail lets the user undo a wrong tap.
+  followSeed: null, followTrail: [], suppressFields: [],
 };
 
 // ---------- helpers ----------
@@ -200,6 +202,7 @@ function shell(content, cur) {
 
 function logout(message) {
   S.token = null; S.user = null; S.pid = null; S.profiles = []; S.fb = {}; S.pending = null;
+  S.followSeed = null; S.followTrail = []; S.suppressFields = [];
   localStorage.removeItem("gp_token");
   localStorage.removeItem("gp_pid");
   if (message) toast(message, true);
@@ -365,7 +368,10 @@ async function renderChat(pidArg) {
   S.profiles = (await api("GET", "/profiles")).profiles;
   if (!S.profiles.length) return go("#/onboarding");
   const pid = [pidArg, S.pid].find((id) => id && S.profiles.some((p) => p.profile_id === id)) || S.profiles[0].profile_id;
-  if (pid !== S.pid) { S.highlight = new Set(); S.pending = null; }
+  if (pid !== S.pid) {
+    S.highlight = new Set(); S.pending = null;
+    S.followSeed = null; S.followTrail = []; S.suppressFields = [];
+  }
   S.pid = pid;
   localStorage.setItem("gp_pid", pid);
   S.profile = S.profiles.find((p) => p.profile_id === pid);
@@ -631,8 +637,10 @@ function drawChat({ keep } = {}) {
       return;
     }
     const latest = i === lastIdx && !S.pending;
-    if (latest) items.push(stepsLine(finalSteps(m.body.status)));
-    items.push(answerBubble(m.body, latest));
+    // During follow-ups, skip the process strip — only the question should show.
+    if (latest && m.body.status !== "needs_input") items.push(stepsLine(finalSteps(m.body.status)));
+    const bubble = answerBubble(m.body, latest);
+    if (bubble) items.push(bubble);
   });
   if (S.pending) {
     items.push(h("div", { class: "m u pending" }, S.pending.text));
@@ -653,19 +661,64 @@ function drawChat({ keep } = {}) {
   box.scrollTop = keep ? scroll : box.scrollHeight;
 }
 
+function isCardRecommendationSteps(steps) {
+  return steps.some((s) => s.startsWith("年费："))
+    && steps.some((s) => /主推荐：|汇丰.+发行的卡/.test(s));
+}
+
+function renderAnswerSteps(steps) {
+  if (!isCardRecommendationSteps(steps)) {
+    return [h("div", { class: "sub-h" }, "步骤"),
+      h("ol", { class: "lim" }, steps.map((s) => h("li", null, s)))];
+  }
+  // Card copy is not a procedure — do not number section titles as 1. 2. 3.
+  const box = h("div", { class: "card-rec" });
+  for (const s of steps) {
+    if (/^汇丰.+发行的卡$/.test(s)) box.append(h("div", { class: "card-sec" }, s));
+    else if (/^(主推荐|补充卡|备选)：/.test(s)) box.append(h("div", { class: "card-name" }, s));
+    else if (/^(年费|主要权益|申请限制)：/.test(s)) {
+      const i = s.indexOf("：");
+      box.append(h("div", { class: "card-detail" },
+        h("span", { class: "k" }, s.slice(0, i + 1)), s.slice(i + 1)));
+    } else if (s.startsWith("免年费备选：")) box.append(h("div", { class: "card-alt" }, s));
+    else if (/（(?:Visa|Mastercard|UnionPay|银联)/.test(s) || /（[A-Za-z]+）$/.test(s)) {
+      box.append(h("div", { class: "card-name" }, s));
+    } else box.append(h("div", { class: "card-note" }, s));
+  }
+  return [h("div", { class: "sub-h" }, "推荐说明"), box];
+}
+
 function answerBubble(b, latest) {
+  // Follow-ups: chat only ever shows the current question + answer controls.
+  // Past needs_input turns are dropped so the cluttered status/steps/proposal card
+  // cannot reappear above the latest ask.
+  if (b.status === "needs_input") {
+    if (!latest) return null;
+    const question = (b.follow_up_questions || []).find((q) => val(S.profile, q.field) === undefined)
+      || (b.follow_up_questions || [])[0];
+    if (!question) return null;
+    const kids = [followUp(question)];
+    if (S.followTrail.length) {
+      kids.push(h("div", { class: "fq-nav" },
+        h("button", { class: "btn sm ghost", disabled: S.busy, onclick: goBackFollowUp },
+          "上一步")));
+    }
+    return h("div", { class: "m s-needs_input ask-only" }, kids);
+  }
+
   const st = STATUS[b.status] || STATUS.cannot_answer;
   const cmap = {};
   (b.citations || []).forEach((c, i) => { cmap[c.citation_id] = { ...c, n: i + 1 }; });
   const mats = b.answer.materials || [];
   const kids = [];
+
   if (b.status !== "answered") {
     kids.push(h("div", { class: "status" }, h("span", { class: "st " + st.cls }, st.label), h("span", { class: "why" }, st.why)));
   }
   kids.push(h("p", null, b.answer.summary));
   if (mats.length) kids.push(h("ul", { class: "mat" }, mats.map((m) => materialItem(m, cmap))));
   if ((b.answer.steps || []).length) {
-    kids.push(h("div", { class: "sub-h" }, "步骤"), h("ol", { class: "lim" }, b.answer.steps.map((s) => h("li", null, s))));
+    kids.push(...renderAnswerSteps(b.answer.steps));
   }
   if ((b.conflicts || []).length) {
     kids.push(h("div", { class: "sub-h" }, "不同来源说法不一致（并列展示，未替您取舍）"));
@@ -680,10 +733,6 @@ function answerBubble(b, latest) {
     kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, b.next_actions.map((s) => h("li", null, s))));
   }
   (b.notices || []).forEach((n) => kids.push(h("div", { class: "notice" }, n.message)));
-  if (latest) {
-    (b.follow_up_questions || []).filter((q) => val(S.profile, q.field) === undefined)
-      .forEach((q) => kids.push(followUp(q)));
-  }
   const open = new Set(S.proposals.map((p) => p.proposal_id));
   (b.profile_change_proposals || []).filter((p) => open.has(p.proposal_id)).forEach((p) => kids.push(proposalCard(p)));
   kids.push(actsRow(b));
@@ -764,12 +813,31 @@ function typedAnswers(except) {
 
 async function answerField(code, value, text, persistMode) {
   if (S.busy) { toast("上一条还在处理中，请稍候再提交"); return; }
-  const typed = typedAnswers(code);
-  const fields = { ...typed, [code]: value };
-  const parts = Object.entries(typed).map(([c, v]) => `${label(c)}：${valueLabel(c, v)}`);
-  parts.push(`${label(code)}：${text}`);
-  const confirmed = persistMode === "save_on_select" ? { [code]: value } : {};
-  await send(parts.join("；"), null, Object.keys(fields), confirmed, S.profile.version);
+  // Always confirm the answered follow-up. Date/text fields used to use
+  // proposal-only mode, so the value never reached conversation facts and the
+  // same question was asked again (display text is Chinese, e.g. 2027年1月1日).
+  const confirmed = { [code]: value };
+  S.suppressFields = S.suppressFields.filter((item) => item !== code);
+  S.followTrail.push({ field: code, value, label: text, persistMode: persistMode || "save_on_select" });
+  await send(`${label(code)}：${text}`, null, Object.keys(confirmed), confirmed, S.profile.version);
+}
+
+async function goBackFollowUp() {
+  if (S.busy) { toast("上一条还在处理中，请稍候"); return; }
+  if (!S.followTrail.length) { toast("没有可返回的步骤"); return; }
+  const last = S.followTrail.pop();
+  if (!S.suppressFields.includes(last.field)) S.suppressFields.push(last.field);
+  // One request undoes the profile value and session fact, then re-asks.
+  const res = await send("（返回上一步）", null, [last.field], {}, S.profile.version, {
+    clearedFields: S.suppressFields.slice(),
+    isBack: true,
+  });
+  if (!res) {
+    S.followTrail.push(last);
+    S.suppressFields = S.suppressFields.filter((item) => item !== last.field);
+    return;
+  }
+  toast(`已返回，请重新选择「${label(last.field)}」`);
 }
 
 function proposalCard(p) {
@@ -840,13 +908,25 @@ async function feedback(b, kind, note) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function send(text, retryCid, changed, confirmedFields, expectedProfileVersion) {
-  if (S.busy) return;
+async function send(text, retryCid, changed, confirmedFields, expectedProfileVersion, opts = {}) {
+  if (S.busy) {
+    toast("上一条还在处理中，请稍候再提交");
+    return null;
+  }
   S.busy = true;
-  S.el.sendBtn.disabled = true;
+  if (S.el.sendBtn) S.el.sendBtn.disabled = true;
+  const confirmed = confirmedFields || {};
+  const clearedFields = opts.clearedFields || [];
+  const isStructured = Object.keys(confirmed).length > 0;
+  // Fresh free-text starts a new chain. Structured answers and "上一步" keep it.
+  if (!isStructured && !opts.isBack && !retryCid) {
+    S.followTrail = [];
+    S.followSeed = text;
+    S.suppressFields = [];
+  }
   S.highlight = new Set(changed || []);
   S.pending = { text, cid: retryCid || uuid(), k: 0, error: null, changed,
-    confirmedFields: confirmedFields || {}, expectedProfileVersion };
+    confirmedFields: confirmed, expectedProfileVersion, clearedFields };
   drawChat();
   const ticker = setInterval(() => {
     if (S.pending && !S.pending.error && S.pending.k < 3) { S.pending.k += 1; drawChat(); }
@@ -854,18 +934,26 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
   try {
     const res = await api("POST", `/sessions/${S.conv.session_id || S.conv.conversation_id}/messages`,
       { text, client_message_id: S.pending.cid, confirmed_fields: S.pending.confirmedFields,
-        expected_profile_version: S.pending.expectedProfileVersion }, { timeout: 90000 });
+        expected_profile_version: S.pending.expectedProfileVersion,
+        cleared_fields: S.pending.clearedFields }, { timeout: 90000 });
     clearInterval(ticker);
     S.pending = null;
     await Promise.all([loadMessages(), refreshProfile(), loadAdvice(), loadProposals()]);
     deriveMissing();
     S.flash = res.advice_updates || [];
+    if (res.status && res.status !== "needs_input") {
+      S.followTrail = [];
+      S.followSeed = null;
+      S.suppressFields = [];
+    }
     drawSheet();
     drawSide();
     drawChat();
+    return res;
   } catch (e) {
     clearInterval(ticker);
     if (S.pending) { S.pending.error = e; drawChat(); }
+    return null;
   } finally {
     S.busy = false;
     if (S.el.sendBtn) S.el.sendBtn.disabled = false;

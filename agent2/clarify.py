@@ -5,8 +5,8 @@
 - nice_to_have：不追问，只在回答中注明假设缺口；
 - 知识条目的适用条件字段（condition_fields）：主题必需字段齐全后，才对影响具体材料结论的
   未知字段追问。
-每轮最多 MAX_QUESTIONS_PER_ROUND 个问题；已确认字段不追问；Profile 中 status=unknown 的值
-一律视为未知（即使存了值）；用户在会话中说的条件只作临时条件（source=conversation），
+每轮最多 1 个追问（MAX_QUESTIONS_PER_ROUND）；已确认字段不追问；Profile 中 status=unknown
+的值一律视为未知（即使存了值）；用户在会话中说的条件只作临时条件（source=conversation），
 不当作已确认档案。
 """
 import re
@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 
 from .models import FollowUpQuestion, Notice, Profile
 
-MAX_QUESTIONS_PER_ROUND = 2
+MAX_QUESTIONS_PER_ROUND = 1
 
 
 def _enum(*values):
@@ -319,10 +319,13 @@ def _question(field_code, rule, version, text=None):
     item = field_catalog()[field_code]
     input_type = "multi_select" if item["kind"] == "multi_enum" else \
         "single_select" if item["options"] else item["kind"] if item["kind"] in ("date",) else "text"
+    # Date and option answers come from an explicit follow-up control; save them
+    # immediately so the same question is not asked again next turn.
+    persist = "save_on_select" if item["options"] or item["kind"] == "date" else "proposal"
     return FollowUpQuestion(question_code=code, field=field_code, text=text or default,
                             rule=rule, profile_version=version, input_type=input_type,
                             options=item["options"], max_selections=item["max_selections"],
-                            persist_mode="save_on_select" if item["options"] else "proposal")
+                            persist_mode=persist)
 
 
 def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expected_profile_version=None,

@@ -262,7 +262,10 @@ class MilesPresentationTests(unittest.TestCase):
                           spending_scenarios=["travel"], reward_preference="miles")))
 
         self.assertEqual("answered", result.status)
-        self.assertIn("飞行里程", result.answer.steps[0])
+        joined = "\n".join(result.answer.steps)
+        self.assertIn("飞行里程", joined)
+        self.assertIn("年费：", joined)
+        self.assertIn("主要权益：", joined)
 
     def test_intro_waiver_cards_disclose_post_waiver_fee(self):
         card = dual_currency_card()
@@ -273,7 +276,7 @@ class MilesPresentationTests(unittest.TestCase):
 
         self.assertEqual("answered", result.status)
         # Free for two years, but the answer must disclose the year-three fee.
-        self.assertIn("豁免期后年费 HK$300/年", result.answer.steps[0])
+        self.assertIn("豁免期后年费 HK$300/年", "\n".join(result.answer.steps))
 
 
 class StudentGateTests(unittest.TestCase):
@@ -321,7 +324,7 @@ class StudentGateTests(unittest.TestCase):
                           spending_scenarios=None)))
 
         self.assertEqual("needs_input", result.status)
-        self.assertEqual(["repayment_mode", "spending_scenarios"],
+        self.assertEqual(["repayment_mode"],
                          [question.field for question in result.follow_up_questions])
 
 

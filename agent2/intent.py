@@ -2,11 +2,13 @@
 
 提取出的条件只作本会话临时条件，并生成档案变更提案（M03），从不直接写入 Profile。
 用户只回答"是/否"时，仅在上一轮恰好问了一个是/否字段时才绑定到该字段。
+上一轮问的是日期字段时，从自由文本里解析 YYYY-MM-DD / 中文日期并绑定。
 """
 import re
 from dataclasses import dataclass, field
+from datetime import date
 
-from .clarify import BOOLEAN_FIELDS
+from .clarify import BOOLEAN_FIELDS, FIELDS, _iso_date
 
 # 按优先级匹配；out_of_scope 优先，避免"帮我选校顺便问签证"被当作签证问答直接回答
 INTENTS = [
@@ -40,6 +42,24 @@ _AGE = re.compile(r"(\d{1,3})\s*(?:岁|周岁)")
 _SCHOOL = re.compile(r"(?:学校(?:改成|换成|改为|是|为)|被)\s*([^\s，。,.!！?？]+?)(?:\s*录取|[，。,.!！?？]|$)")
 _YES = re.compile(r"^\s*(?:是|是的|对|对的|有|需要|yes|y)\s*[。.!！]?\s*$", re.I)
 _NO = re.compile(r"^\s*(?:否|不是|没有|不需要|不|no|n)\s*[。.!！]?\s*$", re.I)
+_DATE_ISO = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_DATE_CN = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+_DATE_SLASH = re.compile(r"(\d{4})[/.](\d{1,2})[/.](\d{1,2})")
+
+
+def _parse_date(text):
+    match = _DATE_ISO.search(text)
+    if match:
+        value = match.group(1)
+        return (value, match.group(0)) if _iso_date(value) is None else (None, None)
+    match = _DATE_CN.search(text) or _DATE_SLASH.search(text)
+    if not match:
+        return None, None
+    try:
+        value = date(int(match.group(1)), int(match.group(2)), int(match.group(3))).isoformat()
+    except ValueError:
+        return None, None
+    return value, match.group(0)
 
 
 @dataclass
@@ -75,6 +95,11 @@ def classify(text, *, asked_fields=()):
     if len(boolean_asked) == 1 and (_YES.match(text) or _NO.match(text)):
         turn.facts[boolean_asked[0]] = bool(_YES.match(text))
         turn.basis[boolean_asked[0]] = text.strip()
+    date_asked = [f for f in asked_fields if f in FIELDS and FIELDS[f][1] is _iso_date]
+    if len(date_asked) == 1:
+        value, basis = _parse_date(text)
+        if value:
+            turn.facts[date_asked[0]], turn.basis[date_asked[0]] = value, basis
     purpose = {"remittance_tuition": "tuition", "remittance_living": "living"}.get(turn.intent)
     if purpose:
         turn.facts["remittance_purpose"] = purpose

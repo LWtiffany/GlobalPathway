@@ -371,7 +371,7 @@ class Agent2Service:
         return AnswerResult.model_validate_json(row["body_json"]) if row else None
 
     def post_message(self, user_id, conversation_id, text, client_message_id, *, confirmed_fields=None,
-                     expected_profile_version=None):
+                     expected_profile_version=None, cleared_fields=None):
         conversation = self._owned_conversation(user_id, conversation_id)
         if not isinstance(client_message_id, str) or not client_message_id.strip():
             raise bad_request("需要 client_message_id（幂等键）")
@@ -381,10 +381,18 @@ class Agent2Service:
         facts, topic, asked, last_version = self._conversation_context(conversation_id)
         user_message_id, answer_id = _new_id(), _new_id()
         confirmed_fields = confirmed_fields or {}
+        cleared_fields = list(dict.fromkeys(cleared_fields or []))
         if confirmed_fields:
             if not isinstance(confirmed_fields, dict) or not set(confirmed_fields) <= set(asked):
                 raise bad_request("只能保存当前追问要求的画像字段")
             self._check_values(confirmed_fields)
+        unknown_clear = [code for code in cleared_fields if code not in clarify.FIELDS]
+        if unknown_clear:
+            raise bad_request(f"未知字段：{', '.join(unknown_clear)}")
+        # Undo path: drop retracted answers from session facts so the same question
+        # is not skipped because an earlier user turn still carries the value.
+        for code in cleared_fields:
+            facts.pop(code, None)
         profile = self.get_profile(user_id, conversation["profile_id"])
         if confirmed_fields:
             if expected_profile_version != profile.version:
@@ -395,6 +403,15 @@ class Agent2Service:
                 profile.fields[code] = ProfileField(value=value, status="confirmed",
                     source_type="user_selection", confirmed_at=self._ts(), source_message_id=user_message_id,
                     field_version=(profile.fields.get(code).field_version if profile.fields.get(code) else 0) + 1,
+                    sensitivity=clarify.field_definitions()[code]["sensitivity"])
+        elif cleared_fields:
+            profile = profile.model_copy(deep=True)
+            profile.version += 1
+            for code in cleared_fields:
+                old = profile.fields.get(code)
+                profile.fields[code] = ProfileField(
+                    value=None, status="unknown",
+                    field_version=(old.field_version if old else 0) + 1,
                     sensitivity=clarify.field_definitions()[code]["sensitivity"])
         classified = classify(text, asked_fields=asked)
         # A pending structured question belongs to the active domain. Option labels such as
@@ -429,7 +446,7 @@ class Agent2Service:
         try:
             with self.store.transaction() as db:
                 self._persist(db, conversation_id, profile, text, client_message_id, user_message_id, output,
-                              confirmed_fields=confirmed_fields)
+                              confirmed_fields=confirmed_fields, cleared_fields=cleared_fields)
         except sqlite3.IntegrityError:
             stored = self._stored_reply(conversation_id, client_message_id)
             if stored:
@@ -452,10 +469,11 @@ class Agent2Service:
         return proposals
 
     def _persist(self, db, conversation_id, profile, text, client_message_id, user_message_id, output,
-                 *, confirmed_fields=None):
+                 *, confirmed_fields=None, cleared_fields=None):
         answer = output.result
         now = self._ts()
         confirmed_fields = confirmed_fields or {}
+        cleared_fields = cleared_fields or []
         if confirmed_fields:
             current = db.execute("SELECT version FROM profiles WHERE profile_id=?", (profile.profile_id,)).fetchone()
             expected = profile.version - 1
@@ -464,9 +482,36 @@ class Agent2Service:
                                source_message_id=user_message_id, profile_version=profile.version)
             db.execute("UPDATE sessions SET profile_version=? WHERE session_id=?",
                        (profile.version, conversation_id))
+        elif cleared_fields:
+            current = db.execute("SELECT version FROM profiles WHERE profile_id=?", (profile.profile_id,)).fetchone()
+            new_version = current["version"] + 1
+            self._bump(db, profile.profile_id, current["version"], current["version"])
+            for code in cleared_fields:
+                old = db.execute("SELECT value_json FROM profile_field_values WHERE profile_id=? AND field_code=?",
+                                 (profile.profile_id, code)).fetchone()
+                db.execute("""INSERT INTO profile_field_values
+                    (profile_id,field_code,value_json,value_type,status,source_type,confirmed_at,expires_at,
+                     source_message_id,field_version,sensitivity,updated_at)
+                    VALUES (?,?,NULL,'json','unknown',NULL,NULL,NULL,NULL,0,'standard',?)
+                    ON CONFLICT(profile_id, field_code) DO UPDATE SET value_json=NULL, status='unknown',
+                    source_type=NULL, confirmed_at=NULL, expires_at=NULL, source_message_id=NULL,
+                    field_version=profile_field_values.field_version+1, updated_at=excluded.updated_at""",
+                           (profile.profile_id, code, now))
+                db.execute("""INSERT INTO profile_field_events
+                    (event_id,profile_id,field_code,old_value_json,new_value_json,action,source_type,
+                     source_message_id,actor_type,profile_version,created_at)
+                    VALUES (?,?,?,?,NULL,'clear','user_edit',NULL,'user',?,?)""",
+                           (_new_id(), profile.profile_id, code, old["value_json"] if old else None,
+                            new_version, now))
+            db.execute("UPDATE sessions SET profile_version=? WHERE session_id=?",
+                       (new_version, conversation_id))
         seq = db.execute("SELECT COALESCE(MAX(seq),0) FROM message_index WHERE session_id=?",
                          (conversation_id,)).fetchone()[0]
-        user_body = {"text": text, "facts": output.turn_facts, "topic": output.topic}
+        # Keep undone fields out of the stored turn facts so later turns do not
+        # revive them from conversation history.
+        stored_facts = {code: value for code, value in output.turn_facts.items()
+                        if code not in cleared_fields}
+        user_body = {"text": text, "facts": stored_facts, "topic": output.topic}
         db.execute("INSERT INTO message_index VALUES (?,?,?,?,?,?,?,?,?)",
                    (user_message_id, conversation_id, seq + 1, "user", client_message_id, None,
                     dumps(user_body), "received", now))

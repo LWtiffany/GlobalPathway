@@ -76,14 +76,19 @@ class CreditCardLlmEndToEndTests(unittest.TestCase):
             self.user, self.conversation, "不考虑 Premier", "m4",
             confirmed_fields={"hsbc_premier_path": "not_applicable"},
             expected_profile_version=3)
-        self.assertEqual(["monthly_card_spend_band_hkd", "reward_preference"],
+        self.assertEqual(["monthly_card_spend_band_hkd"],
                          [q.field for q in value_inputs.follow_up_questions])
 
-        final = self.service.post_message(
-            self.user, self.conversation, "每月五千至一万；按预计价值比较", "m5",
-            confirmed_fields={"monthly_card_spend_band_hkd": "5k_10k",
-                              "reward_preference": "no_preference"},
+        spend = self.service.post_message(
+            self.user, self.conversation, "每月五千至一万", "m5",
+            confirmed_fields={"monthly_card_spend_band_hkd": "5k_10k"},
             expected_profile_version=4)
+        self.assertEqual(["reward_preference"], [q.field for q in spend.follow_up_questions])
+
+        final = self.service.post_message(
+            self.user, self.conversation, "按预计价值比较", "m6",
+            confirmed_fields={"reward_preference": "no_preference"},
+            expected_profile_version=5)
 
         self.assertIn(final.status, ("answered", "needs_verification"))
         self.assertIn("主推荐", final.answer.summary)

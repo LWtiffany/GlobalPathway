@@ -37,10 +37,11 @@ class M06MetricsTests(unittest.TestCase):
 
 
 class ConditionTableTests(unittest.TestCase):
-    def test_never_more_than_two_questions_but_all_missing_are_identified(self):
+    def test_never_more_than_one_question_but_all_missing_are_identified(self):
         result = clarify.assess("credit_card", profile())
         self.assertEqual(len(result.missing_fields), 4)
         self.assertEqual(len(result.questions), clarify.MAX_QUESTIONS_PER_ROUND)
+        self.assertEqual(1, clarify.MAX_QUESTIONS_PER_ROUND)
 
     def test_unknown_status_value_is_never_used(self):
         p = Profile(profile_id="p", user_id="u", version=1,
@@ -67,7 +68,7 @@ class ConditionTableTests(unittest.TestCase):
         result = clarify.assess("visa_documents", profile(destination_country="UK", visa_category="student_visa"),
                                 condition_fields=["applicant_age", "funding_source", "tb_listed_country_resident"],
                                 suggest=suggest)
-        self.assertEqual([q.field for q in result.questions], ["funding_source", "applicant_age"])
+        self.assertEqual([q.field for q in result.questions], ["funding_source"])
         self.assertIn("suggestion_rejected", [n.code for n in result.notices])
         self.assertGreaterEqual(result.model_ms, 0)
 

@@ -42,5 +42,5 @@ class DefaultResponseComposer:
             next_actions=list(dict.fromkeys(a for item in report.results for a in item.next_actions)),
             notices=[note for item in report.results for note in item.notices],
             follow_up_questions=[question for item in report.results
-                                 for question in item.follow_up_questions][:2],
+                                 for question in item.follow_up_questions][:1],
         )

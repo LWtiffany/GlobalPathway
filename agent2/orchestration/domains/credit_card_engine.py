@@ -538,9 +538,11 @@ def score_product(product: CreditCardProduct, eligibility: EligibilityAssessment
         "annual_fee_hkd": (-annual_fee).quantize(Decimal("0.01")),
         "annual_fx_cost_hkd": (-annual_fx_cost).quantize(Decimal("0.01")),
     }
-    limitations = list(eligibility.reasons)
+    # Eligibility reasons stay on eligibility for ranking/debug; do not dump the
+    # raw 满足/不满足 lines into user-facing limitations.
+    limitations = []
     if not product.official_url:
-        limitations.append("RDS 没有官方产品链接。")
+        limitations.append("官网链接暂缺，申请前请到发卡机构网站核对。")
     purchase = _borrowing_term(product, "purchase_apr")
     cash = _borrowing_term(product, "cash_advance_apr")
     interest_free = _borrowing_term(product, "interest_free_period")
