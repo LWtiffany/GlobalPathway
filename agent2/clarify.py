@@ -154,6 +154,14 @@ FIELDS = {
         "HSBC Premier 资格路径",
         _enum("existing_premier", "can_qualify_with_1m_trb", "not_applicable"),
         "ask_hsbc_premier_path", "请选择与你相符的 HSBC Premier 情况。"),
+    "us_hsbc_account_path": (
+        "美国汇丰账户情况",
+        _enum("existing_premier_checking", "plan_to_open", "not_applicable"),
+        "ask_us_hsbc_account_path", "你目前是否已有美国汇丰 Premier 支票账户？"),
+    "uk_hsbc_account_path": (
+        "英国汇丰账户情况",
+        _enum("student_account", "premier_account", "plan_to_open", "not_applicable"),
+        "ask_uk_hsbc_account_path", "你目前是否已有汇丰英国学生或 Premier 账户？"),
     "hk_resident": ("是否为香港居民", _bool, "ask_hk_resident",
                     "你目前是否为香港特别行政区居民？"),
 }
@@ -203,6 +211,17 @@ OPTION_LABELS = {
         "can_qualify_with_1m_trb": "可在 HSBC 维持 HK$1,000,000 总关系结余，并愿意先升级 Premier",
         "not_applicable": "以上均不适用，或不考虑 Premier",
     },
+    "us_hsbc_account_path": {
+        "existing_premier_checking": "已有美国汇丰 Premier 支票账户",
+        "plan_to_open": "到美国后计划先开 Premier 支票账户，再申请信用卡",
+        "not_applicable": "暂时没有，也不考虑开美国汇丰账户",
+    },
+    "uk_hsbc_account_path": {
+        "student_account": "已有（或确定会开）汇丰英国学生账户",
+        "premier_account": "已有汇丰英国 Premier / Private Banking 账户",
+        "plan_to_open": "到英国后计划先开学生或 Premier 账户，再申请信用卡",
+        "not_applicable": "暂时没有，也不考虑开汇丰英国账户",
+    },
     "spending_scenarios": {"online": "网购", "dining": "餐饮", "travel": "旅行",
                            "overseas": "境外消费", "mainland_china": "内地消费",
                            "tuition": "学费", "retail": "日常零售"},
@@ -228,12 +247,14 @@ def field_catalog():
 
 FINANCIAL_FIELDS = frozenset({"annual_income_hkd", "annual_income_band_hkd", "asset_band",
                               "hsbc_relationship_balance_band", "hsbc_premier_path",
+                              "us_hsbc_account_path", "uk_hsbc_account_path",
                               "monthly_card_spend_band_hkd", "repayment_mode", "amount"})
 PERSONAL_FIELDS = frozenset({"applicant_age", "applicant_age_band", "residence_region",
                              "applicant_residence", "hk_resident", "full_time_student",
                              "student_institution_eligible"})
 VOLATILE_FIELDS = {"annual_income_hkd": 365, "annual_income_band_hkd": 365, "asset_band": 365,
                    "repayment_mode": 365, "monthly_card_spend_band_hkd": 365,
+                   "us_hsbc_account_path": 180, "uk_hsbc_account_path": 180,
                    "mainland_payment_method": 365,
                    "full_time_student": 365, "student_institution_eligible": 365,
                    "premier_relationship": 180, "hsbc_relationship_balance_band": 180,
@@ -250,6 +271,7 @@ def field_definitions():
                     "repayment_mode", "spending_scenarios", "reward_preference", "full_time_student",
                     "student_institution_eligible",
                     "premier_relationship", "hsbc_relationship_balance_band", "hsbc_premier_path",
+                    "us_hsbc_account_path", "uk_hsbc_account_path",
                     "monthly_card_spend_band_hkd", "mainland_payment_method", "hk_resident"}:
             domains.append("credit_card")
         result[code] = {**item, "domains": sorted(set(domains)),

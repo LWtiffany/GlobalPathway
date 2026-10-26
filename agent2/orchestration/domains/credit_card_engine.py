@@ -150,13 +150,35 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
             value, field = facts.get("student_institution_eligible"), "student_institution_eligible"
             passed = value is True
         elif rule.rule_type == "banking_relationship":
-            path = facts.get("hsbc_premier_path")
-            if path is not None:
-                value, field = path, "hsbc_premier_path"
-                passed = path == "existing_premier"
+            wanted = (rule.value_text or "").casefold()
+            if wanted in {"us_premier_checking"}:
+                path = facts.get("us_hsbc_account_path")
+                if path is not None:
+                    value, field = path, "us_hsbc_account_path"
+                    passed = path == "existing_premier_checking"
+                else:
+                    value, field = facts.get("premier_relationship"), "premier_relationship"
+                    passed = value is True
+            elif wanted in {"uk_premier_account"}:
+                path = facts.get("uk_hsbc_account_path")
+                if path is not None:
+                    value, field = path, "uk_hsbc_account_path"
+                    passed = path == "premier_account"
+                else:
+                    value, field = facts.get("premier_relationship"), "premier_relationship"
+                    passed = value is True
+            elif wanted in {"uk_student_account"}:
+                path = facts.get("uk_hsbc_account_path")
+                value, field = path, "uk_hsbc_account_path"
+                passed = path == "student_account"
             else:
-                value, field = facts.get("premier_relationship"), "premier_relationship"
-                passed = value is True
+                path = facts.get("hsbc_premier_path")
+                if path is not None:
+                    value, field = path, "hsbc_premier_path"
+                    passed = path == "existing_premier"
+                else:
+                    value, field = facts.get("premier_relationship"), "premier_relationship"
+                    passed = value is True
         elif rule.rule_type == "relationship_balance":
             value, field = facts.get("hsbc_total_relationship_balance_hkd"), \
                 "hsbc_total_relationship_balance_hkd"

@@ -6,28 +6,25 @@ const GRID = ["role", "beneficiary", "destination_country", "school", "course", 
   "planned_start_date", "payer", "visa_category"];
 const GRID_LABEL = { destination_country: "目的地", offer_status: "Offer", planned_start_date: "入学日期" };
 const STATUS = {
-  answered: { label: "已通过质量检查", cls: "ok", why: "" },
+  answered: { label: "已确认", cls: "ok", why: "" },
   needs_input: { label: "待补充", cls: "", why: "还缺少关键信息，补充后再给出确定答案。" },
   needs_verification: { label: "待核实", cls: "warn", why: "部分材料是否需要取决于尚未确认的条件，已逐项标出。" },
   cannot_answer: { label: "无法回答", cls: "warn", why: "已发布的官方资料不足以支持确定回答，不做猜测。" },
   out_of_scope: { label: "范围外", cls: "", why: "该问题不在留学准备顾问的服务范围内。" },
 };
-const STEPS = ["识别问题", "必要时追问", "查询已发布知识", "质量检查", "保存正式回答", "展示结果"];
+const STEPS = ["识别问题", "必要时追问", "查询已发布知识", "核对答案", "保存正式回答", "展示结果"];
 const TOPICS = [
-  { key: "remittance", no: "01", title: "汇款建议", rows: ["用途", "金额", "材料", "时间点"],
-    why: "汇款类官方资料尚未接入发布面，暂不生成建议。" },
-  { key: "account", no: "02", title: "开户建议", rows: ["地区", "产品", "材料", "门槛"],
-    why: "开户类资料尚未接入发布面，暂不生成建议。" },
+  { key: "remittance", no: "01", title: "汇款建议", rows: ["用途", "金额", "材料", "时间点"] },
+  { key: "account", no: "02", title: "开户建议", rows: ["地区", "产品", "材料", "门槛"] },
   { key: "visa", no: "03", title: "签证建议" },
-  { key: "credit_card", no: "04", title: "信用卡建议", rows: ["产品", "费用 / 限制", "合作披露"],
-    why: "信用卡建议待补充：需要银行产品资料与合作披露。" },
+  { key: "credit_card", no: "04", title: "信用卡建议", rows: ["产品", "费用 / 限制", "申请条件"] },
 ];
 const AVAIL = { available: "有效", stale: "待复核（超过核验时效）", withdrawn: "已撤回", superseded: "已被新版本取代",
   missing_evidence: "证据缺失" };
 const TAG = { required: "必需", conditional: "视情况", unverified: "待核实" };
 const PRESETS = [
   { user: "王女士", tag: "家长 · 英国 + 香港",
-    desc: "两个孩子：王小明（英国 UCL 硕士，签证类别未填，演示追问）、王小悦（香港 HKU 本科）。",
+    desc: "两个孩子：王小明（英国 UCL 硕士，签证类别未填）、王小悦（香港 HKU 本科）。",
     profiles: [
       { fields: { role: "parent", beneficiary: "王小明", destination_country: "UK", school: "UCL",
         course: "MSc Computer Science", offer_status: "conditional", planned_start_date: "2026-09-21", payer: "parent" },
@@ -43,7 +40,7 @@ const PRESETS = [
         visa_category: "student_visa", payer: "self" } },
     ] },
   { user: "陈同学", tag: "学生 · 香港",
-    desc: "本人申请：陈思，香港中文大学 MPhil，内地居民，学生签证（演示条件化材料）。",
+    desc: "本人申请：陈思，香港中文大学 MPhil，内地居民，学生签证。",
     profiles: [
       { fields: { role: "student", beneficiary: "陈思", destination_country: "CN-HK", school: "CUHK",
         course: "MPhil", offer_status: "unconditional", planned_start_date: "2026-09-01",
@@ -160,7 +157,7 @@ async function api(method, path, body, { timeout = 20000 } = {}) {
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 401 && path !== "/demo/login") logout("登录已失效，请重新选择模拟身份");
+    if (res.status === 401 && path !== "/demo/login") logout("登录已失效，请重新选择身份");
     throw new ApiError(data.code || `HTTP_${res.status}`, data.message || "请求失败", data.trace_id);
   }
   return data;
@@ -181,7 +178,7 @@ function closeOverlay() {
 // ---------- shell / routing ----------
 
 function topBar(cur) {
-  const right = [h("span", { class: "mock" }, "模拟环境 · 合成数据")];
+  const right = [];
   if (S.user) {
     right.push(
       h("a", { class: "nav" + (cur === "chat" ? " cur" : ""), href: "#/chat" }, "我的方案"),
@@ -232,12 +229,10 @@ async function route() {
 // ---------- /login ----------
 
 function renderLogin() {
-  const name = h("input", { name: "n", placeholder: "或输入其他模拟用户名（进入后手动建档）", maxlength: "20" });
+  const name = h("input", { name: "n", placeholder: "或输入其他用户名（进入后手动建档）", maxlength: "20" });
   shell(h("div", { class: "page" },
-    h("h1", { class: "sf" }, "选择模拟身份"),
+    h("h1", { class: "sf" }, "选择身份"),
     h("p", { class: "lead" }, "选择一位预设客户进入，体验「上方案表 · 下对话」的留学准备顾问。"),
-    h("div", { class: "banner" }, h("b", null, "模拟环境"),
-      "　这不是银行登录：不需要、也不会收集任何银行账号、密码、证件号或验证码。所有客户与档案均为合成数据。"),
     h("div", { class: "presets" }, PRESETS.map((p) => h("button", { class: "preset", onclick: () => login(p) },
       h("span", { class: "who" }, p.tag), h("b", { class: "sf" }, p.user), h("span", { class: "kids" }, p.desc)))),
     h("form", { class: "custom", onsubmit: (e) => {
@@ -401,8 +396,7 @@ function drawChatPage() {
   const sendBtn = h("button", { class: "btn", onclick: submit }, "发送");
   S.el = { side, sheet, chat, input, sendBtn };
   shell(h("div", { class: "wrap" }, side, h("div", { class: "main" }, sheet, bar, chat,
-    h("div", { class: "in" }, input, sendBtn),
-    h("div", { class: "foot" }, `模拟环境 · 时间按 ${TZ} 显示 · 回答仅基于已发布的官方资料，政策以官方最新公布为准`))), "chat");
+    h("div", { class: "in" }, input, sendBtn))), "chat");
   drawSide();
   drawSheet();
   drawChat();
@@ -446,8 +440,7 @@ function drawSide() {
         h("div", { class: "av2 sf" }, name.slice(-1)),
         h("div", null, h("b", { class: "sf" }, name), h("div", { class: "sub" }, profileSub(p))));
     }),
-    h("button", { class: "new", onclick: () => go("#/onboarding") }, "＋ 添加 profile"),
-    h("div", { class: "note" }, "每个 Profile 是一位学生的独立方案与对话，切换后方案表和对话同步切换。"));
+    h("button", { class: "new", onclick: () => go("#/onboarding") }, "＋ 添加 profile"));
 }
 
 function drawSheet() {
@@ -456,8 +449,6 @@ function drawSheet() {
   const filled = GRID.filter((c) => val(p, c) !== undefined).length;
   const done = S.plan.filter((i) => i.done).length;
   const updated = Object.values(S.advice).map((a) => a.updated_at).sort().pop();
-  const extraCodes = Object.keys(p.fields).filter((c) => !GRID.includes(c) && val(p, c) !== undefined);
-  const missingExtra = [...S.missing].filter((c) => !GRID.includes(c));
   S.el.sheet.replaceChildren(
     h("div", { class: "sh" },
       h("h2", { class: "sf" }, `${name} · 留学准备方案`),
@@ -468,13 +459,9 @@ function drawSheet() {
         h("button", { class: "btn", onclick: () => go("#/report/" + S.pid) }, "导出报告"))),
     h("div", { class: "mt" }, "一 · 留学基本信息", h("button", { class: "ed", onclick: () => openEdit() }, "✎ 编辑信息")),
     h("div", { class: "grid" }, GRID.map(cell)),
-    extraCodes.length || missingExtra.length ? h("div", { class: "extra" },
-      extraCodes.map((c) => h("span", { class: "tag" + (S.highlight.has(c) ? " hl" : "") },
-        `${label(c)}：${valueLabel(c, val(p, c))}`)),
-      missingExtra.map((c) => h("span", { class: "tag miss" }, `${label(c)}：待确认`))) : h("div", { class: "extra" }),
-    h("div", { class: "mt" }, "二 · 为您定制的方案", h("span", { class: "lockn" }, "仅在回答通过质量检查后自动更新")),
+    h("div", { class: "mt" }, "二 · 为您定制的方案"),
     h("div", { class: "plan" }, TOPICS.map(planCard)),
-    h("div", { class: "mt" }, "三 · 我的待办", h("span", { class: "lockn" }, "由您编辑，不会被自动覆盖")),
+    h("div", { class: "mt" }, "三 · 我的待办"),
     todoBox());
   if (S.flash.length) {
     const flashed = S.flash;
@@ -506,7 +493,7 @@ const empty = () => h("span", { class: "e" }, "—");
 function planCard(t) {
   if (t.key === "visa") return visaCard(t);
   return h("div", { class: "p", id: "card-" + t.key }, cardHead(t, h("span", { class: "st" }, "待补充")),
-    t.rows.map((r) => row(r, empty())), h("div", { class: "why" }, t.why));
+    t.rows.map((r) => row(r, empty())));
 }
 
 function sourceChips(citations) {
@@ -524,8 +511,7 @@ function visaCard(t) {
   const visa = val(S.profile, "visa_category");
   if (!a) {
     return h("div", { class: "p" + flash, id: "card-visa" }, cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("类别", visa ? valueLabel("visa_category", visa) : empty()), row("材料", empty()), row("待确认", empty()),
-      h("div", { class: "why" }, "在下方提问「签证需要准备哪些材料？」，回答通过质量检查后自动生成。"));
+      row("类别", visa ? valueLabel("visa_category", visa) : empty()), row("材料", empty()), row("待确认", empty()));
   }
   const pl = a.payload;
   const mats = pl.materials || [];
@@ -603,7 +589,7 @@ function finalSteps(status) {
     for (let i = 2; i < s.length; i++) s[i][1] = "";
   } else {
     s[1] = ["无需追问", "d"];
-    if (status !== "answered") s[3] = [status === "needs_verification" ? "质量检查 · 待核实" : "质量检查 · 无法确定", "w"];
+    if (status !== "answered") s[3] = [status === "needs_verification" ? "核对 · 待核实" : "核对 · 无法确定", "w"];
   }
   return s;
 }
@@ -674,7 +660,7 @@ function renderAnswerSteps(steps) {
   // Card copy is not a procedure — do not number section titles as 1. 2. 3.
   const box = h("div", { class: "card-rec" });
   for (const s of steps) {
-    if (/^汇丰.+发行的卡$/.test(s)) box.append(h("div", { class: "card-sec" }, s));
+    if (/^(优先|备用)?[：:]?汇丰.+发行的卡/.test(s)) box.append(h("div", { class: "card-sec" }, s));
     else if (/^(主推荐|补充卡|备选)：/.test(s)) box.append(h("div", { class: "card-name" }, s));
     else if (/^(年费|主要权益|申请限制)：/.test(s)) {
       const i = s.indexOf("：");
@@ -865,7 +851,7 @@ async function decide(p, confirm) {
     drawSheet();
     drawSide();
     drawChat({ keep: true });
-    toast(confirm ? "已写入档案，建议会在下一次通过质量检查的回答后更新" : "已忽略该提议");
+    toast(confirm ? "已写入档案" : "已忽略该提议");
   } catch (e) {
     if (e.code === "VERSION_CONFLICT") await refreshProfile();
     toast(e.message, true);
@@ -968,7 +954,7 @@ async function openCitation(c) {
     h("button", { class: "close", onclick: closeOverlay, title: "关闭" }, "×"),
     h("div", { class: "lab" }, "引用来源"),
     h("h3", { class: "sf" }, c.source_name),
-    c.synthetic ? h("span", { class: "mock" }, "合成资料") : null,
+    c.synthetic ? h("span", { class: "mock" }, "示例资料") : null,
     h("div", { class: "kv" },
       h("span", null, "官方链接"), h("span", null, safeLink(c.source_url)),
       h("span", null, "核验时间"), h("span", null, fmtFull(c.verified_at)),
@@ -981,7 +967,7 @@ async function openCitation(c) {
   try {
     const s = await api("GET", `/knowledge/snapshots/${encodeURIComponent(c.revision_id)}`);
     snap.textContent = `资料状态：${AVAIL[s.availability] || s.availability} · 本版本共 ${(s.evidence || []).length} 条证据 · `
-      + `发布面核验于 ${fmtFull(s.verified_at)}`;
+      + `核验于 ${fmtFull(s.verified_at)}`;
   } catch (e) {
     snap.textContent = `资料快照暂不可读：${e.message}`;
   }
@@ -1014,7 +1000,7 @@ function openEdit(focus) {
       drawSheet();
       drawSide();
       drawChat({ keep: true });
-      toast(`档案已保存（v${S.profile.version}）。建议会在下一次通过质量检查的回答后更新。`);
+      toast(`档案已保存（v${S.profile.version}）。`);
     } catch (e) {
       err.textContent = e.message;
       if (e.code === "VERSION_CONFLICT") refreshProfile();
@@ -1042,12 +1028,11 @@ async function renderReport(pid) {
   const cites = visa ? visa.payload.citations || [] : [];
   const cn = {};
   cites.forEach((c, i) => { cn[c.citation_id] = i + 1; });
-  const codes = [...GRID, ...Object.keys(profile.fields).filter((c) => !GRID.includes(c) && val(profile, c) !== undefined)];
   const pairs = [];
-  for (let i = 0; i < codes.length; i += 2) pairs.push(codes.slice(i, i + 2));
+  for (let i = 0; i < GRID.length; i += 2) pairs.push(GRID.slice(i, i + 2));
   const topicBlock = (t) => {
-    if (t.key !== "visa") return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 待补充`), h("p", { class: "note" }, t.why)];
-    if (!visa) return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 未开始`), h("p", { class: "note" }, "尚未生成签证建议。")];
+    if (t.key !== "visa") return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 待补充`)];
+    if (!visa) return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 未开始`)];
     const pl = visa.payload;
     return [h("h3", { class: "sf" }, `${t.no} ${t.title} · v${visa.version}（${fmtFull(visa.updated_at)}）`),
       h("p", null, pl.summary),
@@ -1063,8 +1048,7 @@ async function renderReport(pid) {
       h("button", { class: "btn ghost", onclick: () => go("#/chat/" + pid) }, "返回方案"),
       h("button", { class: "btn", onclick: () => window.print() }, "打印 / 导出 PDF")),
     h("h1", { class: "sf" }, `${name} · 留学准备方案报告`),
-    h("div", { class: "rmeta" }, h("span", null, `生成于 ${fmtFull(now)} · 档案版本 v${profile.version}`),
-      h("span", { class: "warn" }, "模拟数据 · 仅供演示")),
+    h("div", { class: "rmeta" }, h("span", null, `生成于 ${fmtFull(now)} · 档案版本 v${profile.version}`)),
     h("h2", null, "一 · 留学基本信息"),
     h("table", null, pairs.map((pair) => h("tr", null, pair.map((c) => [h("th", null, GRID_LABEL[c] || label(c)),
       h("td", null, val(profile, c) === undefined ? "待确认" : valueLabel(c, val(profile, c)))])))),
@@ -1080,7 +1064,7 @@ async function renderReport(pid) {
       : h("p", { class: "note" }, "暂无引用来源。"),
     h("div", { class: "disc" },
       `本报告是 ${fmtFull(now)} 的方案快照，内容仅基于当时已发布的官方资料；政策可能变化，请以官方最新公布为准。`,
-      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。本 Demo 的客户与档案为合成数据。")), "report");
+      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。")), "report");
 }
 
 // ---------- /feedback ----------

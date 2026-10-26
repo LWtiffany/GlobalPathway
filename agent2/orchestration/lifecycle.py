@@ -10,7 +10,8 @@ PROFILE_FIELDS_BY_DOMAIN = {
                     "monthly_card_spend_band_hkd",
                     "mainland_payment_method",
                     "full_time_student", "premier_relationship", "hsbc_relationship_balance_band",
-                    "hsbc_premier_path", "hk_resident"},
+                    "hsbc_premier_path", "us_hsbc_account_path", "uk_hsbc_account_path",
+                    "hk_resident"},
 }
 
 

@@ -313,7 +313,7 @@ class MarketRepository:
 
 
 class StudyDestinationCatalogTests(unittest.TestCase):
-    def test_us_study_lists_local_hsbc_cards_and_hong_kong_cards_apart(self):
+    def test_us_study_lists_local_hsbc_cards_before_hong_kong_backup(self):
         local = product("premier_world", "travel", "0.01")
         local = local.model_copy(update={
             "market": "US",
@@ -332,32 +332,80 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         repo = MarketRepository({"US": [local], "CN-HK": [hong_kong]})
 
         result = asyncio.run(CreditCardWorkflow(repo, clock=lambda: NOW).run(
-            TASK, request(application_region="US", premier_relationship=False)))
+            TASK, request(application_region="US",
+                          us_hsbc_account_path="not_applicable",
+                          spending_scenarios=["overseas", "tuition"],
+                          reward_preference="no_preference")))
 
         self.assertIn(result.status, {"answered", "needs_verification"})
         text = "\n".join(result.answer.steps)
-        self.assertIn("汇丰美国发行的卡", text)
-        self.assertIn("汇丰香港发行的卡", text)
+        self.assertIn("优先：汇丰美国发行的卡", text)
+        self.assertIn("备用：汇丰香港发行的卡", text)
         self.assertIn("美国汇丰 Premier 支票账户", text)
         self.assertIn("HSBC Premier World Mastercard", text)
         self.assertIn("申请限制：目前不符合该卡公开申请条件", text)
-        self.assertIn("主推荐", text)
+        self.assertIn("备用港卡", text)
         self.assertIn("年费：", text)
         self.assertIn("主要权益：", text)
-        self.assertLess(text.index("汇丰美国发行的卡"), text.index("汇丰香港发行的卡"))
+        self.assertLess(text.index("优先：汇丰美国发行的卡"), text.index("备用：汇丰香港发行的卡"))
+        self.assertTrue("优先" in result.answer.summary and "备用" in result.answer.summary)
         us_fee = next(line for line in result.answer.steps if line.startswith("年费：") and "95 USD" in line)
         self.assertNotIn("HK$", us_fee)
         self.assertEqual(["US", "Hong Kong"], [group["market"] for group in result.payload["groups"]])
-        self.assertIn("分开比较", " ".join(result.answer.limitations))
+        self.assertEqual(["primary", "backup"], [group["role"] for group in result.payload["groups"]])
+        self.assertTrue(any("备用香港卡" in item or "获批几率很低" in item
+                            for item in result.answer.limitations))
         self.assertNotIn("产品库", "\n".join(result.answer.steps))
         self.assertNotIn("门槛依据", "\n".join(result.answer.steps))
+
+    def test_us_study_asks_local_account_not_hk_premier_path(self):
+        local = product("premier_world", "travel", "0.01").model_copy(update={
+            "market": "US",
+            "eligibility_rules": [
+                EligibilityRule(rule_id="us-rel", rule_type="banking_relationship", operator="eq",
+                                value_text="us_premier_checking", required=True),
+            ],
+        })
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [local], "CN-HK": [product("hk_red", "online", "0.04")]}),
+            clock=lambda: NOW).run(
+            TASK, OrchestrationInput(
+                text="想办信用卡", profile_id="p1", profile_version=1,
+                profile_values={"application_region": "US", "applicant_age": 20})))
+
+        self.assertEqual("needs_input", result.status)
+        self.assertEqual(["us_hsbc_account_path"],
+                         [q.field for q in result.follow_up_questions])
+        self.assertIn("美国汇丰 Premier", result.follow_up_questions[0].text)
+        self.assertNotIn("HK$1,000,000", result.follow_up_questions[0].text)
+
+    def test_uk_study_asks_uk_account_path(self):
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"UK": [product("uk_student", "overseas", "0.01").model_copy(update={
+                "market": "UK",
+                "eligibility_rules": [
+                    EligibilityRule(rule_id="uk-stu", rule_type="banking_relationship",
+                                    operator="eq", value_text="uk_student_account", required=True),
+                ],
+            })], "CN-HK": []}),
+            clock=lambda: NOW).run(
+            TASK, OrchestrationInput(
+                text="信用卡", profile_id="p1", profile_version=1,
+                profile_values={"destination_country": "UK", "applicant_age": 19})))
+
+        self.assertEqual("needs_input", result.status)
+        self.assertEqual(["uk_hsbc_account_path"],
+                         [q.field for q in result.follow_up_questions])
 
     def test_destination_country_selects_the_study_catalog(self):
         result = asyncio.run(CreditCardWorkflow(
             MarketRepository({"UK": [], "CN-HK": []}), clock=lambda: NOW).run(
             TASK, OrchestrationInput(
                 text="信用卡", profile_id="p1", profile_version=1,
-                profile_values={"destination_country": "UK"})))
+                profile_values={"destination_country": "UK", "applicant_age": 19,
+                                "uk_hsbc_account_path": "plan_to_open",
+                                "spending_scenarios": ["overseas"],
+                                "reward_preference": "no_preference"})))
 
         self.assertEqual("cannot_answer", result.status)
         self.assertIn("没有该地区", result.answer.summary)
