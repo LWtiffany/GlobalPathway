@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -6,6 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from agent2 import clarify
 from agent2.orchestration.contracts import DomainTask, OrchestrationInput
 from agent2.orchestration.domains.credit_card import CreditCardWorkflow, extract_credit_card_facts
 from agent2.orchestration.domains.credit_card_engine import (
@@ -117,6 +119,24 @@ TASK = DomainTask(task_id="task-1", domain="credit_card", intent="credit_card")
 
 
 class CreditCardWorkflowTests(unittest.TestCase):
+    def test_card_explanations_are_chinese_while_official_name_is_unchanged(self):
+        card = product("us_card", "travel", "0.02").model_copy(update={
+            "market": "US",
+            "product_name": "HSBC Premier World Mastercard",
+            "card_network": "Mastercard",
+            "fees": [CardFee(fee_id="annual", fee_type="annual_fee",
+                             amount=Decimal("95"), currency="USD",
+                             waiver_condition="Waived for Private Banking relationship or HSBC US employee status")],
+            "benefits": [CardBenefit(benefit_id="travel-credit", benefit_type="other",
+                                     benefit_name="Streaming statement credit (up to $60 / year)")],
+        })
+        lines = CreditCardWorkflow._plain_card_lines(card, assess_eligibility(card, {}))
+
+        self.assertIn("HSBC Premier World Mastercard", lines[0])
+        self.assertIn("95 美元", " ".join(lines))
+        self.assertIn("串流服务签账回赠", " ".join(lines))
+        self.assertIsNone(re.search(r"[A-Za-z]", " ".join(lines).replace(card.product_name, "")))
+
     def test_collects_eligibility_before_usage(self):
         repo = FakeRepository([])
         result = asyncio.run(CreditCardWorkflow(repo, clock=lambda: NOW).run(
@@ -166,8 +186,8 @@ class CreditCardWorkflowTests(unittest.TestCase):
             FakeRepository([asset_review_product()]), clock=lambda: NOW).run(
             TASK, request(annual_income_hkd=30000, asset_band="none")))
 
-        self.assertEqual("cannot_answer", result.status)
-        self.assertIn("不满足", result.answer.steps[0])
+        self.assertEqual("answered", result.status)
+        self.assertIn("申请条件", result.answer.steps[0])
         self.assertIn("银行资产证明", result.answer.steps[0])
 
     def test_carrying_balance_uses_sourced_borrowing_costs(self):
@@ -176,7 +196,7 @@ class CreditCardWorkflowTests(unittest.TestCase):
             TASK, request(repayment_mode="sometimes_carry")))
 
         self.assertEqual("answered", result.status)
-        self.assertIn("APR 35.42%", result.answer.steps[0])
+        self.assertIn("实际年利率35.42%", result.answer.steps[0])
         self.assertTrue(repo.called)
 
     def test_selects_primary_then_fills_a_real_coverage_gap(self):
@@ -281,15 +301,31 @@ class CreditCardWorkflowTests(unittest.TestCase):
             TASK, request(annual_income_hkd=None)))
 
         self.assertEqual("cannot_answer", result.status)
-        self.assertIn("没有该地区当前有效", result.answer.summary)
+        self.assertIn("没有该地区有效", result.answer.summary)
 
-    def test_all_ineligible_products_are_cannot_answer(self):
+    def test_all_ineligible_products_explain_the_gate_without_usage_questions(self):
         result = asyncio.run(CreditCardWorkflow(
             FakeRepository([product("rich", "online", "0.04", income=999999)]),
             clock=lambda: NOW).run(TASK, request()))
 
-        self.assertEqual("cannot_answer", result.status)
-        self.assertIn("不满足你的申请门槛", result.answer.summary)
+        self.assertEqual("answered", result.status)
+        self.assertIn("可以再为你比较", result.answer.summary)
+        self.assertIn("申请条件：", "\n".join(result.answer.steps))
+
+    def test_hong_kong_account_gate_stops_before_spending_questions(self):
+        premier = product("premier", "travel", "0.02")
+        premier = premier.model_copy(update={"eligibility_rules": [
+            *premier.eligibility_rules,
+            EligibilityRule(rule_id="premier-account", rule_type="banking_relationship",
+                            operator="eq", value_text="premier", required=True),
+        ]})
+        result = asyncio.run(CreditCardWorkflow(
+            FakeRepository([premier]), clock=lambda: NOW).run(
+            TASK, request(spending_scenarios=None,
+                          hsbc_premier_path="not_applicable")))
+        self.assertEqual("answered", result.status)
+        self.assertEqual([], result.follow_up_questions)
+        self.assertIn("可以再为你比较", result.answer.summary)
 
     def test_asset_proof_path_keeps_low_income_card_in_recommendations(self):
         card = asset_review_product()
@@ -333,7 +369,7 @@ class StudyDestinationCatalogTests(unittest.TestCase):
 
         result = asyncio.run(CreditCardWorkflow(repo, clock=lambda: NOW).run(
             TASK, request(application_region="US",
-                          us_hsbc_account_path="not_applicable",
+                          us_hsbc_account_path="existing_premier_checking",
                           spending_scenarios=["overseas", "tuition"],
                           reward_preference="no_preference")))
 
@@ -341,14 +377,14 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         text = "\n".join(result.answer.steps)
         self.assertIn("汇丰美国发行的卡", text)
         self.assertNotIn("汇丰香港发行的卡", text)
-        self.assertIn("美国汇丰 Premier 支票账户", text)
+        self.assertIn("美国汇丰卓越理财支票账户", text)
         self.assertIn("HSBC Premier World Mastercard", text)
-        self.assertIn("申请限制：目前不符合该卡公开申请条件", text)
+        self.assertNotIn("申请限制：目前尚未持有所需的当地汇丰账户", text)
         self.assertNotIn("Hk Red", text)
         self.assertIn("年费：", text)
         self.assertIn("主要权益：", text)
         self.assertNotIn("备用", result.answer.summary)
-        us_fee = next(line for line in result.answer.steps if line.startswith("年费：") and "95 USD" in line)
+        us_fee = next(line for line in result.answer.steps if line.startswith("年费：") and "95 美元" in line)
         self.assertNotIn("HK$", us_fee)
         self.assertEqual(["US"], [group["market"] for group in result.payload["groups"]])
         self.assertEqual(["primary"], [group["role"] for group in result.payload["groups"]])
@@ -362,13 +398,13 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         result = asyncio.run(CreditCardWorkflow(
             MarketRepository({"US": [travel, online], "CN-HK": []}), clock=lambda: NOW).run(
             TASK, request(application_region="US", applicant_age=20,
-                          us_hsbc_account_path="not_applicable",
+                          us_hsbc_account_path="existing_premier_checking",
                           spending_scenarios=["online"], reward_preference="cashback")))
 
         names = [card["product_name"] for card in result.payload["groups"][0]["cards"]]
         self.assertEqual(["Z Online", "A Travel"], names)
 
-    def test_us_study_skips_account_question_and_asks_only_card_use(self):
+    def test_us_study_asks_one_decisive_local_account_question(self):
         local = product("premier_world", "travel", "0.01").model_copy(update={
             "market": "US",
             "eligibility_rules": [
@@ -384,9 +420,12 @@ class StudyDestinationCatalogTests(unittest.TestCase):
                 profile_values={"application_region": "US", "applicant_age": 20})))
 
         self.assertEqual("needs_input", result.status)
-        self.assertEqual(["spending_scenarios"],
+        self.assertEqual(["us_hsbc_account_path"],
                          [q.field for q in result.follow_up_questions])
-        self.assertEqual(2, result.follow_up_questions[0].max_selections)
+        self.assertEqual(
+            ["existing_premier_checking", "plan_to_open", "not_applicable"],
+            [option["value"] for option in result.follow_up_questions[0].options])
+        self.assertIn("了解其他选择", result.follow_up_questions[0].options[-1]["label"])
 
     def test_uk_study_asks_uk_account_path(self):
         result = asyncio.run(CreditCardWorkflow(
@@ -429,7 +468,286 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         self.assertNotEqual("needs_input", result.status)
         self.assertEqual("HSBC Student Credit Card",
                          result.payload["groups"][0]["cards"][0]["product_name"])
+        student_result = result.payload["groups"][0]["cards"][0]
+        self.assertEqual("unknown", student_result["eligibility"])
+        self.assertTrue(student_result["pending_prerequisites"])
+        self.assertNotIn("uk_hsbc_account_path", student_result["missing_fields"])
+        self.assertIn("申请前提：先开立汇丰英国学生账户", "\n".join(result.answer.steps))
+        self.assertNotIn("目前不符合该卡公开申请条件", "\n".join(result.answer.steps))
         self.assertNotIn("HSBC Hong Kong", "\n".join(result.answer.steps))
+
+    @staticmethod
+    def _study_card(card_id, market, tier, account, fee):
+        card = product(card_id, "general", "0")
+        rules = [
+            EligibilityRule(rule_id=f"{card_id}-age", rule_type="minimum_age",
+                            operator="gte", value_numeric=Decimal("18"), required=True),
+            EligibilityRule(rule_id=f"{card_id}-account", rule_type="banking_relationship",
+                            operator="eq", value_text=account, required=True),
+        ]
+        if market == "UK":
+            rules.append(EligibilityRule(
+                rule_id=f"{card_id}-resident", rule_type="other", operator="eq",
+                value_text="uk_resident", required=True))
+        return card.model_copy(update={
+            "market": market, "card_tier": tier, "eligibility_rules": rules,
+            "fees": [CardFee(fee_id=f"{card_id}-annual", fee_type="annual_fee",
+                             amount=Decimal(str(fee)), currency="GBP" if market == "UK" else "USD",
+                             source_url=f"https://example.com/{card_id}", last_verified_at=NOW)],
+        })
+
+    def test_uk_existing_student_account_is_eligible_only_with_residency(self):
+        student = self._study_card("student", "UK", "Student", "uk_student_account", 0)
+        eligible = assess_eligibility(student, {
+            "application_region": "UK", "applicant_age": 19,
+            "uk_resident": True, "uk_hsbc_account_path": "student_account"})
+        undecided = assess_eligibility(student, {
+            "application_region": "UK", "applicant_age": 19,
+            "uk_hsbc_account_path": "student_account"})
+        self.assertEqual("eligible", eligible.status)
+        self.assertEqual("unknown", undecided.status)
+        self.assertEqual(["uk_resident"], undecided.missing_fields)
+
+    def test_uk_student_path_preserves_a_supplied_spending_preference(self):
+        online = self._study_card("a_online", "UK", "Student", "uk_student_account", 0)
+        travel = self._study_card("z_travel", "UK", "Student", "uk_student_account", 0)
+        online = online.model_copy(update={"reward_rules": [
+            RewardRule(rule_id="online", spend_category="online", reward_type="points",
+                       points_per_currency_unit=Decimal("1"))]})
+        travel = travel.model_copy(update={"reward_rules": [
+            RewardRule(rule_id="travel", spend_category="travel", reward_type="points",
+                       points_per_currency_unit=Decimal("1"))]})
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"UK": [online, travel]}), clock=lambda: NOW).run(
+            TASK, request(application_region="UK", uk_hsbc_account_path="plan_to_open",
+                          spending_scenarios=["travel"])))
+        self.assertEqual("z_travel", result.payload["groups"][0]["cards"][0]["card_id"])
+
+    def test_uk_future_residency_and_account_are_pending_not_rejected(self):
+        student = self._study_card("student", "UK", "Student", "uk_student_account", 0)
+        assessment = assess_eligibility(student, {
+            "application_region": "UK", "applicant_age": 19, "uk_resident": False,
+            "uk_hsbc_account_path": "plan_to_open"})
+        self.assertEqual("unknown", assessment.status)
+        self.assertEqual(2, len(assessment.pending_prerequisites))
+        self.assertEqual([], assessment.missing_fields)
+
+    def test_uk_generic_premier_does_not_imply_a_uk_premier_account(self):
+        premier = self._study_card("premier", "UK", "Premier", "uk_premier_account", 0)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"UK": [premier]}), clock=lambda: NOW).run(
+            TASK, OrchestrationInput(text="想申请英国信用卡，已有香港汇丰 Premier",
+                                     profile_id="p1", profile_version=1,
+                                     profile_values={"application_region": "UK", "applicant_age": 25})))
+        self.assertEqual("needs_input", result.status)
+        self.assertEqual("uk_hsbc_account_path", result.follow_up_questions[0].field)
+
+    def test_us_planned_account_previews_both_cards_without_claiming_current_eligibility(self):
+        elite = self._study_card("elite", "US", "World Elite", "us_premier_checking", 495)
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [elite, premier]}), clock=lambda: NOW).run(
+            TASK, request(application_region="US", applicant_age=None,
+                          us_hsbc_account_path="plan_to_open",
+                          spending_scenarios=None)))
+        cards = result.payload["groups"][0]["cards"]
+        self.assertNotEqual("needs_input", result.status)
+        self.assertEqual("preview", result.payload["groups"][0]["role"])
+        self.assertEqual(["premier", "elite"], [card["card_id"] for card in cards])
+        self.assertTrue(all(card["eligibility"] == "unknown" for card in cards))
+        self.assertTrue(all(card["pending_prerequisites"] for card in cards))
+        text = "\n".join(result.answer.steps)
+        self.assertIn("提前了解：", text)
+        self.assertIn("申请前提：先开立美国汇丰卓越理财支票账户", text)
+        self.assertIn("Premier", result.answer.summary)
+        self.assertIn("Elite", result.answer.summary)
+        self.assertNotIn("主推", result.answer.summary)
+
+    def test_us_without_a_premier_account_does_not_recommend_ineligible_cards(self):
+        elite = self._study_card("elite", "US", "World Elite", "us_premier_checking", 495)
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [elite, premier]}), clock=lambda: NOW).run(
+            TASK, request(application_region="US", us_hsbc_account_path="not_applicable")))
+        self.assertEqual([], result.payload["groups"][0]["cards"])
+        self.assertEqual([], result.answer.steps)
+        self.assertIn("基于这些产品条件，这次先不列出具体卡片", result.answer.summary)
+        self.assertIn("我们可以随时再为你比较", result.answer.summary)
+        self.assertNotIn("若你暂不考虑", result.answer.summary)
+        self.assertNotIn("不必继续填写", result.answer.summary)
+        self.assertNotIn("主推", result.answer.summary)
+
+    def test_us_single_card_checks_age_then_answers_without_preference_question(self):
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        workflow = CreditCardWorkflow(MarketRepository({"US": [premier]}), clock=lambda: NOW)
+        facts = {"application_region": "US", "applicant_age": None,
+                 "spending_scenarios": None,
+                 "us_hsbc_account_path": "existing_premier_checking"}
+        age_question = asyncio.run(workflow.run(TASK, request(**facts)))
+        self.assertEqual("needs_input", age_question.status)
+        self.assertEqual(["applicant_age_band"],
+                         [question.field for question in age_question.follow_up_questions])
+
+        answer = asyncio.run(workflow.run(
+            TASK, request(**facts, applicant_age_band="18_or_over")))
+        self.assertNotEqual("needs_input", answer.status)
+        self.assertEqual(["premier"], [card["card_id"]
+                         for card in answer.payload["groups"][0]["cards"]])
+
+    def test_us_underage_stops_before_spending_and_shows_no_cards(self):
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [premier]}), clock=lambda: NOW).run(
+            TASK, request(application_region="US", applicant_age=None,
+                          applicant_age_band="under_18", spending_scenarios=None,
+                          us_hsbc_account_path="existing_premier_checking")))
+        self.assertNotEqual("needs_input", result.status)
+        self.assertEqual([], result.payload["groups"][0]["cards"])
+        self.assertEqual([], result.answer.steps)
+        self.assertIn("最低申请年龄", result.answer.summary)
+        self.assertIn("可以再为你比较", result.answer.summary)
+
+    def test_us_underage_does_not_ask_for_an_account_either(self):
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [premier]}), clock=lambda: NOW).run(
+            TASK, request(application_region="US", applicant_age=None,
+                          applicant_age_band="under_18", spending_scenarios=None,
+                          us_hsbc_account_path=None)))
+        self.assertNotEqual("needs_input", result.status)
+        self.assertEqual([], result.payload["groups"][0]["cards"])
+        self.assertIn("最低申请年龄", result.answer.summary)
+
+    def test_uk_premier_checks_age_before_spending_but_student_path_does_not(self):
+        premier = self._study_card("premier", "UK", "Premier", "uk_premier_account", 0)
+        student = self._study_card("student", "UK", "Student", "uk_student_account", 0)
+        workflow = CreditCardWorkflow(
+            MarketRepository({"UK": [premier, student]}), clock=lambda: NOW)
+        premier_result = asyncio.run(workflow.run(
+            TASK, request(application_region="UK", applicant_age=None,
+                          spending_scenarios=None,
+                          uk_hsbc_account_path="premier_account")))
+        self.assertEqual(["applicant_age_band"],
+                         [question.field for question in premier_result.follow_up_questions])
+
+        student_result = asyncio.run(workflow.run(
+            TASK, request(application_region="UK", applicant_age=None,
+                          spending_scenarios=None,
+                          uk_hsbc_account_path="plan_to_open")))
+        self.assertNotEqual("needs_input", student_result.status)
+        self.assertEqual(["student"], [card["card_id"]
+                         for card in student_result.payload["groups"][0]["cards"]])
+
+    def test_uk_premier_pair_asks_only_the_decisive_tradeoff(self):
+        premier = self._study_card("premier", "UK", "Premier", "uk_premier_account", 0)
+        elite = self._study_card("elite", "UK", "World Elite", "uk_premier_account", 290)
+        workflow = CreditCardWorkflow(
+            MarketRepository({"UK": [premier, elite]}), clock=lambda: NOW)
+        base = {"application_region": "UK", "applicant_age": 25, "uk_resident": True,
+                "uk_hsbc_account_path": "premier_account", "spending_scenarios": None}
+        question = asyncio.run(workflow.run(TASK, request(**base)))
+        self.assertEqual(["study_card_focus"],
+                         [item.field for item in question.follow_up_questions])
+        for focus, primary in (("lower_fee", "premier"),
+                               ("travel_benefits", "elite")):
+            answer = asyncio.run(workflow.run(
+                TASK, request(**base, study_card_focus=focus)))
+            self.assertEqual(primary, answer.payload["groups"][0]["cards"][0]["card_id"])
+
+    def test_uk_unconfirmed_residency_previews_cards_without_a_preference_question(self):
+        premier = self._study_card("premier", "UK", "Premier", "uk_premier_account", 0)
+        elite = self._study_card("elite", "UK", "World Elite", "uk_premier_account", 290)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"UK": [premier, elite]}), clock=lambda: NOW).run(
+            TASK, request(application_region="UK", applicant_age=25,
+                          uk_resident=None, uk_hsbc_account_path="premier_account",
+                          spending_scenarios=None)))
+        self.assertNotEqual("needs_input", result.status)
+        self.assertEqual("preview", result.payload["groups"][0]["role"])
+        self.assertIn("提前了解：", "\n".join(result.answer.steps))
+        self.assertNotIn("主推荐：", "\n".join(result.answer.steps))
+
+    def test_uk_underage_stops_before_spending_even_with_premier_account(self):
+        premier = self._study_card("premier", "UK", "Premier", "uk_premier_account", 0)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"UK": [premier]}), clock=lambda: NOW).run(
+            TASK, request(application_region="UK", applicant_age=None,
+                          applicant_age_band="under_18", spending_scenarios=None,
+                          uk_hsbc_account_path="premier_account")))
+        self.assertNotEqual("needs_input", result.status)
+        self.assertEqual([], result.payload["groups"][0]["cards"])
+        self.assertIn("最低申请年龄", result.answer.summary)
+
+    def test_us_existing_premier_prefers_lower_fee_when_fit_is_equal(self):
+        elite = self._study_card("elite", "US", "World Elite", "us_premier_checking", 495)
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        workflow = CreditCardWorkflow(
+            MarketRepository({"US": [elite, premier]}), clock=lambda: NOW)
+        question = asyncio.run(workflow.run(
+            TASK, request(application_region="US",
+                          us_hsbc_account_path="existing_premier_checking",
+                          spending_scenarios=None)))
+        self.assertEqual(["study_card_focus"],
+                         [item.field for item in question.follow_up_questions])
+        self.assertIn("95 美元", question.follow_up_questions[0].text)
+        self.assertIn("495 美元", question.follow_up_questions[0].text)
+        for focus, primary in (("lower_fee", "premier"),
+                               ("travel_benefits", "elite")):
+            result = asyncio.run(workflow.run(
+                TASK, request(application_region="US",
+                              us_hsbc_account_path="existing_premier_checking",
+                              spending_scenarios=None, study_card_focus=focus)))
+            cards = result.payload["groups"][0]["cards"]
+            self.assertEqual(primary, cards[0]["card_id"])
+            self.assertEqual("primary", cards[0]["role"])
+            self.assertEqual("alternative", cards[1]["role"])
+            self.assertIn("主推荐：", "\n".join(result.answer.steps))
+            self.assertIn("其他选择：", "\n".join(result.answer.steps))
+
+        comparison = asyncio.run(workflow.run(
+            TASK, request(application_region="US",
+                          us_hsbc_account_path="existing_premier_checking",
+                          spending_scenarios=None, study_card_focus="compare")))
+        self.assertIn("对比参考：", "\n".join(comparison.answer.steps))
+        self.assertNotIn("主推荐：", "\n".join(comparison.answer.steps))
+
+    def test_us_equal_fee_cards_skip_non_discriminating_question(self):
+        first = self._study_card("first", "US", "World", "us_premier_checking", 95)
+        second = self._study_card("second", "US", "World Elite", "us_premier_checking", 95)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [first, second]}), clock=lambda: NOW).run(
+            TASK, request(application_region="US", applicant_age=25,
+                          us_hsbc_account_path="existing_premier_checking",
+                          spending_scenarios=None)))
+        self.assertNotEqual("needs_input", result.status)
+
+    def test_study_focus_answer_is_a_registered_profile_field(self):
+        self.assertIsNone(clarify.validate("study_card_focus", "lower_fee"))
+        self.assertIsNone(clarify.validate("study_card_focus", "travel_benefits"))
+        self.assertIsNone(clarify.validate("study_card_focus", "compare"))
+        self.assertEqual("credit_card",
+                         clarify.field_definitions()["study_card_focus"]["domains"][0])
+
+    def test_us_existing_local_account_qualifies_but_generic_premier_does_not(self):
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        existing = assess_eligibility(premier, {
+            "applicant_age": 25, "us_hsbc_account_path": "existing_premier_checking"})
+        generic = assess_eligibility(premier, {
+            "applicant_age": 25, "premier_relationship": True})
+        self.assertEqual("eligible", existing.status)
+        self.assertEqual("unknown", generic.status)
+        self.assertEqual(["us_hsbc_account_path"], generic.missing_fields)
+
+    def test_underage_user_does_not_become_eligible_by_planning_to_open(self):
+        student = self._study_card("student", "UK", "Student", "uk_student_account", 0)
+        assessment = assess_eligibility(student, {
+            "application_region": "UK", "applicant_age_band": "under_18",
+            "uk_hsbc_account_path": "plan_to_open"})
+        self.assertEqual("ineligible", assessment.status)
+        lines = CreditCardWorkflow._plain_card_lines(student, assessment, {
+            "applicant_age_band": "under_18", "uk_hsbc_account_path": "plan_to_open"})
+        self.assertIn("申请限制：目前未达到该卡的年龄门槛", lines)
+        self.assertFalse(any(line.startswith("申请前提：") for line in lines))
 
     def test_destination_country_selects_the_study_catalog(self):
         result = asyncio.run(CreditCardWorkflow(
@@ -481,6 +799,10 @@ class CreditCardFactExtractionTests(unittest.TestCase):
         facts, _ = extract_credit_card_facts("我在香港工作生活，收入稳定")
 
         self.assertNotIn("application_region", facts)
+
+    def test_denied_premier_relationship_is_not_inferred(self):
+        facts, _ = extract_credit_card_facts("我不是 Premier 客户，想办学生信用卡")
+        self.assertNotIn("premier_relationship", facts)
 
 
 class CreditCardEngineEdgeCaseTests(unittest.TestCase):
@@ -672,7 +994,7 @@ class CreditCardEngineEdgeCaseTests(unittest.TestCase):
         self.assertEqual(["hsbc_premier_path"],
                          [question.field for question in result.follow_up_questions])
         labels = [option["label"] for option in result.follow_up_questions[0].options]
-        self.assertTrue(any("HK$1,000,000" in label for label in labels))
+        self.assertTrue(any("一百万港元" in label for label in labels))
 
     def test_selected_reward_category_is_only_used_for_one_scenario(self):
         card = product("selectable", "selected_lifestyle", "0.024")

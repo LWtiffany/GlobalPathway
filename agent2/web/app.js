@@ -4,7 +4,7 @@ const $app = document.getElementById("app");
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const GRID = ["role", "beneficiary", "destination_country", "school", "course", "offer_status",
   "planned_start_date", "payer", "visa_category"];
-const GRID_LABEL = { destination_country: "目的地", offer_status: "Offer", planned_start_date: "入学日期" };
+const GRID_LABEL = { destination_country: "目的地", offer_status: "录取状态", planned_start_date: "入学日期" };
 const STATUS = {
   answered: { label: "已确认", cls: "ok", why: "" },
   needs_input: { label: "待补充", cls: "", why: "还缺少关键信息，补充后再给出确定答案。" },
@@ -668,17 +668,25 @@ function renderAnswerSteps(steps) {
         h("span", { class: "market-tag" }, "申请地区"),
         h("span", null, `${market}发行的卡`)));
     }
-    else if (/^(主推荐|补充卡|备选)：/.test(s)) box.append(h("div", { class: "card-name" }, s));
-    else if (/^(年费|主要权益|申请限制)：/.test(s)) {
+    else if (/^(主推荐|场景搭配|其他选择)：/.test(s)) {
       const i = s.indexOf("：");
-      box.append(h("div", { class: "card-detail" },
+      box.append(h("div", { class: "card-name" },
+        h("span", { class: "role-tag" }, s.slice(0, i)),
+        h("span", null, s.slice(i + 1))));
+    }
+    else if (/^(推荐理由|为什么适合你|年费|主要权益|你可享|申请限制|申请前提)：/.test(s)) {
+      const i = s.indexOf("：");
+      box.append(h("div", { class: `card-detail ${/^(?:推荐理由|为什么适合你)/.test(s) ? "reason" : ""}` },
         h("span", { class: "k" }, s.slice(0, i + 1)), s.slice(i + 1)));
-    } else if (s.startsWith("免年费备选：")) box.append(h("div", { class: "card-alt" }, s));
-    else if (/（(?:Visa|Mastercard|UnionPay|银联)/.test(s) || /（[A-Za-z]+）$/.test(s)) {
+    } else if (s.startsWith("免年费选择：")) box.append(h("div", { class: "card-alt" }, s));
+    else if (/（(?:Visa|Mastercard|UnionPay|银联卡|威士卡|万事达卡)/.test(s) || /（[A-Za-z]+）$/.test(s)) {
       box.append(h("div", { class: "card-name" }, s));
     } else box.append(h("div", { class: "card-note" }, s));
   }
-  return [h("div", { class: "sub-h" }, "推荐说明"), box];
+  const preview = steps.some((s) => s.startsWith("提前了解："));
+  const compare = steps.some((s) => s.startsWith("对比参考："));
+  return [h("div", { class: "sub-h" }, preview ? "提前了解的信用卡" :
+    compare ? "两张卡怎么选" : "为你挑选的信用卡"), box];
 }
 
 function answerBubble(b, latest) {
@@ -708,7 +716,8 @@ function answerBubble(b, latest) {
   if (b.status !== "answered") {
     kids.push(h("div", { class: "status" }, h("span", { class: "st " + st.cls }, st.label), h("span", { class: "why" }, st.why)));
   }
-  kids.push(h("p", null, b.answer.summary));
+  const cardAnswer = isCardRecommendationSteps(b.answer.steps || []);
+  if (!cardAnswer) kids.push(h("p", null, b.answer.summary));
   if (mats.length) kids.push(h("ul", { class: "mat" }, mats.map((m) => materialItem(m, cmap))));
   if ((b.answer.steps || []).length) {
     kids.push(...renderAnswerSteps(b.answer.steps));

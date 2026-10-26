@@ -6,7 +6,8 @@ from .contracts import (AdviceUpdate, LifecycleActions, OrchestrationInput, Plan
 PROFILE_FIELDS_BY_DOMAIN = {
     "credit_card": {"application_region", "applicant_age", "applicant_age_band",
                     "annual_income_hkd", "annual_income_band_hkd", "asset_band",
-                    "repayment_mode", "spending_scenarios", "reward_preference",
+                    "repayment_mode", "spending_scenarios", "study_card_focus",
+                    "reward_preference",
                     "monthly_card_spend_band_hkd",
                     "mainland_payment_method",
                     "full_time_student", "premier_relationship", "hsbc_relationship_balance_band",

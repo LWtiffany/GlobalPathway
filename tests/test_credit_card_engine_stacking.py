@@ -276,7 +276,7 @@ class MilesPresentationTests(unittest.TestCase):
 
         self.assertEqual("answered", result.status)
         # Free for two years, but the answer must disclose the year-three fee.
-        self.assertIn("豁免期后年费 HK$300/年", "\n".join(result.answer.steps))
+        self.assertIn("豁免期后年费每年300港元", "\n".join(result.answer.steps))
 
 
 class StudentGateTests(unittest.TestCase):
@@ -343,10 +343,10 @@ class DisclosureTests(unittest.TestCase):
 
         self.assertEqual("answered", result.status)
         joined = " ".join(result.answer.limitations)
-        self.assertIn("仅覆盖 HSBC", joined)
+        self.assertIn("仅覆盖汇丰", joined)
         self.assertIn("迎新礼遇", joined)
         self.assertIn("限时推广", joined)
-        self.assertIn("QR/mobile payments", joined)
+        self.assertIn("二维码及手机支付", joined)
 
     def test_multi_card_combo_discloses_shared_your_choice_cap(self):
         primary = your_choice_card("yc_primary")

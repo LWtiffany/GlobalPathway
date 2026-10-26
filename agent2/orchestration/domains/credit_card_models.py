@@ -129,6 +129,7 @@ class EligibilityAssessment(CardModel):
     status: Literal["eligible", "needs_bank_assessment", "unknown", "ineligible"]
     reasons: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
+    pending_prerequisites: list[str] = Field(default_factory=list)
     matched_path: str | None = None
     # True when the only failing written criterion is HK residency: HSBC Hong
     # Kong lists it as a basic requirement, yet a small number of non-resident

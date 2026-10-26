@@ -154,20 +154,12 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
             wanted = (rule.value_text or "").casefold()
             if wanted in {"us_premier_checking"}:
                 path = facts.get("us_hsbc_account_path")
-                if path is not None:
-                    value, field = path, "us_hsbc_account_path"
-                    passed = path == "existing_premier_checking"
-                else:
-                    value, field = facts.get("premier_relationship"), "premier_relationship"
-                    passed = value is True
+                value, field = path, "us_hsbc_account_path"
+                passed = path == "existing_premier_checking"
             elif wanted in {"uk_premier_account"}:
                 path = facts.get("uk_hsbc_account_path")
-                if path is not None:
-                    value, field = path, "uk_hsbc_account_path"
-                    passed = path == "premier_account"
-                else:
-                    value, field = facts.get("premier_relationship"), "premier_relationship"
-                    passed = value is True
+                value, field = path, "uk_hsbc_account_path"
+                passed = path == "premier_account"
             elif wanted in {"uk_student_account"}:
                 path = facts.get("uk_hsbc_account_path")
                 value, field = path, "uk_hsbc_account_path"
@@ -224,9 +216,15 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
             field = {"residency": "residency_status", "credit_assessment": "credit_history_band"}.get(
                 rule.rule_type, f"card_rule_{rule.rule_type}")
             value, passed = facts.get(field), False
+        if (rule.rule_type == "banking_relationship" and value == "plan_to_open"
+                and wanted in {"us_premier_checking", "uk_student_account"}):
+            return "pending", field
+        if (rule.rule_type == "other" and rule.value_text == "uk_resident"
+                and value is False and facts.get("application_region") == "UK"):
+            return "pending", field
         return "missing" if value is None else "passed" if passed else "failed", field
 
-    hard_reasons, hard_missing = [], []
+    hard_reasons, hard_missing, pending_prerequisites = [], [], []
     resident_failed = False
     for rule in grouped.pop("hard", []):
         state, field = evaluate(rule)
@@ -241,16 +239,21 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
         elif state == "missing":
             hard_missing.append(field)
             hard_reasons.append(f"缺少门槛信息：{rule.description or rule.rule_type}")
+        elif state == "pending":
+            pending_prerequisites.append(rule.description or rule.rule_type)
+            hard_reasons.append(f"申请前待满足：{rule.description or rule.rule_type}")
     if any(reason.startswith("不满足") for reason in hard_reasons):
         return EligibilityAssessment(status="ineligible", reasons=hard_reasons,
-                                     missing_fields=list(dict.fromkeys(hard_missing)))
+                                     missing_fields=list(dict.fromkeys(hard_missing)),
+                                     pending_prerequisites=pending_prerequisites)
     if not grouped:
-        status = "unknown" if hard_missing else \
+        status = "unknown" if hard_missing or pending_prerequisites else \
             ("needs_bank_assessment" if resident_failed else "eligible")
         return EligibilityAssessment(
             status=status, reasons=hard_reasons,
             missing_fields=list(dict.fromkeys(hard_missing)), matched_path="hard",
-            low_approval_chance=resident_failed)
+            low_approval_chance=resident_failed,
+            pending_prerequisites=pending_prerequisites)
 
     passed_paths, incomplete_paths = [], []
     failed_reasons = []
@@ -267,7 +270,7 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
 
     public = next((item for item in passed_paths if item[1] == "meets_public_criteria"), None)
     review = next((item for item in passed_paths if item[1] == "needs_bank_assessment"), None)
-    if hard_missing:
+    if hard_missing or pending_prerequisites:
         status, matched = "unknown", None
     elif resident_failed and (public or review):
         # Residency is the only failing written criterion: downgrade the
@@ -290,6 +293,9 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
     if status not in {"eligible", "needs_bank_assessment"}:
         for _, results in incomplete_paths:
             missing.extend(field for _, state, field in results if state == "missing")
+            pending_prerequisites.extend(
+                rule.description or rule.rule_type for rule, state, _ in results
+                if state == "pending")
     if status == "eligible" and public:
         path_reasons = [f"满足：{rule.description or rule.rule_type}" for rule in public[2]]
         reasons = hard_reasons + path_reasons
@@ -307,7 +313,8 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
         reasons = hard_reasons + failed_reasons
     return EligibilityAssessment(status=status, reasons=list(dict.fromkeys(reasons)),
                                  missing_fields=list(dict.fromkeys(missing)), matched_path=matched,
-                                 low_approval_chance=resident_failed)
+                                 low_approval_chance=resident_failed,
+                                 pending_prerequisites=list(dict.fromkeys(pending_prerequisites)))
 
 
 def _fee(product, fee_type):
