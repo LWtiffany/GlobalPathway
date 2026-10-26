@@ -129,6 +129,19 @@ def fields(service, user_id, body, query):
     return 200, {"fields": clarify.field_catalog()}
 
 
+@route("GET", r"/v1/schools", auth=False)
+def list_schools(service, user_id, body, query):
+    from . import catalog
+    country = (query.get("country") or "").strip() or None
+    return 200, {"schools": catalog.list_schools(country=country)}
+
+
+@route("GET", r"/v1/schools/(?P<school_id>[\w-]+)/programs", auth=False)
+def list_programs(service, user_id, body, query, school_id):
+    from . import catalog
+    return 200, {"programs": catalog.list_programs(school_id)}
+
+
 @route("GET", r"/v1/profiles")
 def list_profiles(service, user_id, body, query):
     return 200, service.list_profiles(user_id)

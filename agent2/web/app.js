@@ -26,24 +26,28 @@ const PRESETS = [
   { user: "王女士", tag: "家长 · 英国 + 香港",
     desc: "两个孩子：王小明（英国 UCL 硕士，签证类别未填）、王小悦（香港 HKU 本科）。",
     profiles: [
-      { fields: { role: "parent", beneficiary: "王小明", destination_country: "UK", school: "UCL",
-        course: "MSc Computer Science", offer_status: "conditional", planned_start_date: "2026-09-21", payer: "parent" },
+      { fields: { role: "parent", beneficiary: "王小明", destination_country: "UK",
+        school: "f545e6b8-2118-5951-8f44-6f8e1f15110c", // University College London
+        offer_status: "conditional", planned_start_date: "2026-09-21", payer: "parent" },
         todos: ["与学校确认 CAS 发放时间", "预约签证中心递交时间"] },
-      { fields: { role: "parent", beneficiary: "王小悦", destination_country: "CN-HK", school: "HKU",
-        course: "BSc 本科", offer_status: "none" } },
+      { fields: { role: "parent", beneficiary: "王小悦", destination_country: "CN-HK",
+        school: "6ee509ee-2598-5cdc-8b73-01de1d34015f", // The University of Hong Kong (HKU)
+        offer_status: "none" } },
     ] },
   { user: "李同学", tag: "学生 · 美国",
     desc: "本人申请：李华，美国 NYU 数据科学硕士，无条件录取，学生签证。",
     profiles: [
-      { fields: { role: "student", beneficiary: "李华", destination_country: "US", school: "NYU",
-        course: "MS Data Science", offer_status: "unconditional", planned_start_date: "2026-09-02",
+      { fields: { role: "student", beneficiary: "李华", destination_country: "US",
+        school: "fdda5cc2-8be6-5f9b-a148-e93c1972cc8c", // New York University
+        offer_status: "unconditional", planned_start_date: "2026-09-02",
         visa_category: "student_visa", payer: "self" } },
     ] },
   { user: "陈同学", tag: "学生 · 香港",
     desc: "本人申请：陈思，香港中文大学 MPhil，内地居民，学生签证。",
     profiles: [
-      { fields: { role: "student", beneficiary: "陈思", destination_country: "CN-HK", school: "CUHK",
-        course: "MPhil", offer_status: "unconditional", planned_start_date: "2026-09-01",
+      { fields: { role: "student", beneficiary: "陈思", destination_country: "CN-HK",
+        school: "f8b7d239-425b-5234-8277-a81abf4fc163", // The Chinese University of Hong Kong
+        offer_status: "unconditional", planned_start_date: "2026-09-01",
         visa_category: "student_visa", applicant_residence: "CN" } },
     ] },
 ];
@@ -54,6 +58,7 @@ const S = {
   highlight: new Set(), flash: [], busy: false, pending: null, sheetH: null, collapsed: false, fb: {}, el: {},
   // One-question-at-a-time follow-ups; trail lets the user undo a wrong tap.
   followSeed: null, followTrail: [], suppressFields: [],
+  schools: [], programs: [], schoolById: {}, programById: {},
 };
 
 // ---------- helpers ----------
@@ -108,11 +113,62 @@ const label = (code) => (S.fields && S.fields[code] ? S.fields[code].label : cod
 
 function valueLabel(code, v) {
   if (v === undefined || v === null) return "—";
+  if (code === "school" && S.schoolById[v]) return S.schoolById[v].name;
+  if (code === "course" && S.programById[v]) return S.programById[v].label;
   const f = S.fields && S.fields[code];
   const opt = f && f.options.find((o) => o.value === v);
   if (opt) return opt.label;
   if (f && f.kind === "date") return fmtDate(v);
   return String(v);
+}
+
+async function ensureSchools(country) {
+  const q = country ? `?country=${encodeURIComponent(country)}` : "";
+  const { schools } = await api("GET", `/schools${q}`);
+  S.schools = schools || [];
+  for (const s of S.schools) S.schoolById[s.school_id] = s;
+  return S.schools;
+}
+
+async function ensurePrograms(schoolId) {
+  if (!schoolId) { S.programs = []; return []; }
+  const { programs } = await api("GET", `/schools/${encodeURIComponent(schoolId)}/programs`);
+  S.programs = programs || [];
+  for (const p of S.programs) S.programById[p.program_id] = p;
+  return S.programs;
+}
+
+function schoolCourseInputs(initial = {}) {
+  const dest = initial.destination_country;
+  const schoolSel = h("select", { name: "school" }, h("option", { value: "" }, "请先选择目的地"));
+  const courseSel = h("select", { name: "course" }, h("option", { value: "" }, "请先选择学校"));
+  const fillSchools = async (country, keepSchool) => {
+    schoolSel.replaceChildren(h("option", { value: "" }, country ? "未填写" : "请先选择目的地"));
+    courseSel.replaceChildren(h("option", { value: "" }, "请先选择学校"));
+    if (!country) return;
+    const schools = await ensureSchools(country);
+    for (const s of schools) {
+      schoolSel.append(h("option", {
+        value: s.school_id,
+        selected: keepSchool !== undefined && keepSchool === s.school_id,
+      }, s.name));
+    }
+  };
+  const fillPrograms = async (schoolId, keepCourse) => {
+    courseSel.replaceChildren(h("option", { value: "" }, schoolId ? "未填写" : "请先选择学校"));
+    if (!schoolId) return;
+    const programs = await ensurePrograms(schoolId);
+    for (const p of programs) {
+      courseSel.append(h("option", {
+        value: p.program_id,
+        selected: keepCourse !== undefined && keepCourse === p.program_id,
+      }, p.label));
+    }
+  };
+  schoolSel.addEventListener("change", () => {
+    fillPrograms(schoolSel.value || undefined);
+  });
+  return { schoolSel, courseSel, fillSchools, fillPrograms };
 }
 
 function val(profile, code) {
@@ -267,6 +323,10 @@ async function login(preset) {
 
 function fieldInput(code, value) {
   const f = S.fields[code] || { kind: "text", options: [] };
+  if (code === "school" || code === "course") {
+    // Populated by schoolCourseInputs / form wiring — placeholder until then.
+    return h("select", { name: code }, h("option", { value: "" }, "加载中…"));
+  }
   if (f.options.length) {
     return h("select", { name: code }, h("option", { value: "" }, "未填写"),
       f.options.map((o) => h("option", { value: JSON.stringify(o.value), selected: value !== undefined && o.value === value },
@@ -281,6 +341,8 @@ function readInput(el, code) {
   const f = S.fields[code] || { kind: "text", options: [] };
   const raw = (el.value || "").trim();
   if (raw === "") return undefined;
+  // School / program selects store raw ids (not JSON-encoded enum values).
+  if (code === "school" || code === "course") return raw;
   if (f.options.length) return JSON.parse(raw);
   if (f.kind === "age") return parseInt(raw, 10);
   if (f.kind === "amount") return Number(raw);
@@ -294,6 +356,13 @@ async function renderOnboarding() {
   const required = ["role", "beneficiary", "destination_country"];
   const { profiles } = await api("GET", "/profiles");
   const err = h("div", { class: "formerr" });
+  const { schoolSel, courseSel, fillSchools, fillPrograms } = schoolCourseInputs();
+  const destInput = fieldInput("destination_country");
+  destInput.addEventListener("change", () => {
+    let dest;
+    try { dest = destInput.value ? JSON.parse(destInput.value) : undefined; } catch (_) { dest = undefined; }
+    fillSchools(dest);
+  });
   const form = h("form", { class: "card", onsubmit: async (e) => {
     e.preventDefault();
     const fields = {};
@@ -312,16 +381,26 @@ async function renderOnboarding() {
       err.textContent = x.message;
     }
   } },
-  h("div", { class: "form" }, codes.map((c) => h("label", null,
-    (GRID_LABEL[c] || label(c)) + (required.includes(c) ? " *" : ""), fieldInput(c)))),
+  h("div", { class: "form" },
+    h("label", null, "角色 *", fieldInput("role")),
+    h("label", null, "服务对象 *", fieldInput("beneficiary")),
+    h("label", null, "目的地 *", destInput),
+    h("label", null, "学校", schoolSel),
+    h("label", null, "课程 / 学位", courseSel),
+    h("label", null, "Offer 状态", fieldInput("offer_status")),
+    h("label", null, "入学日期", fieldInput("planned_start_date"))),
   err,
   h("div", { class: "btns" },
     profiles.length ? h("button", { class: "btn ghost", type: "button", onclick: () => go("#/chat") }, "返回") : null,
     h("button", { class: "btn" }, "创建并进入方案")));
   shell(h("div", { class: "page" },
     h("h1", { class: "sf" }, "新建留学档案"),
-    h("p", { class: "lead" }, "只需最少信息即可开始；其余信息会在对话中按需追问。档案事实只有经您确认才会保存。"),
     form), "onboarding");
+  // Prefill school list if destination already selected somehow.
+  try {
+    const dest = destInput.value ? JSON.parse(destInput.value) : undefined;
+    if (dest) await fillSchools(dest);
+  } catch (_) {}
 }
 
 // ---------- /chat ----------
@@ -372,6 +451,12 @@ async function renderChat(pidArg) {
   S.profile = S.profiles.find((p) => p.profile_id === pid);
   S.conv = await api("POST", `/profiles/${pid}/session`);
   await Promise.all([loadMessages(), loadAdvice(), loadPlan(), loadProposals()]);
+  // Resolve school / program labels for the profile sheet.
+  try {
+    await ensureSchools(val(S.profile, "destination_country"));
+    const sid = val(S.profile, "school");
+    if (sid) await ensurePrograms(sid);
+  } catch (_) {}
   deriveMissing();
   drawChatPage();
 }
@@ -1090,14 +1175,33 @@ async function openCitation(c) {
   }
 }
 
-function openEdit(focus) {
+async function openEdit(focus) {
   const p = S.profile;
   const extra = Object.keys(p.fields).filter((c) => !GRID.includes(c) && S.fields[c] && val(p, c) !== undefined);
   const missing = [...S.missing].filter((c) => !GRID.includes(c) && !extra.includes(c) && S.fields[c]);
   const codes = [...GRID, ...extra, ...missing];
+  const { schoolSel, courseSel, fillSchools, fillPrograms } = schoolCourseInputs({
+    destination_country: val(p, "destination_country"),
+  });
+  const inputs = {};
+  for (const c of codes) {
+    if (c === "school") inputs[c] = schoolSel;
+    else if (c === "course") inputs[c] = courseSel;
+    else inputs[c] = fieldInput(c, val(p, c));
+  }
+  if (inputs.destination_country) {
+    inputs.destination_country.addEventListener("change", async () => {
+      let dest;
+      try { dest = inputs.destination_country.value ? JSON.parse(inputs.destination_country.value) : undefined; }
+      catch (_) { dest = undefined; }
+      await fillSchools(dest);
+    });
+  }
   const form = h("form", { class: "form", onsubmit: (e) => e.preventDefault() },
-    codes.map((c) => h("label", { class: c === focus ? "focus" : "" }, GRID_LABEL[c] || label(c), fieldInput(c, val(p, c)))));
+    codes.map((c) => h("label", { class: c === focus ? "focus" : "" }, GRID_LABEL[c] || label(c), inputs[c])));
   const err = h("div", { class: "formerr" });
+  await fillSchools(val(p, "destination_country"), val(p, "school"));
+  await fillPrograms(val(p, "school"), val(p, "course"));
   const save = async () => {
     const set = {};
     const clear = [];
