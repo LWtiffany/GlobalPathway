@@ -77,6 +77,29 @@ a{color:#8b7140}
 .row>span:first-child{color:#9a917f;flex:none}
 .row>span:last-child{text-align:right;min-width:0}
 .p .why{font-size:11px;color:#a59c8a;line-height:1.6;margin-top:8px}
+.credit-advice{background:#fffdfa}
+.cc-market{font-size:10.5px;color:#8e1b24;letter-spacing:.4px;margin:2px 0 8px}
+.cc-intro,.cc-empty{font-size:12px;line-height:1.6;color:#6f675a;margin:0 0 11px}
+.cc-option{padding:10px 0;min-width:0}
+.cc-option.featured{background:#fbf7f0;border-left:3px solid #8e1b24;padding:12px 13px;margin:0 -3px}
+.cc-label{font-size:10px;color:#8e1b24;letter-spacing:1px;margin-bottom:4px}
+.cc-name{font-size:14px;font-weight:600;line-height:1.4;overflow-wrap:anywhere}
+.cc-reason{font-size:12px;color:#4c5f4e;line-height:1.55;margin:7px 0 9px}
+.cc-fact{display:grid;grid-template-columns:68px minmax(0,1fr);gap:8px;border-top:1px solid #eee7da;padding-top:7px;margin-top:7px;font-size:11.5px;line-height:1.5}
+.cc-fact>span:first-child{color:#8a8170}
+.cc-fact strong{font-weight:600;color:#22201c;overflow-wrap:anywhere}
+.cc-fact>span:last-child{overflow-wrap:anywhere}
+.cc-others{border-top:1px solid #e9e0d2;margin-top:12px}
+.cc-section{font-size:10.5px;color:#8a8170;letter-spacing:1px;margin-top:10px}
+.cc-secondary+.cc-secondary{border-top:1px solid #eee7da}
+.cc-secondary .cc-option{padding:9px 0}
+.cc-secondary .cc-name{font-size:12.5px}
+.cc-specific,.cc-extra{font-size:11px;line-height:1.55;color:#8a8170;margin:0 0 8px}
+.cc-apply{display:flex;flex-direction:column;gap:5px;background:#f8f4ec;border-left:2px solid #b89b6a;padding:10px 11px;margin-top:12px;font-size:11.5px;line-height:1.55;color:#5e574a}
+.cc-apply b{font-size:10.5px;color:#8b7140;letter-spacing:.5px}
+.cc-meta{font-size:10px;color:#a59c8a;line-height:1.5;margin-top:11px;border-top:1px solid #f1ece3;padding-top:8px}
+@media(max-width:1600px){.plan{grid-template-columns:repeat(3,minmax(0,1fr))}.credit-advice{grid-column:1/-1;border-top:1px solid #ece6db}}
+@media(max-width:900px){.plan{grid-template-columns:1fr}.p{border-right:0;border-bottom:1px solid #ece6db}.p:last-child{border-bottom:0}.credit-advice{grid-column:auto}}
 .cite{font-size:10px;color:#8b7140;border:none;border-bottom:1px dotted #b89b6a;margin-left:5px;background:none;padding:0;cursor:pointer;letter-spacing:.3px}
 .cite:hover{color:#8e1b24;border-bottom-color:#8e1b24}
 

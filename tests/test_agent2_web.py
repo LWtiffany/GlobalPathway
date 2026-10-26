@@ -1,5 +1,8 @@
 """前端支撑接口：档案列表、每档一会话、四类建议、纠错反馈、Plan 待办、字段目录、静态页面。"""
 import json
+from pathlib import Path
+import shutil
+import subprocess
 import unittest
 
 from agent2 import api
@@ -102,6 +105,67 @@ class StaticFileCases(unittest.TestCase):
         send = source.split("async function send", 1)[1]
         self.assertIn("confirmed_fields", send)
         self.assertIn("expected_profile_version", send)
+
+    def test_credit_card_plan_reads_saved_advice(self):
+        source = api.static_file("/app.js")[0].decode("utf-8")
+        self.assertIn('if (t.key === "credit_card") return creditCardCard(t);', source)
+        card = source.split("function creditCardCard(t)", 1)[1].split("function sourceChips", 1)[0]
+        self.assertIn("S.advice.credit_card", card)
+        self.assertIn("savedCardDisplay(a)", card)
+        self.assertIn("application_note", card)
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node.js 验证前端历史建议兼容逻辑")
+    def test_credit_card_plan_recovers_names_and_fees_from_matching_answer(self):
+        app_path = Path(__file__).resolve().parents[1] / "agent2" / "web" / "app.js"
+        script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const helpers = source.slice(source.indexOf('function cardsFromAnswerSteps('),
+  source.indexOf('function sourceChips('));
+const context = { S: { messages: [
+  { role: 'assistant', message_id: 'unrelated', body: { answer: { steps: ['主推荐：其他卡', '年费：1 美元'] } } },
+  { role: 'assistant', message_id: 'saved-answer', body: { answer: { steps: [
+    '汇丰美国发行的卡', '申请须有美国汇丰卓越理财支票账户。',
+    '主推荐：HSBC Elite World Elite Mastercard', '为什么适合你：适合旅行消费。', '年费：495 美元',
+    '其他选择：HSBC Premier World Mastercard', '推荐理由：年费较低。', '年费：95 美元'
+  ] } } }
+] , advice: {}, flash: [] },
+  h: (_tag, _attrs, ...kids) => ({ kids }),
+  cardHead: (topic, status) => ({ kids: [topic.title, status] }),
+  fmtClock: () => '20:36' };
+vm.runInNewContext(helpers, context);
+const advice = { source_message_id: 'saved-answer', payload: { summary: '旧建议', market: 'US' },
+  updated_at: '2026-10-26T20:36:00' };
+const result = context.savedCardDisplay(advice);
+const flatten = (node) => typeof node === 'string' ? node : !node ? '' :
+  Array.isArray(node) ? node.map(flatten).join(' ') : flatten(node.kids || []);
+context.S.advice.credit_card = advice;
+const rendered = flatten(context.creditCardCard({ key: 'credit_card', title: '信用卡建议' }));
+advice.payload.preview = true;
+const preview = flatten(context.creditCardCard({ key: 'credit_card', title: '信用卡建议' }));
+advice.payload.preview = false;
+advice.payload.cards = result.cards.map((card) => ({ ...card, role: 'candidate' }));
+const comparison = flatten(context.creditCardCard({ key: 'credit_card', title: '信用卡建议' }));
+process.stdout.write(JSON.stringify({ result, rendered, preview, comparison }));
+"""
+        result = subprocess.run(["node", "-e", script, str(app_path)], check=True,
+                                capture_output=True, text=True, encoding="utf-8")
+        output = json.loads(result.stdout)
+        cards = output["result"]["cards"]
+        self.assertEqual(["HSBC Elite World Elite Mastercard", "HSBC Premier World Mastercard"],
+                         [card["product_name"] for card in cards])
+        self.assertEqual(["495 美元", "95 美元"], [card["fee_text"] for card in cards])
+        self.assertEqual("申请须有美国汇丰卓越理财支票账户。", cards[0]["application_note"])
+        self.assertIn("首选推荐", output["rendered"])
+        self.assertIn("适合旅行消费。", output["rendered"])
+        self.assertIn("年费较低。", output["rendered"])
+        self.assertIn("95 美元", output["rendered"])
+        self.assertIn("申请前请确认", output["rendered"])
+        self.assertIn("提前了解", output["preview"])
+        self.assertNotIn("首选推荐", output["preview"])
+        self.assertIn("供你比较", output["comparison"])
+        self.assertNotIn("已推荐", output["comparison"])
 
     def test_paths_outside_web_root_never_escape(self):
         index = api.static_file("/")[0]

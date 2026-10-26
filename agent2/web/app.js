@@ -492,8 +492,109 @@ const empty = () => h("span", { class: "e" }, "—");
 
 function planCard(t) {
   if (t.key === "visa") return visaCard(t);
+  if (t.key === "credit_card") return creditCardCard(t);
   return h("div", { class: "p", id: "card-" + t.key }, cardHead(t, h("span", { class: "st" }, "待补充")),
     t.rows.map((r) => row(r, empty())));
+}
+
+function cardsFromAnswerSteps(steps) {
+  const cards = [];
+  let marketRequirement = "";
+  (steps || []).forEach((line, index) => {
+    if (line.endsWith("发行的卡") && steps[index + 1]) marketRequirement = steps[index + 1];
+    const colon = line.indexOf("：");
+    const label = colon >= 0 ? line.slice(0, colon) : "";
+    const value = colon >= 0 ? line.slice(colon + 1).trim() : "";
+    const roles = { 主推荐: "primary", 场景搭配: "supplement", 其他选择: "alternative" };
+    const network = line.match(/^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$/);
+    if (roles[label]) cards.push({ product_name: value, role: roles[label] });
+    else if (network) cards.push({ product_name: network[1], role: "candidate" });
+    else if (cards.length && ["为什么适合你", "推荐理由", "年费", "主要权益", "申请前提", "申请限制"].includes(label)) {
+      const field = { 为什么适合你: "reason_text", 推荐理由: "reason_text", 年费: "fee_text",
+        主要权益: "benefits_text", 申请前提: "application_note", 申请限制: "application_note" }[label];
+      cards[cards.length - 1][field] = value;
+    }
+  });
+  cards.forEach((card) => { if (!card.application_note && marketRequirement) card.application_note = marketRequirement; });
+  return cards;
+}
+
+function savedCardDisplay(advice) {
+  const pl = advice.payload || {};
+  const source = S.messages.find((message) =>
+    message.role === "assistant" && message.message_id === advice.source_message_id);
+  const steps = source?.body?.answer?.steps || [];
+  const recovered = cardsFromAnswerSteps(steps);
+  const saved = Array.isArray(pl.cards) ? pl.cards : [];
+  const fromAnswer = new Map(recovered.map((card) => [card.product_name, card]));
+  const cards = saved.length ? saved.map((card) => {
+    const match = fromAnswer.get(card.product_name) || {};
+    const merged = { ...match, ...card };
+    for (const field of ["reason_text", "fee_text", "benefits_text", "application_note"])
+      if (!merged[field] && match[field]) merged[field] = match[field];
+    return merged;
+  }) : recovered;
+  return { cards,
+    preview: !!pl.preview || steps.some((step) => step.startsWith("提前了解：")) };
+}
+
+function cardMarketLabel(market) {
+  return { US: "美国", UK: "英国", HK: "香港", "CN-HK": "香港" }[market] || "";
+}
+
+function cardAdviceOption(card, label, featured) {
+  return h("div", { class: "cc-option" + (featured ? " featured" : "") },
+    h("div", { class: "cc-label" }, label),
+    h("div", { class: "cc-name" }, card.product_name),
+    card.reason_text ? h("p", { class: "cc-reason" }, card.reason_text) : null,
+    h("div", { class: "cc-fact" }, h("span", null, "年费及费用"),
+      h("strong", null, card.fee_text || "请以官网最新条款为准")),
+    card.benefits_text ? h("div", { class: "cc-fact" }, h("span", null, "主要权益"),
+      h("span", null, card.benefits_text)) : null);
+}
+
+function creditCardCard(t) {
+  const a = S.advice.credit_card;
+  const flash = S.flash.includes("credit_card") ? " flash" : "";
+  const base = "p credit-advice" + flash;
+  if (!a) return h("div", { class: base, id: "card-credit_card" },
+    cardHead(t, h("span", { class: "st" }, "未开始")),
+    h("p", { class: "cc-empty" }, "还没有信用卡建议。你可以在下方告诉我申请地区，我们会从该地区发行的卡片开始筛选。"));
+
+  const pl = a.payload || {};
+  const display = savedCardDisplay(a);
+  const cards = display.cards;
+  const preview = display.preview || cards.some((card) => card.preview);
+  const hasPrimary = cards.some((card) => card.role === "primary");
+  const state = !cards.length ? "当前建议" : preview ? "提前了解" :
+    pl.result_status === "needs_verification" ? "待核实" : hasPrimary ? "已推荐" : "供你比较";
+  const stateClass = preview || pl.result_status === "needs_verification" ? "warn" :
+    hasPrimary ? "ok" : "";
+  const first = cards.find((card) => card.role === "primary") || cards[0];
+  const others = cards.filter((card) => card !== first);
+  const market = cardMarketLabel(pl.market || first?.market);
+  const condition = first?.application_note || "申请资格及最终批核以当地汇丰的官方规定为准。";
+  const intro = preview ? "可以先比较产品权益和费用，申请前提请看下方。" :
+    pl.result_status === "needs_verification" ? "以下产品可供参考，申请条件还需要进一步核实。" :
+    hasPrimary ? "先看最贴合你需求的一张，再比较其他选择。" :
+      "这几张卡各有侧重，可以按费用和权益比较。";
+  return h("div", { class: base, id: "card-credit_card" },
+    cardHead(t, h("span", { class: "st " + stateClass }, state)),
+    market ? h("div", { class: "cc-market" }, `仅比较${market}发行的信用卡`) : null,
+    cards.length ? [
+      h("p", { class: "cc-intro" }, intro),
+      cardAdviceOption(first, preview ? "优先了解" : hasPrimary ? "首选推荐" : "方案一 · 供比较", hasPrimary),
+      others.length ? h("div", { class: "cc-others" },
+        h("div", { class: "cc-section" }, hasPrimary ? "其他选择" : "一起比较"),
+        others.slice(0, 2).map((card, index) => h("div", { class: "cc-secondary" },
+          cardAdviceOption(card, card.role === "supplement" ? "场景搭配" :
+            hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`, false),
+          card.application_note && card.application_note !== condition ?
+            h("p", { class: "cc-specific" }, `申请前提：${card.application_note}`) : null)),
+        others.length > 2 ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`) : null) : null,
+      h("div", { class: "cc-apply" }, h("b", null, "申请前请确认"), h("span", null, condition)),
+    ] : h("p", { class: "cc-empty" }, pl.summary || "目前还没有可展示的具体卡片。"),
+    h("div", { class: "cc-meta" }, `方案更新于 ${fmtClock(a.updated_at)} · 最终以银行审核及最新条款为准`));
 }
 
 function sourceChips(citations) {

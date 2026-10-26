@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import sqlite3
 import tempfile
@@ -14,6 +15,7 @@ from agent2.orchestration.domains.credit_card_engine import (
     assess_eligibility, needs_asset_information, recommend, score_product,
 )
 from agent2.orchestration.domains.credit_card_repository import CreditCardRepositoryError
+from agent2.orchestration.legacy_adapter import card_summaries_from_steps
 from agent2.orchestration.domains.credit_card_models import (
     CardBenefit, CardBorrowingTerm, CardCatalogRead, CardFee, CreditCardProduct, EligibilityRule,
     RewardRule,
@@ -1185,6 +1187,74 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
 
     def ask(self, text, key):
         return self.service.post_message(self.user, self.conversation, text, key)
+
+    def test_saved_study_card_advice_contains_cards_and_groups(self):
+        local = product("us_premier", "travel", "0.02").model_copy(update={
+            "market": "US", "product_name": "HSBC Premier World Mastercard",
+            "eligibility_rules": [EligibilityRule(
+                rule_id="us-account", rule_type="banking_relationship", operator="eq",
+                value_text="us_premier_checking", required=True)],
+            "fees": [CardFee(fee_id="us-fee", fee_type="annual_fee", amount=Decimal("95"),
+                             currency="USD", source_url="https://example.com/us",
+                             last_verified_at=NOW)],
+        })
+        self.service.v2_workflow = Agent2Service(
+            self.store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,
+            credit_card_repository=MarketRepository({"US": [local]}),
+            llm_components=LlmComponents()).v2_workflow
+        profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
+        self.service.patch_profile(self.user, profile_id, set_fields={
+            "destination_country": "US", "application_region": "US",
+            "us_hsbc_account_path": "existing_premier_checking", "applicant_age_band": "18_or_over"},
+            expected_version=1)
+
+        answer = self.ask("美国信用卡推荐", "us-saved-advice")
+        self.assertEqual("answered", answer.status)
+        advice = self.service.get_advice(self.user, profile_id, "credit_card")["payload"]
+        self.assertEqual("US", advice["market"])
+        self.assertEqual("HSBC Premier World Mastercard", advice["cards"][0]["product_name"])
+        self.assertIn("95 美元", advice["cards"][0]["fee_text"])
+        self.assertEqual("us_premier", advice["groups"][0]["cards"][0]["card_id"])
+
+    def test_older_saved_advice_recovers_cards_from_source_message(self):
+        profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
+        steps = ["汇丰美国发行的卡", "申请仍须通过银行审批。",
+                 "主推荐：HSBC Elite World Elite Mastercard",
+                 "为什么适合你：更看重旅行权益。", "年费：495 美元",
+                 "主要权益：机场贵宾室礼遇", "其他选择：HSBC Premier World Mastercard",
+                 "推荐理由：更希望控制年费时可比较。", "年费：95 美元"]
+        with self.store.transaction() as db:
+            db.execute("INSERT INTO message_index VALUES (?,?,?,?,?,?,?,?,?)",
+                       ("legacy-card-answer", self.conversation, 1, "assistant", None, None,
+                        json.dumps({"status": "answered", "answer": {"steps": steps}}),
+                        "delivered", NOW.isoformat()))
+            old_payload = json.dumps({"summary": "已推荐两张美国信用卡", "recommendations": {},
+                                      "market": "US"})
+            db.execute("INSERT INTO advice_current VALUES (?,?,?,?,?,'current',?)",
+                       (profile_id, "credit_card", 1, "legacy-card-answer", old_payload,
+                        NOW.isoformat()))
+
+        advice = self.service.list_advice(self.user, profile_id)["advice"]["credit_card"]["payload"]
+        self.assertEqual(["HSBC Elite World Elite Mastercard", "HSBC Premier World Mastercard"],
+                         [card["product_name"] for card in advice["cards"]])
+        self.assertEqual("495 美元", advice["cards"][0]["fee_text"])
+        self.assertEqual("更看重旅行权益。", advice["cards"][0]["reason_text"])
+        self.assertEqual("更希望控制年费时可比较。", advice["cards"][1]["reason_text"])
+        persisted = self.store.one("SELECT payload_json FROM advice_current WHERE profile_id=? AND topic=?",
+                                   (profile_id, "credit_card"))
+        self.assertNotIn("cards", json.loads(persisted["payload_json"]))
+
+    def test_preview_card_summary_keeps_pending_application_condition(self):
+        cards = card_summaries_from_steps(
+            ["汇丰英国发行的卡", "英国学生卡须先开立学生账户。",
+             "HSBC Student Credit Card（万事达卡）", "年费：免年费",
+             "申请前提：先开立汇丰英国学生账户；之后由银行审批"],
+            [{"market": "UK", "role": "preview", "cards": [{
+                "card_id": "student", "product_name": "HSBC Student Credit Card",
+                "eligibility": "unknown"}]}])
+        self.assertEqual("student", cards[0]["card_id"])
+        self.assertTrue(cards[0]["preview"])
+        self.assertIn("先开立汇丰英国学生账户", cards[0]["application_note"])
 
     def test_free_text_cannot_bypass_structured_follow_up(self):
         first = self.ask("想申请香港信用卡", "m1")

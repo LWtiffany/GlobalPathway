@@ -13,7 +13,7 @@ from .models import AnswerResult, Profile, ProfileChangeProposal, ProfileField
 from .intent import classify
 from .llm import build_llm_components
 from .orchestration import build_default_workflow
-from .orchestration.legacy_adapter import run_credit_card
+from .orchestration.legacy_adapter import card_summaries_from_steps, run_credit_card
 from .runner import Agent2Runner
 from .store import dumps
 
@@ -569,6 +569,7 @@ class Agent2Service:
         if not row:
             raise not_found("建议")
         row["payload"] = json.loads(row.pop("payload_json"))
+        self._enrich_legacy_card_advice(row)
         return row
 
     def list_advice(self, user_id, profile_id):
@@ -576,7 +577,22 @@ class Agent2Service:
         rows = self.store.all("SELECT * FROM advice_current WHERE profile_id=?", (profile_id,))
         for row in rows:
             row["payload"] = json.loads(row.pop("payload_json"))
+            self._enrich_legacy_card_advice(row)
         return {"profile_id": profile_id, "advice": {r["topic"]: r for r in rows}}
+
+    def _enrich_legacy_card_advice(self, row):
+        """Render older saved card advice without rewriting the user's database."""
+        if row["topic"] != "credit_card" or "cards" in row["payload"]:
+            return
+        source = self.store.one("SELECT body_json FROM message_index WHERE message_id=?",
+                                (row["source_message_id"],))
+        if not source:
+            return
+        body = json.loads(source["body_json"])
+        steps = body.get("answer", {}).get("steps", [])
+        row["payload"]["cards"] = card_summaries_from_steps(steps)
+        row["payload"]["result_status"] = body.get("status", "answered")
+        row["payload"]["preview"] = any(step.startswith("提前了解：") for step in steps)
 
     # ---------- feedback ----------
 
