@@ -7,7 +7,7 @@ from decimal import Decimal
 from agent2.models import AnswerBody, FollowUpQuestion, Notice
 
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
-from .credit_card_engine import assess_eligibility, needs_asset_information, recommend
+from .credit_card_engine import SCENARIO_RULES, assess_eligibility, needs_asset_information, recommend
 from .credit_card_models import CardCatalogRead, CreditCardRecommendationSet
 from .credit_card_repository import (CreditCardRepository, CreditCardRepositoryError,
                                      RdsCreditCardRepository)
@@ -103,14 +103,10 @@ QUESTION_OPTIONS = {
          "label": "暂时没有，也不考虑开美国汇丰账户"},
     ],
     "uk_hsbc_account_path": [
-        {"value": "student_account",
-         "label": "已有（或确定会开）汇丰英国学生账户"},
         {"value": "premier_account",
-         "label": "已有汇丰英国 Premier / Private Banking 账户"},
+         "label": "是，已有英国 HSBC Premier / Private Banking"},
         {"value": "plan_to_open",
-         "label": "到英国后计划先开学生或 Premier 账户，再申请信用卡"},
-        {"value": "not_applicable",
-         "label": "暂时没有，也不考虑开汇丰英国账户"},
+         "label": "否，优先看学生卡（需先开英国学生账户）"},
     ],
     "hsbc_relationship_balance_band": [
         {"value": "under_100k", "label": "少于 HK$100,000"},
@@ -149,9 +145,8 @@ QUESTION_OPTIONS = {
                            {"value": "tuition", "label": "学费"},
                            {"value": "retail", "label": "日常零售"}],
     "study_spending_scenarios": [
-        {"value": "overseas", "label": "留学地日常消费"},
-        {"value": "tuition", "label": "学费 / 学校缴费"},
-        {"value": "travel", "label": "旅行 / 往返机票"},
+        {"value": "groceries", "label": "超市 / 日常采购"},
+        {"value": "travel", "label": "旅行 / 机票 / 贵宾室权益"},
         {"value": "dining", "label": "餐饮"},
         {"value": "online", "label": "网购"},
         {"value": "retail", "label": "日常零售"},
@@ -177,20 +172,18 @@ QUESTION_OPTIONS = {
 }
 
 
-# Study destination → HSBC cards issued in that market, plus HSBC Hong Kong.
-# The two groups are ranked apart; HKD net value is never compared with USD or GBP.
-STUDY_MARKETS = {"UK": ("UK", "CN-HK"), "US": ("US", "CN-HK")}
+# Study destination → HSBC cards issued in that market only. Products from
+# different jurisdictions are never mixed into one recommendation.
+STUDY_MARKETS = {"UK": ("UK",), "US": ("US",)}
 # Profile destination_country can stand in for application_region when it is a
 # known card market (including Hong Kong — do not re-ask where they study).
 DESTINATION_AS_REGION = frozenset({"UK", "US", "CN-HK"})
 
 GROUP_TITLES = {
-    "UK": "优先：汇丰英国发行的卡",
-    "US": "优先：汇丰美国发行的卡",
+    "UK": "汇丰英国发行的卡",
+    "US": "汇丰美国发行的卡",
     "CN-HK": "汇丰香港发行的卡",
 }
-HK_BACKUP_TITLE = "备用：汇丰香港发行的卡（获批可能较难）"
-
 # Official eligibility, stated as a reminder. Unmet prerequisites do not drop the card.
 PREREQUISITES = {
     "US": (
@@ -236,8 +229,7 @@ class CreditCardWorkflow:
                 missing.append("applicant_age_band")
             prompts = {
                 "application_region": (
-                    "你准备去哪里留学？去英国或美国时，会优先推荐汇丰当地卡，"
-                    "并另列香港卡作备用（非香港居民获批可能较难）。"
+                    "你准备去哪里留学？系统只会推荐你所选地区发行的信用卡。"
                 ),
                 "applicant_age_band": "你目前是否已满 18 岁？",
             }
@@ -498,7 +490,7 @@ class CreditCardWorkflow:
         )
 
     async def _run_study(self, task, request, facts, extracted, basis):
-        """UK/US study path: local cards first; HK only as low-approval backup.
+        """UK/US study path: recommend cards issued in the selected market only.
 
         Do not reuse Hong Kong income / Premier TRB / designated-school questions.
         """
@@ -509,20 +501,12 @@ class CreditCardWorkflow:
             return self._repository_unavailable(task, extracted, basis)
         local_catalog = next((item for market, item in catalogs if market == region), None)
         if local_catalog is None or not local_catalog.products:
-            # Still allow HK backup-only if local shelf empty.
             combined = self._combined(catalogs)
             if not combined.products:
                 return self._empty_catalog(task, combined, extracted, basis)
 
-        if facts.get("applicant_age") is None and facts.get("applicant_age_band") is None:
-            return self._needs_input(
-                task, request, extracted, basis, ["applicant_age_band"],
-                {"applicant_age_band": "你目前是否已满 18 岁？当地汇丰信用卡通常要求年满 18 岁。"},
-                QUESTION_OPTIONS,
-            )
-
         account_field = "us_hsbc_account_path" if region == "US" else "uk_hsbc_account_path"
-        if facts.get(account_field) is None:
+        if region == "UK" and facts.get(account_field) is None:
             # Map a generic Premier flag onto the local path when present; otherwise ask.
             if facts.get("premier_relationship") is True:
                 inferred = ("existing_premier_checking" if region == "US" else "premier_account")
@@ -536,34 +520,30 @@ class CreditCardWorkflow:
                         "（内地或香港的 Premier 不算）。你目前属于哪种情况？"
                     ),
                     "uk_hsbc_account_path": (
-                        "汇丰英国学生卡一般须持有汇丰英国学生账户；Premier 卡须持有"
-                        "汇丰英国 Premier / Private Banking。你目前属于哪种情况？"
+                        "你是否已有英国 HSBC Premier 或 Private Banking 账户？"
                     ),
                 }
                 return self._needs_input(
                     task, request, extracted, basis, [account_field], prompts, QUESTION_OPTIONS)
 
-        if not facts.get("spending_scenarios"):
+        # Without UK Premier, lead with the Student Card and disclose that a
+        # UK Student Bank Account must be opened first. No second question can
+        # improve that recommendation.
+        if region == "UK" and facts.get(account_field) in {
+                "student_account", "plan_to_open", "not_applicable"}:
+            facts = {**facts, "spending_scenarios": ["retail"]}
+        elif not facts.get("spending_scenarios"):
             options = dict(QUESTION_OPTIONS)
             options["spending_scenarios"] = QUESTION_OPTIONS["study_spending_scenarios"]
-            return self._needs_input(
+            result = self._needs_input(
                 task, request, extracted, basis, ["spending_scenarios"],
                 {"spending_scenarios": (
-                    "留学期间你最主要的两到三个消费场景是什么？"
-                    "例如留学地日常消费、学费、旅行或网购。"
+                    "你最看重哪类用途？请选 1–2 项，这会直接决定卡片排序。"
                 )},
                 options,
             )
-
-        if not facts.get("reward_preference"):
-            return self._needs_input(
-                task, request, extracted, basis, ["reward_preference"],
-                {"reward_preference": (
-                    "当地卡与香港备用卡会分开列出。你更偏好现金回赠、积分、航空里程，"
-                    "还是没有偏好？"
-                )},
-                QUESTION_OPTIONS,
-            )
+            result.follow_up_questions[0].max_selections = 2
+            return result
 
         scenarios = facts["spending_scenarios"] if isinstance(facts["spending_scenarios"], list) else \
             [item for item in str(facts["spending_scenarios"]).split(",") if item]
@@ -590,49 +570,26 @@ class CreditCardWorkflow:
         )
 
     def _study_answer(self, task, catalogs, facts, scenarios, extracted, basis):
-        """Local HSBC shelf first; Hong Kong only as a low-approval backup."""
+        """Recommend and rank the HSBC shelf from the selected market only."""
         steps, evidence, limitations = [], [], []
         groups = []
         local_products = []
         local_shown = []
         local_title = None
         region = facts["application_region"]
-        hk_resident = facts.get("hk_resident")
         for market, catalog in catalogs:
-            if market == "CN-HK":
-                continue
             local_title = GROUP_TITLES[market]
             steps.append(local_title)
             steps.append(PREREQUISITES[market])
             local_products = catalog.products
-            lines, local_shown = self._local_lines(catalog.products, facts)
+            lines, local_shown = self._local_lines(
+                catalog.products, facts, scenarios, facts.get("reward_preference", "points"), market)
             if not catalog.products:
                 steps.append("当地汇丰信用卡产品暂未就绪；申请前请到当地汇丰官网查看。")
             else:
                 steps.extend(lines)
             groups.append({"market": catalog.market, "role": "primary", "cards": local_shown})
             evidence.extend(product.official_url for product in catalog.products
-                            if product.official_url)
-
-        hk_catalog = next((item for market, item in catalogs if market == "CN-HK"), None)
-        hk_products = hk_catalog.products if hk_catalog else []
-        if hk_products:
-            steps.append(HK_BACKUP_TITLE)
-            steps.append(
-                "香港卡仅作备用参考，不与当地卡混排比较。"
-                + ("你是香港居民时，仍须满足各卡公开门槛。"
-                   if hk_resident is True else
-                   "你不是香港居民（或尚未确认）时，汇丰香港成文条件要求申请人一般为"
-                   "香港居民，获批几率很低，最终由银行个案审批。")
-            )
-            steps.append(PREREQUISITES["CN-HK"])
-            backup_facts = {**facts, "repayment_mode": facts.get("repayment_mode") or "full"}
-            if hk_resident is False or hk_resident is None:
-                backup_facts = {**backup_facts, "hk_resident": False}
-            backup_lines, hk_shown = self._hk_backup_lines(hk_products, backup_facts)
-            steps.extend(backup_lines)
-            groups.append({"market": "Hong Kong", "role": "backup", "cards": hk_shown})
-            evidence.extend(product.official_url for product in hk_products
                             if product.official_url)
 
         eligible_local = next(
@@ -643,28 +600,23 @@ class CreditCardWorkflow:
         if eligible_local:
             summary = (
                 f"留学{ {'UK': '英国', 'US': '美国'}.get(region, region) }优先考虑当地汇丰卡，"
-                f"主推 {eligible_local}；香港卡仅作备用，获批可能较难。"
+                f"主推 {eligible_local}。"
             )
         elif local_products:
             summary = (
                 f"留学{ {'UK': '英国', 'US': '美国'}.get(region, region) }优先列出汇丰当地卡；"
-                "若尚未具备当地账户条件，下面仍供了解，并另附香港卡作备用（获批可能较难）。"
+                "若尚未具备当地账户条件，下面仍供了解。"
             )
         else:
-            summary = "当地汇丰卡资料暂缺；下列香港卡仅作备用参考，获批可能较难。"
+            summary = "所选地区的汇丰信用卡资料暂缺。"
 
         limitations.append(
-            "优先比较汇丰当地发行的卡；香港卡只作备用，港币费用不与美元或英镑混排。")
-        if hk_products and hk_resident is not True:
-            limitations.insert(0, (
-                "备用香港卡：非香港居民获批几率很低，不代表现在可以提交或获批，"
-                "最终由银行审批。"
-            ))
+            "结果仅包含所选申请地区发行的信用卡，不混入其他地区产品。")
         limitations.append("未满足当地申请条件的卡仅供了解，不代表现在可以提交或获批。")
         limitations.append("迎新礼遇未计入年度净值，申请前请以官网最新条款为准。")
 
         now = self.clock()
-        ready_products = local_products or hk_products
+        ready_products = local_products
         product_data_ready = bool(ready_products) and all(
             product.official_url
             and product.last_verified_at
@@ -690,53 +642,42 @@ class CreditCardWorkflow:
             observed_facts=extracted, observed_basis=basis,
         )
 
-    def _hk_backup_lines(self, products, facts):
-        """List Hong Kong cards as backup without requiring a full HK interview."""
-        free = []
-        paid = []
-        for product in products:
-            annual = next((fee for fee in product.fees if fee.fee_type == "annual_fee"), None)
-            (free if annual is not None and annual.amount == 0 else paid).append(product)
-        ordered = free + paid
-        lines, shown = [], []
-        for product in ordered[:5]:
-            assessment = assess_eligibility(product, facts)
-            # Force backup disclosure for non-residents even when residency was not asked.
-            if facts.get("hk_resident") is not True:
-                assessment = assessment.model_copy(update={
-                    "low_approval_chance": True,
-                    "reasons": list(dict.fromkeys(
-                        [*assessment.reasons, "非香港居民：备用港卡，获批几率很低"])),
-                })
-            card_lines = self._plain_card_lines(product, assessment)
-            # Relabel restriction for backup context.
-            if assessment.low_approval_chance:
-                card_lines = [
-                    ("申请限制：备用港卡，非香港居民获批几率很低，需银行个案审批"
-                     if line.startswith("申请限制：") else line)
-                    for line in card_lines
-                ]
-                if not any(line.startswith("申请限制：") for line in card_lines):
-                    card_lines.append(
-                        "申请限制：备用港卡，非香港居民获批几率很低，需银行个案审批")
-            lines.extend(card_lines)
-            shown.append({
-                "card_id": product.card_id,
-                "product_name": product.product_name,
-                "eligibility": assessment.status,
-                "role": "backup",
-                "reasons": assessment.reasons,
-            })
-        if free and len(ordered) > len(free):
-            lines.append("其他免年费备选：" + "、".join(p.product_name for p in free
-                                                     if p not in ordered[:5]))
-        return lines, shown
-
     @staticmethod
-    def _local_lines(products, facts):
+    def _local_lines(products, facts, scenarios, preference, market):
+        """Rank one local-market shelf without comparing values across currencies.
+
+        Eligibility remains the primary ordering key. Within the same eligibility
+        tier, prefer products whose reward rules cover the user's ordered spending
+        scenarios, then honour an explicit points/miles/cashback preference.
+        """
+        scenario_weights = {
+            scenario: len(scenarios) - index
+            for index, scenario in enumerate(scenarios)
+        }
+
+        def fit(product):
+            score = 0
+            if market == "UK":
+                premier = facts.get("uk_hsbc_account_path") == "premier_account"
+                if (premier and product.card_tier in {"Premier", "World Elite"}
+                        or not premier and product.card_tier == "Student"):
+                    score += 100
+            for scenario, weight in scenario_weights.items():
+                categories = SCENARIO_RULES.get(scenario, {scenario})
+                if any(rule.spend_category in categories for rule in product.reward_rules):
+                    score += weight
+            if preference != "no_preference" and any(
+                    rule.reward_type == preference for rule in product.reward_rules):
+                score += len(scenarios) + 1
+            return score
+
         ranked = sorted(
             ((assess_eligibility(product, facts), product) for product in products),
-            key=lambda item: (_STATUS_ORDER.get(item[0].status, 9), item[1].product_name),
+            key=lambda item: (
+                _STATUS_ORDER.get(item[0].status, 9),
+                -fit(item[1]),
+                item[1].product_name,
+            ),
         )
         lines, shown = [], []
         for assessment, product in ranked:
@@ -783,7 +724,7 @@ class CreditCardWorkflow:
         if assessment.status == "ineligible":
             return "目前不符合该卡公开申请条件"
         if assessment.status == "unknown":
-            return "申请资格资料尚不完整，需补全后再判断"
+            return "申请时须满足官网列明的年龄、居住地及当地汇丰账户条件"
         return None
 
     @staticmethod

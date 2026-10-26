@@ -132,7 +132,7 @@ FIELDS = {
                        "ask_repayment_mode", "你通常会每月全额还款，还是可能分期或保留余额？"),
     "spending_scenarios": ("主要消费场景",
                            _multi_enum("online", "dining", "travel", "overseas", "mainland_china",
-                                       "tuition", "retail", max_items=3),
+                                       "tuition", "retail", "groceries", max_items=3),
                            "ask_spending_scenarios", "请选择最主要的两到三个消费场景。"),
     "reward_preference": ("奖励偏好", _enum("cashback", "points", "miles", "no_preference"),
                           "ask_reward_preference", "你更偏好返现、积分、里程，还是都可以？"),
@@ -224,7 +224,8 @@ OPTION_LABELS = {
     },
     "spending_scenarios": {"online": "网购", "dining": "餐饮", "travel": "旅行",
                            "overseas": "境外消费", "mainland_china": "内地消费",
-                           "tuition": "学费", "retail": "日常零售"},
+                            "tuition": "学费", "retail": "日常零售",
+                            "groceries": "超市 / 日常采购"},
     "applicant_residence": {"CN": "中国内地", "MO": "澳门", "TW": "台湾", "other": "其他地区"},
     "hk_sponsor": {"institution": "录取院校", "individual": "个人"},
 }

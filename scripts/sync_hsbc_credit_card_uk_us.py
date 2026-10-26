@@ -31,6 +31,18 @@ US_ELITE_URL = "https://www.us.hsbc.com/credit-cards/products/elite/"
 UK_STUDENT_URL = "https://www.hsbc.co.uk/credit-cards/products/student/"
 UK_PREMIER_URL = "https://www.hsbc.co.uk/credit-cards/products/premier/"
 UK_WORLD_ELITE_URL = "https://www.hsbc.co.uk/credit-cards/products/premier-world-elite/"
+UK_STUDENT_SUMMARY_URL = (
+    "https://www.hsbc.co.uk/content/dam/hsbc/gb/pdf/credit-cards/"
+    "summary-box-student-credit-card.pdf"
+)
+UK_PREMIER_SUMMARY_URL = (
+    "https://www.hsbc.co.uk/content/dam/hsbc/gb/pdf/premier/"
+    "premier-credit-card-summary-box.pdf"
+)
+UK_WORLD_ELITE_SUMMARY_URL = (
+    "https://www.hsbc.co.uk/content/dam/hsbc/gb/pdf/credit-cards/"
+    "summary-box-premier-world-elite-credit-card.pdf"
+)
 
 
 def sync():
@@ -90,6 +102,9 @@ def sync():
             ("fee_uk_student_annual", "hsbc_uk_student", "annual_fee",
              Decimal("0"), "GBP", None, "No annual fee",
              "primary card annual fee", UK_STUDENT_URL),
+            ("fee_uk_student_fx", "hsbc_uk_student", "foreign_transaction_fee",
+             None, None, Decimal("0.0299"), None,
+             "Non-sterling transaction fee 2.99%", UK_STUDENT_SUMMARY_URL),
             # UK Premier: £0, 2.99% non-sterling
             ("fee_uk_premier_annual", "hsbc_uk_premier", "annual_fee",
              Decimal("0"), "GBP", None, "No annual fee",
@@ -123,6 +138,13 @@ def sync():
             ("benefit_us_premier_streaming", "hsbc_us_premier_world", "other",
              "Streaming statement credit (up to $60 / year)", Decimal("60"), "year",
              "TV and radio streaming subscription credit", US_PREMIER_URL),
+            ("benefit_us_premier_instacart", "hsbc_us_premier_world", "other",
+             "Instacart+ benefits (up to $140 / year)", Decimal("140"), "year",
+             "Three free months for new members and monthly qualifying order credit",
+             US_PREMIER_URL),
+            ("benefit_us_premier_phone", "hsbc_us_premier_world", "other",
+             "Cell phone protection (up to $600 / claim)", Decimal("600"), None,
+             "Reimbursement when an eligible phone is stolen or damaged", US_PREMIER_URL),
             ("benefit_us_premier_points", "hsbc_us_premier_world", "other",
              "Rewards points with airline and hotel transfer partners", None, None,
              "3× gas/groceries, 2× travel, 1× other purchases", US_PREMIER_URL),
@@ -136,6 +158,9 @@ def sync():
              "Airport screening statement credit (up to $120 / 4.5 years)", None, None,
              "Global Entry, TSA PreCheck, CLEAR, or NEXUS application fee credit",
              US_ELITE_URL),
+            ("benefit_us_elite_rideshare", "hsbc_us_elite", "other",
+             "Taxi and rideshare credits (up to $120 / year)", Decimal("120"), "year",
+             "Up to $10 monthly statement credit for eligible rides", US_ELITE_URL),
             ("benefit_uk_student_support", "hsbc_uk_student", "other",
              "Lost/stolen card support and emergency cash advance", None, None,
              "Dedicated support for existing Student Bank Account holders",
@@ -189,12 +214,16 @@ def sync():
             ("hsbc_uk_student:account", "hsbc_uk_student",
              "banking_relationship", "eq", "uk_student_account", None, None, "hard",
              "Must hold an HSBC UK Student Bank Account.", UK_STUDENT_URL),
+            ("hsbc_uk_student:residency", "hsbc_uk_student", "other", "eq",
+             "uk_resident", None, None, "hard", "Must be a UK resident.", UK_STUDENT_URL),
             ("hsbc_uk_premier:age", "hsbc_uk_premier", "minimum_age", "gte",
              None, Decimal("18"), None, "hard",
              "Applicants must be over 18.", UK_PREMIER_URL),
             ("hsbc_uk_premier:premier", "hsbc_uk_premier",
              "banking_relationship", "eq", "uk_premier_account", None, None, "hard",
              "Must hold an HSBC UK Premier Account.", UK_PREMIER_URL),
+            ("hsbc_uk_premier:residency", "hsbc_uk_premier", "other", "eq",
+             "uk_resident", None, None, "hard", "Must be a UK resident.", UK_PREMIER_URL),
             ("hsbc_uk_premier_world_elite:age", "hsbc_uk_premier_world_elite",
              "minimum_age", "gte", None, Decimal("18"), None, "hard",
              "Applicants must be over 18.", UK_WORLD_ELITE_URL),
@@ -202,6 +231,9 @@ def sync():
              "banking_relationship", "eq", "uk_premier_account", None, None, "hard",
              "Must hold an HSBC UK Premier Account (or Private Banking).",
              UK_WORLD_ELITE_URL),
+            ("hsbc_uk_premier_world_elite:residency", "hsbc_uk_premier_world_elite",
+             "other", "eq", "uk_resident", None, None, "hard",
+             "Must be a UK resident.", UK_WORLD_ELITE_URL),
         ]
         for (rule_id, card_id, rule_type, operator, text, number, currency, path,
              description, source) in rules:
@@ -249,6 +281,86 @@ def sync():
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (reward_id, card_id, category, reward_type, points, description, url,
                  verified_at),
+            )
+
+        borrowing_terms = [
+            # UK Summary Boxes publish exact representative purchase/cash APRs
+            # and a maximum 56-day purchase grace period.
+            ("borrow_uk_student_purchase", "hsbc_uk_student", "purchase_apr",
+             Decimal("0.189"), None, 56, "GBP", False,
+             "Representative purchase APR 18.9% variable.", UK_STUDENT_SUMMARY_URL),
+            ("borrow_uk_student_cash", "hsbc_uk_student", "cash_advance_apr",
+             Decimal("0.236"), None, None, "GBP", False,
+             "Cash advance APR 23.6% variable; cash fee 2.99% (minimum GBP 3).",
+             UK_STUDENT_SUMMARY_URL),
+            ("borrow_uk_student_grace", "hsbc_uk_student", "interest_free_period",
+             None, None, 56, "GBP", False,
+             "Maximum 56 days on purchases when the transaction balance is paid in full on time.",
+             UK_STUDENT_SUMMARY_URL),
+            ("borrow_uk_student_instalment", "hsbc_uk_student", "spending_instalment",
+             None, None, None, "GBP", True,
+             "Instalment-plan fee is personalized and disclosed before the plan is taken.",
+             UK_STUDENT_SUMMARY_URL),
+            ("borrow_uk_premier_purchase", "hsbc_uk_premier", "purchase_apr",
+             Decimal("0.299"), None, 56, "GBP", False,
+             "Representative purchase APR 29.9% variable.", UK_PREMIER_SUMMARY_URL),
+            ("borrow_uk_premier_cash", "hsbc_uk_premier", "cash_advance_apr",
+             Decimal("0.299"), None, None, "GBP", False,
+             "Cash advance APR 29.9% variable; cash fee 2.99% (minimum GBP 3).",
+             UK_PREMIER_SUMMARY_URL),
+            ("borrow_uk_premier_grace", "hsbc_uk_premier", "interest_free_period",
+             None, None, 56, "GBP", False,
+             "Maximum 56 days on purchases when the transaction balance is paid in full on time.",
+             UK_PREMIER_SUMMARY_URL),
+            ("borrow_uk_premier_instalment", "hsbc_uk_premier", "spending_instalment",
+             None, None, None, "GBP", True,
+             "Instalment-plan fee is personalized and disclosed before the plan is taken.",
+             UK_PREMIER_SUMMARY_URL),
+            ("borrow_uk_we_purchase", "hsbc_uk_premier_world_elite", "purchase_apr",
+             Decimal("0.299"), None, 56, "GBP", False,
+             "Purchase APR 29.9% variable; representative APR including annual fee is 100.2%.",
+             UK_WORLD_ELITE_SUMMARY_URL),
+            ("borrow_uk_we_cash", "hsbc_uk_premier_world_elite", "cash_advance_apr",
+             Decimal("0.299"), None, None, "GBP", False,
+             "Cash advance APR 29.9% variable; cash fee 2.99% (minimum GBP 3).",
+             UK_WORLD_ELITE_SUMMARY_URL),
+            ("borrow_uk_we_grace", "hsbc_uk_premier_world_elite", "interest_free_period",
+             None, None, 56, "GBP", False,
+             "Maximum 56 days on purchases when the transaction balance is paid in full on time.",
+             UK_WORLD_ELITE_SUMMARY_URL),
+            ("borrow_uk_we_instalment", "hsbc_uk_premier_world_elite", "spending_instalment",
+             None, None, None, "GBP", True,
+             "Instalment-plan fee is personalized and disclosed before the plan is taken.",
+             UK_WORLD_ELITE_SUMMARY_URL),
+            # U.S. APRs are credit-dependent ranges. Keep apr NULL rather than
+            # turning one endpoint into a misleading single quoted rate.
+            ("borrow_us_premier_purchase", "hsbc_us_premier_world", "purchase_apr",
+             None, None, None, "USD", True,
+             "Variable purchase APR 20.24%-25.24%, credit-dependent; maximum APR 29.99%.",
+             US_PREMIER_URL),
+            ("borrow_us_premier_cash", "hsbc_us_premier_world", "cash_advance_apr",
+             Decimal("0.2924"), None, None, "USD", False,
+             "Variable cash APR 29.24%; transaction fee USD 10 or 5%, whichever is greater.",
+             US_PREMIER_URL),
+            ("borrow_us_elite_purchase", "hsbc_us_elite", "purchase_apr",
+             None, None, None, "USD", True,
+             "Variable purchase APR 19.99%-24.99%, credit-dependent; maximum APR 29.99%.",
+             US_ELITE_URL),
+            ("borrow_us_elite_cash", "hsbc_us_elite", "cash_advance_apr",
+             Decimal("0.2899"), None, None, "USD", False,
+             "Variable cash APR 28.99%; transaction fee USD 10 or 5%, whichever is greater.",
+             US_ELITE_URL),
+        ]
+        for (term_id, card_id, term_type, apr, monthly_fee, grace_days, currency,
+             personalized, description, url) in borrowing_terms:
+            connection.execute(
+                """INSERT INTO CARD_BORROWING_TERM
+                   (borrowing_term_id, card_id, term_type, apr, monthly_fee_rate,
+                    max_interest_free_days, currency, available, personalized_pricing,
+                    description, source_url, last_verified_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,TRUE,%s,%s,%s,%s)""",
+                (term_id, card_id, term_type, apr, monthly_fee, grace_days, currency,
+                 personalized, description, url, verified_at),
             )
 
         connection.commit()

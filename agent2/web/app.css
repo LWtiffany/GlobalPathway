@@ -129,8 +129,9 @@ a{color:#8b7140}
 .sub-h{font-size:11px;color:#8a8170;letter-spacing:1px;margin:10px 0 2px}
 .lim{margin:2px 0;padding-left:18px;color:#6f675a;font-size:12px}
 .card-rec{margin:4px 0 8px}
-.card-rec .card-sec{margin:14px 0 6px;font-weight:600;font-size:13px;color:#22201c;padding-bottom:4px;border-bottom:1px solid #efe8dc}
+.card-rec .card-sec{margin:14px 0 6px;font-weight:600;font-size:13px;color:#22201c;padding:7px 9px;border-left:3px solid #8e1b24;background:#f8f4ec;display:flex;align-items:center;gap:8px}
 .card-rec .card-sec:first-child{margin-top:4px}
+.card-rec .market-tag{font-size:10px;font-weight:400;letter-spacing:.5px;color:#8e1b24;border:1px solid #d9b4b7;padding:1px 5px;white-space:nowrap}
 .card-rec .card-note{font-size:12px;color:#6f675a;line-height:1.6;margin:0 0 8px}
 .card-rec .card-name{margin:10px 0 2px;font-weight:600;font-size:13px;color:#22201c}
 .card-rec .card-detail{font-size:12px;color:#5e574a;line-height:1.65;margin:0 0 2px;padding-left:2px}

@@ -600,7 +600,9 @@ function pendingSteps(k) {
 
 function suggestions() {
   const dest = valueLabel("destination_country", val(S.profile, "destination_country"));
-  return [`去${dest === "—" ? "留学" : dest}读书，签证需要准备哪些材料？`, "学费怎么汇？", "需要先开户吗？"];
+  const place = dest === "—" ? "留学" : dest;
+  return [`去${place}读书，签证需要准备哪些材料？`, "学费怎么汇？", "需要先开户吗？",
+    `去${place}留学，应该办哪张信用卡？`];
 }
 
 function drawChat({ keep } = {}) {
@@ -660,7 +662,12 @@ function renderAnswerSteps(steps) {
   // Card copy is not a procedure — do not number section titles as 1. 2. 3.
   const box = h("div", { class: "card-rec" });
   for (const s of steps) {
-    if (/^(优先|备用)?[：:]?汇丰.+发行的卡/.test(s)) box.append(h("div", { class: "card-sec" }, s));
+    if (/^(优先|备用)?[：:]?汇丰.+发行的卡/.test(s)) {
+      const market = s.includes("英国") ? "英国" : s.includes("美国") ? "美国" : "香港";
+      box.append(h("div", { class: "card-sec primary" },
+        h("span", { class: "market-tag" }, "申请地区"),
+        h("span", null, `${market}发行的卡`)));
+    }
     else if (/^(主推荐|补充卡|备选)：/.test(s)) box.append(h("div", { class: "card-name" }, s));
     else if (/^(年费|主要权益|申请限制)：/.test(s)) {
       const i = s.indexOf("：");

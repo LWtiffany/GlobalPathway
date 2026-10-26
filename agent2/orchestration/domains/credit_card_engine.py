@@ -11,12 +11,13 @@ SCENARIO_RULES = {
     # A selected-retail programme only applies to named merchants. It is not a
     # synonym for every online transaction.
     "online": {"online"},
-    "dining": {"dining_and_lifestyle", "travel_and_dining"},
-    "travel": {"travel_and_transport", "travel_and_dining", "overseas"},
+    "dining": {"dining", "dining_and_lifestyle", "travel_and_dining"},
+    "travel": {"travel", "travel_and_transport", "travel_and_dining", "overseas"},
     "overseas": {"overseas", "travel_and_transport", "travel_and_dining"},
     "mainland_china": {"mainland_china", "mainland_china_and_macau"},
     "tuition": {"tuition"},
     "retail": {"selected_retail"},
+    "groceries": {"gas_and_groceries"},
 }
 
 # HSBC Rewards of Your Choice offers one selected category.  The same 2.4% or
@@ -212,6 +213,13 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
                 }
             else:
                 passed = value is True
+        elif rule.rule_type == "other" and rule.value_text == "uk_resident":
+            # Selecting the UK market means the user is planning for the UK,
+            # not that UK residency has already been established. Keep this as
+            # a disclosed condition unless the profile explicitly confirms it.
+            confirmed = facts.get("uk_resident")
+            value, field = confirmed, "uk_resident"
+            passed = confirmed is True
         else:
             field = {"residency": "residency_status", "credit_assessment": "credit_history_band"}.get(
                 rule.rule_type, f"card_rule_{rule.rule_type}")
