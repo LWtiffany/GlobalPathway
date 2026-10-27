@@ -701,12 +701,10 @@ class Agent2Service:
     # ---------- feedback ----------
 
     def submit_feedback(self, user_id, message_id, kind, note=""):
-        """helpful → like；wrong → dislike 并开纠错工单（返回编号）。"""
-        if kind not in ("helpful", "wrong"):
-            raise bad_request("kind 只能是 helpful / wrong")
-        self.react(user_id, message_id, "like" if kind == "helpful" else "dislike")
-        if kind == "helpful":
-            return {"message_id": message_id, "kind": kind, "feedback_id": None}
+        """wrong → dislike 并开纠错工单（返回编号）。"""
+        if kind != "wrong":
+            raise bad_request("kind 只能是 wrong")
+        self.react(user_id, message_id, "dislike")
         note = (note or "").strip()[:2000] or "（用户未填写说明）"
         now = self.clock()
         feedback_id = f"FB-{now:%Y%m%d}-{secrets.token_hex(3).upper()}"

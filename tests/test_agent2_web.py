@@ -48,8 +48,7 @@ class WebApiCases(S1Base):
     def test_wrong_feedback_opens_numbered_ticket_without_touching_profile(self):
         profile, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
         path = f"/v1/messages/{answer.message_id}/feedback"
-        status, helpful = self.call("POST", path, {"kind": "helpful"})
-        self.assertEqual((status, helpful["feedback_id"]), (200, None))
+        self.assertEqual(self.call("POST", path, {"kind": "helpful"})[0], 400)
         status, wrong = self.call("POST", path, {"kind": "wrong", "note": "缺少 ATAS 说明"})
         self.assertEqual(status, 200)
         self.assertRegex(wrong["feedback_id"], r"^FB-20261014-[0-9A-F]{6}$")

@@ -883,7 +883,7 @@ class CreditCardWorkflow:
         if hk_products:
             steps.append(HK_BACKUP_TITLE)
             steps.append(
-                "香港卡仅作备用参考，不与当地卡混排比较。"
+                "香港卡仅作备用参考。"
                 + ("你是香港居民时，仍须满足各卡公开门槛。"
                    if hk_resident is True else
                    "你不是香港居民（或尚未确认）时，汇丰香港成文条件要求申请人一般为"

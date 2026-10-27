@@ -1271,8 +1271,6 @@ function actsRow(b) {
   const parts = [h("div", { class: "acts" },
     h("span", { class: "fb" },
       h("span", { class: "st " + st.cls }, st.label), h("span", { class: "sep" }, "｜"),
-      h("button", { class: state.kind === "helpful" ? "on" : "", onclick: () => feedback(b, "helpful") },
-        state.kind === "helpful" ? "已标记有帮助" : "有帮助"), "·",
       h("button", { class: state.kind === "wrong" ? "on" : "", onclick: () => {
         state.open = !state.open;
         drawChat({ keep: true });
