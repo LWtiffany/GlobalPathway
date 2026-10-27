@@ -138,15 +138,35 @@ async function ensurePrograms(schoolId) {
   return S.programs;
 }
 
+function looksLikeId(v) {
+  return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
+
+async function ensureCatalogForProfiles(profiles) {
+  // Sidebar shows every profile: load the full school list once, then programs
+  // for each school_id still stored as a UUID on any profile.
+  await ensureSchools();
+  const schoolIds = [...new Set((profiles || []).map((p) => val(p, "school")).filter(looksLikeId))];
+  await Promise.all(schoolIds.map((id) => ensurePrograms(id)));
+}
+
 function schoolCourseInputs(initial = {}) {
   const dest = initial.destination_country;
   const schoolSel = h("select", { name: "school" }, h("option", { value: "" }, "请先选择目的地"));
   const courseSel = h("select", { name: "course" }, h("option", { value: "" }, "请先选择学校"));
   const fillSchools = async (country, keepSchool) => {
-    schoolSel.replaceChildren(h("option", { value: "" }, country ? "未填写" : "请先选择目的地"));
+    schoolSel.replaceChildren(h("option", { value: "" }, country ? "加载学校…" : "请先选择目的地"));
     courseSel.replaceChildren(h("option", { value: "" }, "请先选择学校"));
     if (!country) return;
-    const schools = await ensureSchools(country);
+    let schools = [];
+    try {
+      schools = await ensureSchools(country);
+    } catch (e) {
+      schoolSel.replaceChildren(h("option", { value: "" }, "学校列表暂不可用"));
+      toast(e.message || "无法加载学校列表", true);
+      return;
+    }
+    schoolSel.replaceChildren(h("option", { value: "" }, schools.length ? "未填写" : "暂无该地区学校"));
     for (const s of schools) {
       schoolSel.append(h("option", {
         value: s.school_id,
@@ -155,9 +175,17 @@ function schoolCourseInputs(initial = {}) {
     }
   };
   const fillPrograms = async (schoolId, keepCourse) => {
-    courseSel.replaceChildren(h("option", { value: "" }, schoolId ? "未填写" : "请先选择学校"));
+    courseSel.replaceChildren(h("option", { value: "" }, schoolId ? "加载课程…" : "请先选择学校"));
     if (!schoolId) return;
-    const programs = await ensurePrograms(schoolId);
+    let programs = [];
+    try {
+      programs = await ensurePrograms(schoolId);
+    } catch (e) {
+      courseSel.replaceChildren(h("option", { value: "" }, "课程列表暂不可用"));
+      toast(e.message || "无法加载课程列表", true);
+      return;
+    }
+    courseSel.replaceChildren(h("option", { value: "" }, programs.length ? "未填写" : "暂无该校课程"));
     for (const p of programs) {
       courseSel.append(h("option", {
         value: p.program_id,
@@ -451,12 +479,8 @@ async function renderChat(pidArg) {
   S.profile = S.profiles.find((p) => p.profile_id === pid);
   S.conv = await api("POST", `/profiles/${pid}/session`);
   await Promise.all([loadMessages(), loadAdvice(), loadPlan(), loadProposals()]);
-  // Resolve school / program labels for the profile sheet.
-  try {
-    await ensureSchools(val(S.profile, "destination_country"));
-    const sid = val(S.profile, "school");
-    if (sid) await ensurePrograms(sid);
-  } catch (_) {}
+  // Resolve school / program labels for the sheet and every sidebar row.
+  try { await ensureCatalogForProfiles(S.profiles); } catch (_) {}
   deriveMissing();
   drawChatPage();
 }
@@ -511,8 +535,13 @@ function setupDrag(bar, sheet) {
 function profileSub(p) {
   const start = val(p, "planned_start_date");
   const m = /^(\d{4})-(\d{2})/.exec(start || "");
-  const parts = [val(p, "school") || valueLabel("destination_country", val(p, "destination_country")),
-    val(p, "course"), m ? `${m[1]}年${+m[2]}月` : "入学待定"];
+  const school = valueLabel("school", val(p, "school"));
+  const course = valueLabel("course", val(p, "course"));
+  const parts = [
+    (school !== "—" ? school : null) || valueLabel("destination_country", val(p, "destination_country")),
+    course !== "—" ? course : null,
+    m ? `${m[1]}年${+m[2]}月` : "入学待定",
+  ];
   return parts.filter((x) => x && x !== "—").join(" · ");
 }
 
