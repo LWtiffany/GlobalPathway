@@ -63,7 +63,13 @@ async def understand_user(ctx: StepContext[WorkflowState, WorkflowDependencies, 
     started = time.perf_counter()
     ctx.state.request = ctx.inputs
     port = ctx.deps.understanding
-    if port is not None and ctx.inputs.input_mode == "free_text" and ctx.inputs.text.strip():
+    if ctx.inputs.understanding_applied:
+        # Service already merged rule∪LLM intents for routing; reuse without a second call.
+        if port is not None:
+            ctx.state.llm_model_versions["understanding"] = port.model_version
+            ctx.state.llm_prompt_versions["understanding"] = port.prompt_version
+    elif (port is not None and ctx.inputs.input_mode == "free_text"
+          and ctx.inputs.text.strip()):
         try:
             catalog = clarify.field_catalog()
             raw = await port.understand(ctx.inputs, catalog)
@@ -72,8 +78,11 @@ async def understand_user(ctx: StepContext[WorkflowState, WorkflowDependencies, 
             ctx.state.request = ctx.inputs.model_copy(update={
                 "conversation_intents": list(dict.fromkeys([
                     *ctx.inputs.conversation_intents, *intents])),
+                "llm_intents": list(dict.fromkeys([
+                    *ctx.inputs.llm_intents, *intents])),
                 "understood_facts": facts,
                 "understood_basis": basis,
+                "understanding_applied": True,
             })
             ctx.state.llm_model_versions["understanding"] = port.model_version
             ctx.state.llm_prompt_versions["understanding"] = port.prompt_version
@@ -112,7 +121,9 @@ async def gate_results(ctx: StepContext[WorkflowState, WorkflowDependencies, Non
 async def compose_answer(ctx: StepContext[WorkflowState, WorkflowDependencies, None]) -> None:
     started = time.perf_counter()
     assert ctx.state.plan is not None and ctx.state.quality_report is not None
-    ctx.state.answer = await ctx.deps.composer.compose(ctx.state.plan, ctx.state.quality_report)
+    user_text = ctx.state.request.text if ctx.state.request is not None else ""
+    ctx.state.answer = await ctx.deps.composer.compose(
+        ctx.state.plan, ctx.state.quality_report, user_text=user_text)
     ctx.state.stage_ms["composed"] = round((time.perf_counter() - started) * 1000, 3)
 
 
@@ -194,10 +205,23 @@ class Agent2Workflow:
         return asyncio.run(self.run_async(request))
 
 
-def build_default_workflow(*, credit_card_repository=None, understanding=None, writer=None) -> Agent2Workflow:
+def build_default_workflow(*, credit_card_repository=None, understanding=None, writer=None,
+                           fx_model=None, fx_policy_loader=None,
+                           bank_model=None, bank_bundle_loader=None) -> Agent2Workflow:
+    model = fx_model or bank_model
+    if model is None and writer is not None:
+        model = getattr(writer, "model", None)
+    if model is None and understanding is not None:
+        model = getattr(understanding, "model", None)
     return Agent2Workflow(WorkflowDependencies(
         planner=RuleTaskPlanner(),
-        domains=default_domain_workflows(credit_card_repository=credit_card_repository),
+        domains=default_domain_workflows(
+            credit_card_repository=credit_card_repository,
+            fx_model=model,
+            fx_policy_loader=fx_policy_loader,
+            bank_model=model,
+            bank_bundle_loader=bank_bundle_loader,
+        ),
         gate=DefaultQualityGate(),
         composer=DefaultResponseComposer(),
         lifecycle=DefaultLifecyclePlanner(),

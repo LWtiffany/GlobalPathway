@@ -148,10 +148,11 @@ class Agent1PublishedKnowledgeTests(PublishedRegion):
         self.assertEqual(by_code["parental_consent"].applicability, "required")
         self.assertNotIn("tuberculosis_test_certificate", by_code)
 
-    def test_stale_or_withdrawn_knowledge_is_never_a_definite_answer(self):
+    def test_stale_published_rows_still_answer_withdrawn_does_not(self):
+        # Past Agent1 source SLA is not an Agent2 answer gate.
         stale = self.ask(UK_STUDENT, clock=datetime.now(timezone.utc) + timedelta(hours=169))
-        self.assertEqual(stale.status, "needs_verification")
-        self.assertEqual(stale.answer.materials, [])
+        self.assertEqual(stale.status, "answered")
+        self.assertTrue(stale.answer.materials)
 
         paths = self.paths
 

@@ -85,7 +85,7 @@ FIELDS = {
     "destination_country": ("留学目的地", _enum("UK", "US", "CN-HK"), "ask_destination_country",
                             "你计划去哪个国家/地区留学？（英国 / 美国 / 香港）"),
     "visa_category": ("签证类别", _enum("student_visa", "visitor_visa", "graduate_visa", "dependant_visa"),
-                      "ask_visa_category", "你要办理哪一类签证？例如学生签证（英国 Student visa）或访问签证。"),
+                      "ask_visa_category", "你要办理哪一类签证？例如学生签证或访问签证。"),
     "school": ("学校", _text, "ask_school", "你被哪所学校录取（或计划申请哪所学校）？"),
     "offer_status": ("offer 状态", _enum("none", "conditional", "unconditional"), "ask_offer_status",
                      "你目前拿到的是无条件 offer、有条件 offer，还是还没有 offer？"),
@@ -120,6 +120,9 @@ FIELDS = {
     "applicant_identity": ("申请人身份", _enum("student", "parent", "other"), "ask_applicant_identity",
                            "开户/申请人是学生本人、家长还是其他人？"),
     "card_product_scope": ("信用卡产品范围", _text, "ask_card_product_scope", "你想比较哪些信用卡产品？"),
+    "want_credit_card": (
+        "是否想办信用卡", _enum("yes", "no"), "ask_want_credit_card",
+        "信用卡不是硬性必需。你这轮想继续比较可申请的卡吗？"),
     "application_region": ("申请地区", _enum("UK", "US", "CN-HK", "CN"), "ask_application_region",
                            "你打算在哪个地区申请信用卡？"),
     "annual_income_hkd": ("税前年收入（港币）", _amount, "ask_annual_income_hkd",
@@ -229,6 +232,10 @@ OPTION_LABELS = {
                            "overseas": "境外消费", "mainland_china": "内地消费",
                             "tuition": "学费", "retail": "日常零售",
                             "groceries": "超市 / 日常采购"},
+    "want_credit_card": {
+        "yes": "想，帮我比较一下",
+        "no": "这轮先不办，只看开户或其他事项",
+    },
     "study_card_focus": {
         "lower_fee": "优先控制年费，兼顾日常使用",
         "travel_benefits": "更看重旅行权益，能接受较高年费",
@@ -276,7 +283,8 @@ def field_definitions():
     for code, item in field_catalog().items():
         domains = [name for name, rule in CONDITION_TABLE.items()
                    if code in (*rule.must_have, *rule.nice_to_have)] if "CONDITION_TABLE" in globals() else []
-        if code in {"application_region", "applicant_age_band", "annual_income_band_hkd", "asset_band",
+        if code in {"want_credit_card", "application_region", "applicant_age_band",
+                    "annual_income_band_hkd", "asset_band",
                     "repayment_mode", "spending_scenarios", "study_card_focus",
                     "reward_preference", "full_time_student",
                     "student_institution_eligible",
@@ -406,6 +414,20 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
         facts.pop(code, None)
     for code, _, _ in conflicts:
         facts.pop(code, None)
+
+    # 档案已是留学场景时，不必再追问「办哪种签证」。
+    if topic == "visa_documents" and "visa_category" not in facts:
+        role = facts.get("role").value if "role" in facts else None
+        identity = facts.get("applicant_identity").value if "applicant_identity" in facts else None
+        school = facts.get("school").value if "school" in facts else None
+        offer = facts.get("offer_status").value if "offer_status" in facts else None
+        if (role == "student" or identity == "student" or school
+                or offer in {"conditional", "unconditional"}):
+            facts["visa_category"] = Fact("student_visa", "conversation")
+            notices.append(Notice(
+                code="visa_category_inferred",
+                message="已按留学/在读场景将签证类别视为学生签证；若不是请说明。",
+            ))
 
     conflicted = {code for code, _, _ in conflicts}
     missing = [f for f in rule.must_have if f not in facts and f not in conflicted]

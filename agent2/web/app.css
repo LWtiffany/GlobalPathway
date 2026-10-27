@@ -100,8 +100,16 @@ a{color:#8b7140}
 .cc-meta{font-size:10px;color:#a59c8a;line-height:1.5;margin-top:11px;border-top:1px solid #f1ece3;padding-top:8px}
 @media(max-width:1600px){.plan{grid-template-columns:repeat(3,minmax(0,1fr))}.credit-advice{grid-column:1/-1;border-top:1px solid #ece6db}}
 @media(max-width:900px){.plan{grid-template-columns:1fr}.p{border-right:0;border-bottom:1px solid #ece6db}.p:last-child{border-bottom:0}.credit-advice{grid-column:auto}}
-.cite{font-size:10px;color:#8b7140;border:none;border-bottom:1px dotted #b89b6a;margin-left:5px;background:none;padding:0;cursor:pointer;letter-spacing:.3px}
-.cite:hover{color:#8e1b24;border-bottom-color:#8e1b24}
+.cite-mark{font-size:10px;line-height:1;color:#5b6b8c;text-decoration:none;margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(91,107,140,.1);vertical-align:super;font-variant-numeric:tabular-nums}
+.cite-mark:hover{color:#1a3a7a;background:rgba(26,58,122,.12)}
+.cite-ref{font-size:12px;line-height:1.45;color:#3d5a80;text-decoration:underline;text-underline-offset:2px}
+.cite-ref:hover{color:#1a3a7a}
+.cite-sep{color:#b0a898;font-size:12px}
+.cites{display:inline;line-height:1.5}
+.cites-row{margin-top:10px;font-size:12px;line-height:1.55;color:#6b6358}
+.cites-label{color:#8a8172;font-size:11px;margin-bottom:4px}
+.cites-list{display:flex;flex-direction:column;gap:3px}
+.cites-inline{margin-left:4px;white-space:nowrap}
 
 .todo{border:1px solid #ece6db}
 .todo li{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #f1ece3;list-style:none}
@@ -120,12 +128,7 @@ a{color:#8b7140}
 
 /* ---------- chat ---------- */
 .chat{flex:1;overflow:auto;padding:4px 0 6px;min-height:80px}
-.steps{display:flex;flex-wrap:wrap;align-items:center;font-size:11px;color:#a59c8a;margin:4px 0 12px;letter-spacing:.5px}
-.steps span{padding-right:10px}
-.steps span:after{content:"";display:inline-block;width:22px;border-top:1px solid #d6cebf;margin-left:10px;vertical-align:3px}
-.steps span:last-child:after{display:none}
-.steps .d{color:#4f6b52}.steps .a{color:#8e1b24}.steps .w{color:#8e1b24;font-weight:bold}
-.steps .a.pulse{animation:pulse 1s infinite}
+.thinking{font-size:13px;color:#a59c8a;margin:4px 0 12px}
 @keyframes pulse{50%{opacity:.35}}
 .m{max-width:72%;padding:13px 16px;margin-bottom:10px;background:#fffdf9;border:1px solid #e6dfd2;line-height:1.7;word-wrap:break-word}
 .u{margin-left:auto;background:#22201c;color:#efe9dd;border-color:#22201c;width:fit-content;white-space:pre-wrap}
@@ -150,6 +153,8 @@ a{color:#8b7140}
 .addtodo:hover{color:#8e1b24}
 .addtodo[disabled]{color:#a9bba9;cursor:default}
 .sub-h{font-size:11px;color:#8a8170;letter-spacing:1px;margin:10px 0 2px}
+.multi-sec{margin:8px 0 12px}
+.multi-sec > p{margin:4px 0 0;font-size:13px;line-height:1.55;color:#3a342c}
 .lim{margin:2px 0;padding-left:18px;color:#6f675a;font-size:12px}
 .card-rec{margin:6px 0 10px;max-width:760px}
 .card-rec .card-sec{margin:14px 0 6px;font-weight:600;font-size:13px;color:#22201c;padding:7px 9px;border-left:3px solid #8e1b24;background:#f8f4ec;display:flex;align-items:center;gap:8px}

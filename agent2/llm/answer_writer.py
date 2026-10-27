@@ -37,6 +37,15 @@ class LlmAnswerWriter:
                 } for item in verified_answer.domain_results],
             }, ensure_ascii=False, sort_keys=True, default=str),
         )
+        # FX / bank_account already draft grounded copy with domain prompts.
+        grounded_domains = {
+            item.domain for item in verified_answer.domain_results
+            if item.domain in {"fx", "bank_account"} and item.citations
+        }
+        present = {item.domain for item in verified_answer.domain_results}
+        if grounded_domains and present <= grounded_domains:
+            return verified_answer.answer
+
         written = await self.model.parse(prompt=prompt, output_type=WrittenAnswer,
                                          operation="write_answer")
         # Eligibility, fees and borrowing costs are deterministic decision facts.

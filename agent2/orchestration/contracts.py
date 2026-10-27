@@ -22,12 +22,33 @@ class DomainTask(FrozenModel):
     facts: dict[str, Any] = Field(default_factory=dict)
     basis: dict[str, str] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
+    confidence: float = 1.0
+    source: Literal["rules", "llm", "session"] = "rules"
+
+
+class IntentHit(FrozenModel):
+    intent: str
+    source: Literal["rules", "llm", "session"]
+    confidence: float
+    evidence: str | None = None
+
+
+class RoutingAudit(FrozenModel):
+    """Why this turn routed to specific modules (rules ∪ LLM ∪ session)."""
+
+    rules_hits: list[IntentHit] = Field(default_factory=list)
+    llm_intents: list[IntentHit] = Field(default_factory=list)
+    session_intents: list[str] = Field(default_factory=list)
+    selected_intents: list[str] = Field(default_factory=list)
+    unsupported_intents: list[str] = Field(default_factory=list)
+    refusal_reason: str | None = None
 
 
 class TaskPlan(FrozenModel):
     tasks: list[DomainTask] = Field(default_factory=list)
     unsupported_intents: list[str] = Field(default_factory=list)
     planner_version: str
+    routing_audit: RoutingAudit | None = None
 
 
 class DomainResult(FrozenModel):
@@ -118,6 +139,10 @@ class OrchestrationInput(FrozenModel):
     input_mode: Literal["free_text", "structured_selection"] = "free_text"
     understood_facts: dict[str, Any] = Field(default_factory=dict)
     understood_basis: dict[str, str] = Field(default_factory=dict)
+    # Service may run understanding once for routing; workflow skips a second call.
+    understanding_applied: bool = False
+    # Intents recovered by UserUnderstandingPort (distinct from session conversation_intents).
+    llm_intents: list[str] = Field(default_factory=list)
 
 
 class OrchestrationOutput(FrozenModel):

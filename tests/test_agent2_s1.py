@@ -35,14 +35,16 @@ class S1Base(unittest.TestCase):
 
 
 class S1Cases(S1Base):
-    def test_unimplemented_domain_message_does_not_claim_region_is_missing(self):
+    def test_overseas_spend_routes_to_fx_checklist_without_region_scope_claim(self):
         self.make()
         _, _, answer = self.ask("我想了解在香港境外消费怎么刷卡")
 
-        self.assertEqual("cannot_answer", answer.status)
-        self.assertIn("境外消费与支付流程尚未接入", answer.answer.summary)
-        self.assertIn("不表示所选地区不受支持", answer.answer.summary)
+        # P2: overseas spend is a minimal fx closed loop (destination already in text).
+        self.assertEqual("answered", answer.status)
+        self.assertIn("境外消费", answer.answer.summary)
+        self.assertIn("中国香港", answer.answer.summary)
         self.assertNotIn("只覆盖", answer.answer.summary)
+        self.assertTrue(any("实时汇率" in note or "报价" in note for note in answer.answer.limitations))
 
     def test_s1_01_unknown_category_asks_only_for_it_then_answers_and_history_restores(self):
         self.make()
@@ -94,17 +96,24 @@ class S1Cases(S1Base):
         _, _, adult = self.ask("需要准备哪些签证材料", {**UK_STUDENT, "applicant_age": 20}, client_id="m9")
         self.assertNotIn("parental_consent", {m.document_code for m in adult.answer.materials})
 
-    def test_s1_04_pending_withdrawn_or_stale_is_never_a_definite_fact(self):
-        for status, clock in (("PENDING_REVIEW", NOW), ("WITHDRAWN", NOW),
-                              ("ACTIVE", NOW + timedelta(days=7, seconds=1))):
-            with self.subTest(status=status, clock=clock):
+    def test_s1_04_pending_or_withdrawn_is_never_a_definite_fact(self):
+        for status in ("PENDING_REVIEW", "WITHDRAWN"):
+            with self.subTest(status=status):
                 records = fixture_records()
                 records[0]["status"] = status
-                self.make(records, clock=clock)
+                self.make(records, clock=NOW)
                 _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
                 self.assertEqual(answer.status, "needs_verification")
                 self.assertEqual((answer.answer.materials, answer.citations), ([], []))
                 self.assertTrue(any("gov.uk" in a for a in answer.next_actions))
+
+    def test_s1_04b_active_past_former_sla_still_answers_from_db(self):
+        # Freshness SLA is not an answer gate; ACTIVE published rows remain usable.
+        records = fixture_records()
+        self.make(records, clock=NOW + timedelta(days=30))
+        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        self.assertEqual(answer.status, "answered")
+        self.assertTrue(answer.answer.materials)
 
     def test_s1_05_conflicting_requirements_are_all_shown_not_picked(self):
         records = fixture_records()

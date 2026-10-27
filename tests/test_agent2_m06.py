@@ -61,6 +61,18 @@ class ConditionTableTests(unittest.TestCase):
         self.assertEqual(result.questions, [])
         self.assertEqual(result.assumption_gaps, ["school", "planned_start_date"])
 
+    def test_study_profile_infers_student_visa_without_asking(self):
+        result = clarify.assess(
+            "visa_documents",
+            profile(role="student", destination_country="US", school="Massachusetts Institute of Technology",
+                    offer_status="unconditional"),
+        )
+        self.assertTrue(result.ready)
+        self.assertEqual("student_visa", result.facts["visa_category"].value)
+        self.assertNotIn("visa_category", result.missing_fields)
+        self.assertEqual([], result.questions)
+        self.assertIn("visa_category_inferred", [n.code for n in result.notices])
+
     def test_model_suggestions_are_rechecked_against_the_table(self):
         def suggest(topic, eligible):
             return ["nationality_secret", "funding_source"]

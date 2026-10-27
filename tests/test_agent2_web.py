@@ -122,7 +122,7 @@ const fs = require('fs');
 const vm = require('vm');
 const source = fs.readFileSync(process.argv[1], 'utf8');
 const helpers = source.slice(source.indexOf('function cardsFromAnswerSteps('),
-  source.indexOf('function sourceChips('));
+  source.indexOf('function buildCiteMap('));
 const context = { S: { messages: [
   { role: 'assistant', message_id: 'unrelated', body: { answer: { steps: ['主推荐：其他卡', '年费：1 美元'] } } },
   { role: 'assistant', message_id: 'saved-answer', body: { answer: { steps: [
@@ -162,8 +162,11 @@ process.stdout.write(JSON.stringify({ result, rendered, preview, comparison }));
         self.assertIn("年费较低。", output["rendered"])
         self.assertIn("95 美元", output["rendered"])
         self.assertIn("申请前请确认", output["rendered"])
-        self.assertIn("提前了解", output["preview"])
-        self.assertNotIn("首选推荐", output["preview"])
+        self.assertIn("已推荐", output["preview"])
+        self.assertIn("首选推荐", output["preview"])
+        self.assertNotIn("提前了解", output["preview"])
+        self.assertNotIn("优先美国", output["rendered"])
+        self.assertNotIn("可以先比较产品权益和费用", output["rendered"])
         self.assertIn("供你比较", output["comparison"])
         self.assertNotIn("已推荐", output["comparison"])
 

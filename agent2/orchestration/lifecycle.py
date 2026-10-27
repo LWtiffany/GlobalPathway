@@ -4,7 +4,7 @@ from .contracts import (AdviceUpdate, LifecycleActions, OrchestrationInput, Plan
                         ProfileChangeCandidate, TaskPlan, UnifiedAnswer)
 
 PROFILE_FIELDS_BY_DOMAIN = {
-    "credit_card": {"application_region", "applicant_age", "applicant_age_band",
+    "credit_card": {"want_credit_card", "application_region", "applicant_age", "applicant_age_band",
                     "annual_income_hkd", "annual_income_band_hkd", "asset_band",
                     "repayment_mode", "spending_scenarios", "study_card_focus",
                     "reward_preference",
@@ -13,6 +13,10 @@ PROFILE_FIELDS_BY_DOMAIN = {
                     "full_time_student", "premier_relationship", "hsbc_relationship_balance_band",
                     "hsbc_premier_path", "us_hsbc_account_path", "uk_hsbc_account_path",
                     "hk_resident"},
+    "fx": {"destination_country", "remittance_purpose", "payment_deadline", "amount",
+           "currency", "payer", "school"},
+    "bank_account": {"account_region", "account_product", "applicant_identity",
+                     "destination_country"},
 }
 
 

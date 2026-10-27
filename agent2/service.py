@@ -2,6 +2,7 @@
 
 所有读写都按 user_id 做对象级授权；他人的资源与不存在的资源返回同一个 NOT_FOUND，不泄露内容。
 """
+import asyncio
 import json
 import secrets
 import sqlite3
@@ -12,8 +13,14 @@ from . import clarify
 from .models import AnswerResult, Profile, ProfileChangeProposal, ProfileField
 from .intent import classify
 from .llm import build_llm_components
+from .llm.validation import validate_understanding
 from .orchestration import build_default_workflow
-from .orchestration.legacy_adapter import card_summaries_from_steps, run_credit_card
+from .orchestration.contracts import OrchestrationInput
+from .orchestration.legacy_adapter import (V2_INTENTS, card_summaries_from_steps,
+                                            intents_for_confirmed_fields,
+                                            intents_for_session_topic, run_v2,
+                                            session_topic_for_intents)
+from .orchestration.planner import RuleTaskPlanner
 from .runner import Agent2Runner
 from .store import dumps
 
@@ -353,22 +360,53 @@ class Agent2Service:
 
     def _conversation_context(self, conversation_id):
         facts, topic, asked, last_version = {}, None, (), None
+        active_intents: list[str] = []
         for row in self.store.all("SELECT role, body_json FROM message_index WHERE session_id=? ORDER BY seq",
                                   (conversation_id,)):
             body = json.loads(row["body_json"])
             if row["role"] == "user":
                 facts.update(body.get("facts") or {})
                 topic = body.get("topic") or topic
+                if body.get("active_intents"):
+                    active_intents = list(body["active_intents"])
             else:
                 asked = tuple(q["field"] for q in body.get("follow_up_questions", []))
                 last_version = body.get("profile_version", last_version)
-        return facts, topic, asked, last_version
+        return facts, topic, asked, last_version, active_intents
 
     def _stored_reply(self, conversation_id, client_message_id):
+        # Multi-intent turns store several assistant bubbles on the same user
+        # message; return the last one (follow-ups / proposals live there).
         row = self.store.one("""SELECT a.body_json FROM message_index u JOIN message_index a
-            ON a.reply_to=u.message_id WHERE u.session_id=? AND u.role='user' AND u.client_message_id=?""",
+            ON a.reply_to=u.message_id
+            WHERE u.session_id=? AND u.role='user' AND u.client_message_id=?
+              AND a.role='assistant'
+            ORDER BY a.seq DESC LIMIT 1""",
                              (conversation_id, client_message_id))
         return AnswerResult.model_validate_json(row["body_json"]) if row else None
+
+    def _apply_understanding(self, request: OrchestrationInput):
+        """Merge LLM intents/facts into the routing request (rules ∪ model). Fail soft."""
+        port = self.v2_workflow.dependencies.understanding
+        if (port is None or request.input_mode != "free_text" or not request.text.strip()
+                or request.understanding_applied):
+            return request, False
+        try:
+            catalog = clarify.field_catalog()
+            raw = asyncio.run(port.understand(request, catalog))
+            facts, basis, intents = validate_understanding(
+                raw, request, set(catalog), clarify.validate)
+            enriched = request.model_copy(update={
+                "conversation_intents": list(dict.fromkeys([
+                    *request.conversation_intents, *intents])),
+                "llm_intents": list(dict.fromkeys(intents)),
+                "understood_facts": facts,
+                "understood_basis": basis,
+                "understanding_applied": True,
+            })
+            return enriched, True
+        except Exception:
+            return request, False
 
     def post_message(self, user_id, conversation_id, text, client_message_id, *, confirmed_fields=None,
                      expected_profile_version=None, cleared_fields=None):
@@ -378,7 +416,7 @@ class Agent2Service:
         stored = self._stored_reply(conversation_id, client_message_id)
         if stored:
             return stored
-        facts, topic, asked, last_version = self._conversation_context(conversation_id)
+        facts, topic, asked, last_version, active_intents = self._conversation_context(conversation_id)
         user_message_id, answer_id = _new_id(), _new_id()
         confirmed_fields = confirmed_fields or {}
         cleared_fields = list(dict.fromkeys(cleared_fields or []))
@@ -414,18 +452,57 @@ class Agent2Service:
                     field_version=(old.field_version if old else 0) + 1,
                     sensitivity=clarify.field_definitions()[code]["sensitivity"])
         classified = classify(text, asked_fields=asked)
-        # A pending structured question belongs to the active domain. Option labels such as
-        # "境外消费" must not be reclassified as a new remittance/visa request mid-flow.
+        understood_facts, understood_basis = {}, {}
+        understanding_applied = False
+        llm_intents: list[str] = []
+        # Structured follow-ups continue the open multi-domain turn, but a chip
+        # answer is scoped to the domain(s) that own the confirmed field(s) so
+        # confirming want_credit_card does not re-emit bank-account advice.
         if asked and topic:
             resolved_topic = topic
+            planned_intents = list(active_intents) if active_intents else intents_for_session_topic(
+                topic, facts)
+            if confirmed_fields:
+                planned_intents = intents_for_confirmed_fields(
+                    confirmed_fields, planned_intents)
         else:
-            resolved_topic = topic if classified.intent in ("follow_up", "other") and topic \
-                else classified.intent
-        if resolved_topic == "credit_card":
-            output = run_credit_card(self.v2_workflow, profile=profile, text=text,
-                                     conversation_facts=facts, asked_fields=asked,
-                                     message_id=answer_id,
-                                     structured_selection=bool(asked))
+            route_request = OrchestrationInput(
+                text=text,
+                profile_id=profile.profile_id,
+                profile_version=profile.version,
+                asked_fields=list(asked),
+                conversation_intents=(
+                    list(active_intents) if active_intents
+                    else intents_for_session_topic(topic, facts) if topic else []),
+            )
+            route_request, understanding_applied = self._apply_understanding(route_request)
+            understood_facts = dict(route_request.understood_facts)
+            understood_basis = dict(route_request.understood_basis)
+            llm_intents = list(route_request.llm_intents)
+            plan = asyncio.run(RuleTaskPlanner().plan(route_request))
+            planned_intents = [task.intent for task in plan.tasks]
+            session_topic = session_topic_for_intents(planned_intents)
+            if session_topic:
+                resolved_topic = session_topic
+            elif classified.intent in ("follow_up", "other") and topic:
+                resolved_topic = topic
+            else:
+                resolved_topic = classified.intent
+        use_v2 = (
+            resolved_topic in {"credit_card", "remittance", "account", "out_of_scope", "other"}
+            or any(intent in V2_INTENTS for intent in planned_intents)
+        )
+        if use_v2:
+            v2_intents = planned_intents or intents_for_session_topic(resolved_topic, facts)
+            output = run_v2(self.v2_workflow, profile=profile, text=text,
+                            conversation_facts=facts, asked_fields=asked,
+                            message_id=answer_id,
+                            structured_selection=bool(asked),
+                            conversation_intents=v2_intents,
+                            understood_facts=understood_facts,
+                            understood_basis=understood_basis,
+                            understanding_applied=understanding_applied,
+                            llm_intents=llm_intents)
         else:
             output = self.runner.run(profile=profile, text=text, conversation_facts=facts, conversation_topic=topic,
                                      asked_fields=asked,
@@ -442,7 +519,14 @@ class Agent2Service:
                 if alternate:
                     output.turn_facts.pop(alternate, None)
                     output.turn_basis.pop(alternate, None)
-        answer.profile_change_proposals = self._proposals_for(profile, output, user_message_id)
+        proposals = self._proposals_for(profile, output, user_message_id)
+        answer.profile_change_proposals = proposals
+        parts = list(output.message_parts or [answer])
+        if parts:
+            parts[-1].profile_change_proposals = proposals
+            output.message_parts = parts
+            output.result = parts[-1]
+            answer = parts[-1]
         try:
             with self.store.transaction() as db:
                 self._persist(db, conversation_id, profile, text, client_message_id, user_message_id, output,
@@ -459,8 +543,18 @@ class Agent2Service:
         open_rows = self.store.all("SELECT field_code, new_value FROM profile_change_proposals "
                                    "WHERE profile_id=? AND status='open'", (profile.profile_id,))
         already = {(r["field_code"], r["new_value"]) for r in open_rows}
+        destination = profile.confirmed("destination_country")
+        role = profile.confirmed("role")
+        # Only registered profile fields become user-facing proposals (skip session keys like fx_mode).
         for code, value in output.turn_facts.items():
+            if code not in clarify.FIELDS:
+                continue
             if profile.confirmed(code) == value or (code, dumps(value)) in already:
+                continue
+            # Skip mirrors of already-confirmed profile facts — they are not new choices.
+            if code in {"application_region", "account_region"} and destination and value == destination:
+                continue
+            if code == "applicant_identity" and role and value == role:
                 continue
             proposals.append(ProfileChangeProposal(
                 proposal_id=_new_id(), profile_id=profile.profile_id, field_code=code,
@@ -511,35 +605,45 @@ class Agent2Service:
         # revive them from conversation history.
         stored_facts = {code: value for code, value in output.turn_facts.items()
                         if code not in cleared_fields}
-        user_body = {"text": text, "facts": stored_facts, "topic": output.topic}
+        active = list(output.active_intents or [])
+        user_body = {"text": text, "facts": stored_facts, "topic": output.topic,
+                     "active_intents": active}
         db.execute("INSERT INTO message_index VALUES (?,?,?,?,?,?,?,?,?)",
                    (user_message_id, conversation_id, seq + 1, "user", client_message_id, None,
                     dumps(user_body), "received", now))
-        body = answer.model_dump_json()
-        db.execute("INSERT INTO message_index VALUES (?,?,?,?,?,?,?,?,?)",
-                   (answer.message_id, conversation_id, seq + 2, "assistant", None, user_message_id,
-                    body, "delivered", now))
-        db.execute("INSERT INTO answer_runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                   (_new_id(), answer.message_id, profile.version, output.knowledge_read_id, output.model_version,
-                    output.prompt_version, output.gate_version, answer.status, answer.trace_id,
-                    dumps(output.stage_ms), now))
-        citations = {c.citation_id: c for c in answer.citations}
-        for claim in answer.claims:
-            for cid in claim.citation_ids:
-                c = citations[cid]
-                db.execute("INSERT INTO answer_citations VALUES (?,?,?,?,?,?,?,?)",
-                           (answer.message_id, claim.claim_id, cid, c.record_id, c.revision_id, c.evidence_id,
-                            c.source_url, c.verified_at.isoformat()))
-        for p in answer.profile_change_proposals:
+        parts = list(output.message_parts or [answer])
+        next_seq = seq + 2
+        for part in parts:
+            db.execute("INSERT INTO message_index VALUES (?,?,?,?,?,?,?,?,?)",
+                       (part.message_id, conversation_id, next_seq, "assistant", None, user_message_id,
+                        part.model_dump_json(), "delivered", now))
+            db.execute("INSERT INTO answer_runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                       (_new_id(), part.message_id, profile.version, output.knowledge_read_id,
+                        output.model_version, output.prompt_version, output.gate_version, part.status,
+                        part.trace_id, dumps(part.stage_ms or output.stage_ms), now))
+            citations = {c.citation_id: c for c in part.citations}
+            for claim in part.claims:
+                for cid in claim.citation_ids:
+                    c = citations.get(cid)
+                    if c is None:
+                        continue
+                    db.execute("INSERT INTO answer_citations VALUES (?,?,?,?,?,?,?,?)",
+                               (part.message_id, claim.claim_id, cid, c.record_id, c.revision_id,
+                                c.evidence_id, c.source_url, c.verified_at.isoformat()))
+            next_seq += 1
+        for p in parts[-1].profile_change_proposals:
             db.execute("INSERT INTO profile_change_proposals VALUES (?,?,?,?,?,?,?, 'open', ?, NULL)",
                        (p.proposal_id, p.profile_id, p.field_code, dumps(p.old_value) if p.old_value is not None
                         else None, dumps(p.new_value), user_message_id, p.basis, now))
-        if output.advice:
-            topic = output.advice["topic"]
+        advice_items = list(output.advice_items or [])
+        if not advice_items and output.advice:
+            advice_items = [output.advice]
+        for item in advice_items:
+            topic = item["topic"]
             current = db.execute("SELECT version FROM advice_current WHERE profile_id=? AND topic=?",
                                  (profile.profile_id, topic)).fetchone()
             version = (current["version"] if current else 0) + 1
-            payload = dumps(output.advice["payload"])
+            payload = dumps(item["payload"])
             db.execute("""INSERT INTO advice_current VALUES (?,?,?,?,?, 'current', ?)
                 ON CONFLICT(profile_id, topic) DO UPDATE SET version=excluded.version,
                 source_message_id=excluded.source_message_id, payload_json=excluded.payload_json,

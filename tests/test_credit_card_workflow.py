@@ -351,7 +351,7 @@ class MarketRepository:
 
 
 class StudyDestinationCatalogTests(unittest.TestCase):
-    def test_us_study_only_lists_cards_from_selected_market(self):
+    def test_us_study_lists_local_first_with_hk_backup(self):
         local = product("premier_world", "travel", "0.01")
         local = local.model_copy(update={
             "market": "US",
@@ -377,20 +377,20 @@ class StudyDestinationCatalogTests(unittest.TestCase):
 
         self.assertIn(result.status, {"answered", "needs_verification"})
         text = "\n".join(result.answer.steps)
-        self.assertIn("汇丰美国发行的卡", text)
-        self.assertNotIn("汇丰香港发行的卡", text)
+        self.assertIn("优先：汇丰美国发行的卡", text)
+        self.assertIn("备用：汇丰香港发行的卡", text)
         self.assertIn("美国汇丰卓越理财支票账户", text)
         self.assertIn("HSBC Premier World Mastercard", text)
         self.assertNotIn("申请限制：目前尚未持有所需的当地汇丰账户", text)
-        self.assertNotIn("Hk Red", text)
+        self.assertIn("Hk Red", text)
         self.assertIn("年费：", text)
         self.assertIn("主要权益：", text)
-        self.assertNotIn("备用", result.answer.summary)
+        self.assertIn("备用", result.answer.summary)
         us_fee = next(line for line in result.answer.steps if line.startswith("年费：") and "95 美元" in line)
         self.assertNotIn("HK$", us_fee)
-        self.assertEqual(["US"], [group["market"] for group in result.payload["groups"]])
-        self.assertEqual(["primary"], [group["role"] for group in result.payload["groups"]])
-        self.assertTrue(any("不混入其他地区" in item for item in result.answer.limitations))
+        self.assertEqual(["US", "Hong Kong"], [group["market"] for group in result.payload["groups"]])
+        self.assertEqual(["primary", "backup"], [group["role"] for group in result.payload["groups"]])
+        self.assertTrue(any("香港卡只作备用" in item for item in result.answer.limitations))
         self.assertNotIn("产品库", "\n".join(result.answer.steps))
         self.assertNotIn("门槛依据", "\n".join(result.answer.steps))
 
@@ -544,6 +544,33 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         self.assertEqual("needs_input", result.status)
         self.assertEqual("uk_hsbc_account_path", result.follow_up_questions[0].field)
 
+    def test_necessity_question_asks_want_credit_card_before_products(self):
+        elite = self._study_card("elite", "US", "World Elite", "us_premier_checking", 495)
+        premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [elite, premier]}), clock=lambda: NOW).run(
+            TASK, OrchestrationInput(
+                text="我需要开银行账户和办信用卡吗",
+                profile_id="p1", profile_version=2,
+                profile_values={"application_region": "US", "destination_country": "US"},
+            )))
+        self.assertEqual("needs_input", result.status)
+        self.assertEqual(["want_credit_card"],
+                         [q.field for q in result.follow_up_questions])
+        self.assertIn("想继续比较", result.answer.summary)
+        self.assertEqual([], result.payload.get("groups", []))
+
+    def test_declined_credit_card_skips_product_recommendation(self):
+        elite = self._study_card("elite", "US", "World Elite", "us_premier_checking", 495)
+        result = asyncio.run(CreditCardWorkflow(
+            MarketRepository({"US": [elite]}), clock=lambda: NOW).run(
+            TASK, request(application_region="US", want_credit_card="no",
+                          us_hsbc_account_path="plan_to_open")))
+        self.assertEqual("answered", result.status)
+        self.assertTrue(result.payload.get("deferred"))
+        self.assertIn("先不比较信用卡", result.answer.summary)
+        self.assertEqual([], result.answer.steps)
+
     def test_us_planned_account_previews_both_cards_without_claiming_current_eligibility(self):
         elite = self._study_card("elite", "US", "World Elite", "us_premier_checking", 495)
         premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
@@ -551,32 +578,38 @@ class StudyDestinationCatalogTests(unittest.TestCase):
             MarketRepository({"US": [elite, premier]}), clock=lambda: NOW).run(
             TASK, request(application_region="US", applicant_age=None,
                           us_hsbc_account_path="plan_to_open",
-                          spending_scenarios=None)))
+                          spending_scenarios=None,
+                          want_credit_card="yes")))
         cards = result.payload["groups"][0]["cards"]
         self.assertNotEqual("needs_input", result.status)
         self.assertEqual("preview", result.payload["groups"][0]["role"])
         self.assertEqual(["premier", "elite"], [card["card_id"] for card in cards])
+        self.assertEqual(["primary", "alternative"], [card.get("role") for card in cards])
         self.assertTrue(all(card["eligibility"] == "unknown" for card in cards))
         self.assertTrue(all(card["pending_prerequisites"] for card in cards))
         text = "\n".join(result.answer.steps)
         self.assertIn("提前了解：", text)
+        self.assertIn("主推荐：", text)
+        self.assertIn("为什么适合你：", text)
+        self.assertIn("其他选择：", text)
         self.assertIn("申请前提：先开立美国汇丰卓越理财支票账户", text)
         self.assertIn("Premier", result.answer.summary)
         self.assertIn("Elite", result.answer.summary)
         self.assertNotIn("主推", result.answer.summary)
 
-    def test_us_without_a_premier_account_does_not_recommend_ineligible_cards(self):
+    def test_us_without_a_premier_account_still_previews_local_cards(self):
         elite = self._study_card("elite", "US", "World Elite", "us_premier_checking", 495)
         premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
         result = asyncio.run(CreditCardWorkflow(
             MarketRepository({"US": [elite, premier]}), clock=lambda: NOW).run(
-            TASK, request(application_region="US", us_hsbc_account_path="not_applicable")))
-        self.assertEqual([], result.payload["groups"][0]["cards"])
-        self.assertEqual([], result.answer.steps)
-        self.assertIn("基于这些产品条件，这次先不列出具体卡片", result.answer.summary)
-        self.assertIn("我们可以随时再为你比较", result.answer.summary)
-        self.assertNotIn("若你暂不考虑", result.answer.summary)
-        self.assertNotIn("不必继续填写", result.answer.summary)
+            TASK, request(application_region="US", us_hsbc_account_path="not_applicable",
+                          want_credit_card="yes", spending_scenarios=None)))
+        cards = result.payload["groups"][0]["cards"]
+        self.assertEqual(["premier", "elite"], [card["card_id"] for card in cards])
+        self.assertEqual("preview", result.payload["groups"][0]["role"])
+        text = "\n".join(result.answer.steps)
+        self.assertIn("提前了解：", text)
+        self.assertIn("目前没有美国汇丰卓越理财支票账户", result.answer.summary)
         self.assertNotIn("主推", result.answer.summary)
 
     def test_us_single_card_checks_age_then_answers_without_preference_question(self):
@@ -1334,8 +1367,9 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
         self.assertEqual("online_card", advice["payload"]["recommendations"]["primary"]["card_id"])
         run = self.store.one("SELECT prompt_version, gate_version FROM answer_runs WHERE message_id=?",
                              (final.message_id,))
-        self.assertEqual((run["prompt_version"], run["gate_version"]),
-                         ("credit-card-template-1", "orchestration-gate-1"))
+        self.assertEqual(run["gate_version"], "orchestration-gate-1")
+        self.assertTrue(run["prompt_version"].startswith("v2-compose-1")
+                        or run["prompt_version"].startswith("credit-card-template-1"))
 
 
 class ProfileSchemaTests(unittest.TestCase):

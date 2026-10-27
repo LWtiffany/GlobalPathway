@@ -219,6 +219,10 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
         if (rule.rule_type == "banking_relationship" and value == "plan_to_open"
                 and wanted in {"us_premier_checking", "uk_student_account"}):
             return "pending", field
+        # 「想先了解其他选择」：仍按待满足前提展示美国卡，不硬性剔除。
+        if (rule.rule_type == "banking_relationship" and value == "not_applicable"
+                and wanted == "us_premier_checking"):
+            return "pending", field
         if (rule.rule_type == "other" and rule.value_text == "uk_resident"
                 and value is False and facts.get("application_region") == "UK"):
             return "pending", field

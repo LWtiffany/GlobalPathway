@@ -84,6 +84,23 @@ class LlmWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(writer.calls))
         self.assertEqual("模型润色后的信用卡建议", output.answer.answer.summary)
 
+    def test_understanding_applied_skips_second_call_but_keeps_llm_intents(self):
+        understanding = FakeUnderstanding(UnderstandingResult(intents=["visa_documents"]))
+        writer = FakeWriter()
+        # Service already recovered credit_card from a typo paraphrase; do not call again.
+        request = OrchestrationInput(
+            text="credti card please", profile_id="p1", profile_version=1, profile_values=PROFILE,
+            conversation_intents=["credit_card"], llm_intents=["credit_card"],
+            understanding_applied=True)
+
+        output = self.workflow(understanding, writer).run(request)
+
+        self.assertEqual([], understanding.calls)
+        self.assertEqual(["credit_card"],
+                         [task.intent for task in output.snapshot.task_plan.tasks])
+        self.assertEqual("llm", output.snapshot.task_plan.tasks[0].source)
+        self.assertEqual("understanding-model", output.snapshot.model_versions["understanding"])
+
     def test_model_failure_returns_deterministic_answer(self):
         understanding = FakeUnderstanding(error=TimeoutError("understanding timeout"))
         writer = FakeWriter(error=TimeoutError("writer timeout"))

@@ -45,6 +45,11 @@ class RunOutput:
     prompt_version: str = PROMPT_VERSION
     gate_version: str = gate_mod.GATE_VERSION
     advice: dict | None = None
+    advice_items: list = field(default_factory=list)
+    active_intents: list = field(default_factory=list)
+    # Ordered assistant bubbles for one user turn (necessity + per-domain answers).
+    # Empty means only `result` is persisted.
+    message_parts: list = field(default_factory=list)
     stage_ms: dict = field(default_factory=dict)
     assessments: list = field(default_factory=list)
 
@@ -115,7 +120,7 @@ class Agent2Runner:
         timer.add("m06_rules", assessment.rule_ms)
         if assessment.model_ms:
             timer.add("m06_model", assessment.model_ms)
-        notices = list(assessment.notices) + self._stated_notice(assessment)
+        notices = list(assessment.notices)
         if not assessment.ready:
             notices.append(Notice(code=assessment.state, message=assessment.explanation))
             out = result("needs_input", assessment.explanation,
@@ -201,15 +206,6 @@ class Agent2Runner:
             out.advice_updates = [TOPIC_ADVICE[topic]]
         return self._finish(out, timer, turn.facts, turn.basis, topic, read_id=self.knowledge.read_id,
                             model_version=self.generator.model_version, advice=advice)
-
-    @staticmethod
-    def _stated_notice(assessment):
-        stated = [k for k, f in assessment.facts.items() if f.source == "conversation"]
-        if not stated:
-            return []
-        return [Notice(code="unsaved_conditions",
-                       message="以下条件来自本次对话，未写入档案：" + "、".join(clarify.label(k) for k in stated)
-                               + "。如需保存，请在档案变更提案中确认。")]
 
     @staticmethod
     def _finish(out, timer, facts, basis, topic, read_id=None, model_version="none", advice=None):
