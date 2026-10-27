@@ -211,6 +211,10 @@ a{color:#8b7140}
 .btn.sm{padding:4px 12px;font-size:11px}
 .btn.ghost{background:transparent;color:#5e574a;border:1px solid #cfc6b5}
 .btn.ghost:hover{border-color:#8e1b24;color:#8e1b24}
+/* 追问「上一步」：描边主色，避免被当成灰色禁用按钮 */
+.btn.back{background:#fffdf9;color:#8e1b24;border:1px solid #8e1b24}
+.btn.back:hover{background:#f8ebe9}
+.btn.back[disabled]{background:#f0ebe4;color:#b6ad9c;border-color:#cfc6b5;cursor:not-allowed}
 .in{display:flex;padding:10px 0 14px;flex:none}
 .in textarea{flex:1;background:#fffdf9;border:1px solid #d9d1c2;border-right:0;padding:12px 16px;resize:none;height:46px;outline:none;line-height:1.5}
 .in textarea:focus{border-color:#b89b6a}

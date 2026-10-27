@@ -60,6 +60,16 @@ const S = {
   schools: [], programs: [], schoolById: {}, programById: {}, catalogReady: false,
 };
 
+// 追问撤销顺序（靠前的可先被「上一步」清掉）。trail 丢失时仍可按档案回退。
+const FOLLOW_UNDO_ORDER = [
+  "want_credit_card", "application_region", "applicant_age_band", "applicant_age",
+  "us_hsbc_account_path", "uk_hsbc_account_path", "annual_income_band_hkd", "annual_income_hkd",
+  "hk_resident", "hsbc_premier_path", "premier_relationship", "hsbc_relationship_balance_band",
+  "full_time_student", "student_institution_eligible", "repayment_mode", "spending_scenarios",
+  "study_card_focus", "reward_preference", "monthly_card_spend_band_hkd", "mainland_payment_method",
+  "asset_band",
+];
+
 // ---------- helpers ----------
 
 function h(tag, attrs, ...kids) {
@@ -1023,10 +1033,15 @@ function answerBubble(b, latest) {
         sec.lines[0] ? h("p", null, sec.lines[0]) : null)));
     }
     kids.push(followUp(question));
-    if (S.followTrail.length) {
+    if (canGoBackFollowUp(question.field)) {
       kids.push(h("div", { class: "fq-nav" },
-        h("button", { class: "btn sm ghost", disabled: S.busy, onclick: goBackFollowUp },
-          "上一步")));
+        h("button", {
+          class: "btn sm back",
+          type: "button",
+          disabled: !!S.busy,
+          title: S.busy ? "正在处理上一条，请稍候" : "返回上一道追问并重新选择",
+          onclick: goBackFollowUp,
+        }, "上一步")));
     }
     return h("div", { class: "m s-needs_input ask-only" }, kids);
   }
@@ -1098,6 +1113,34 @@ function materialItem(m, cmap) {
     (m.pending_fields || []).length ? h("span", { class: "pend" }, `待确认：${m.pending_fields.map(label).join("、")}`) : null);
 }
 
+function currentFollowUpQuestion() {
+  for (let i = S.messages.length - 1; i >= 0; i--) {
+    const m = S.messages[i];
+    if (m.role !== "assistant" || m.body?.status !== "needs_input") continue;
+    const qs = m.body.follow_up_questions || [];
+    return qs.find((q) => val(S.profile, q.field) === undefined) || qs[0] || null;
+  }
+  return null;
+}
+
+/** 当前问题之前、档案里已确认且可撤销的追问字段（trail 丢了也能继续上一步）。 */
+function undoableFollowFields(currentField) {
+  const suppressed = new Set(S.suppressFields || []);
+  const trailFields = new Set((S.followTrail || []).map((item) => item.field));
+  const idx = FOLLOW_UNDO_ORDER.indexOf(currentField);
+  const candidates = idx >= 0 ? FOLLOW_UNDO_ORDER.slice(0, idx) : FOLLOW_UNDO_ORDER.slice();
+  return candidates.filter((code) => {
+    if (suppressed.has(code) || code === currentField) return false;
+    if (trailFields.has(code)) return true;
+    return val(S.profile, code) !== undefined;
+  });
+}
+
+function canGoBackFollowUp(currentField) {
+  return (S.followTrail && S.followTrail.length > 0)
+    || undoableFollowFields(currentField).length > 0;
+}
+
 function followUp(q) {
   const f = S.fields[q.field] || { kind: "text", options: [], label: q.field };
   const options = (q.options && q.options.length) ? q.options : f.options;
@@ -1165,9 +1208,19 @@ async function answerField(code, value, text, persistMode) {
 
 async function goBackFollowUp() {
   if (S.busy) { toast("上一条还在处理中，请稍候"); return; }
-  if (!S.followTrail.length) { toast("没有可返回的步骤"); return; }
-  const last = S.followTrail.pop();
+  let last = S.followTrail.length ? S.followTrail.pop() : null;
+  if (!last) {
+    const current = currentFollowUpQuestion();
+    const priors = undoableFollowFields(current && current.field);
+    if (!priors.length) { toast("没有可返回的步骤"); return; }
+    const field = priors[priors.length - 1];
+    const value = val(S.profile, field);
+    last = { field, value, label: valueLabel(field, value), persistMode: "save_on_select" };
+  }
   if (!S.suppressFields.includes(last.field)) S.suppressFields.push(last.field);
+  // 同步丢掉 trail 里同一字段及之后的步骤，避免和档案回退错位。
+  const cut = S.followTrail.findIndex((item) => item.field === last.field);
+  if (cut >= 0) S.followTrail = S.followTrail.slice(0, cut);
   // One request undoes the profile value and session fact, then re-asks.
   const res = await send("（返回上一步）", null, [last.field], {}, S.profile.version, {
     clearedFields: S.suppressFields.slice(),
@@ -1282,14 +1335,15 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
     }
     drawSheet();
     drawSide();
-    drawChat();
     return res;
   } catch (e) {
-    if (S.pending) { S.pending.error = e; drawChat(); }
+    if (S.pending) S.pending.error = e;
     return null;
   } finally {
+    // busy 必须在重绘前清掉，否则「上一步」会带着 disabled 画进 DOM 后一直点不了。
     S.busy = false;
     if (S.el.sendBtn) S.el.sendBtn.disabled = false;
+    drawChat({ keep: true });
   }
 }
 
