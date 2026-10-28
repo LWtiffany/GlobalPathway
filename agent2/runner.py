@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from . import clarify, gate as gate_mod
-from .generate import COUNTRY_ZH, VISA_ZH, TemplateGenerator
+from .generate import COUNTRY_ZH, PROMPT_VERSION, VISA_ZH, TemplateGenerator
 from .intent import classify
 from .models import AnswerBody, AnswerResult, Notice
 from .retrieve import retrieve
@@ -17,6 +17,13 @@ from .retrieve import retrieve
 MAX_MESSAGE_CHARS = 2000
 TOPIC_ADVICE = {"visa_documents": "visa"}
 KNOWLEDGE_TOPIC = {"visa_documents": "documents"}
+UNIMPLEMENTED_TOPIC_SUMMARY = {
+    "remittance_tuition": "学费汇款流程尚未接入，当前不能生成确定建议。",
+    "remittance_living": "生活费汇款流程尚未接入，当前不能生成确定建议。",
+    "overseas_spending": "境外消费与支付流程尚未接入，当前不能生成确定建议；这不表示所选地区不受支持。",
+    "hsbc_account": "银行开户流程尚未接入，当前不能生成确定建议。",
+    "credit_card": "信用卡流程应由 Agent2 v2 处理，本轮路由异常，未生成建议。",
+}
 OFFICIAL_ENTRY = {
     ("UK", "student_visa"): "GOV.UK Student visa 官方页面（https://www.gov.uk/student-visa）",
     ("US", "student_visa"): "美国国务院学生签证页面（https://travel.state.gov/content/travel/en/us-visas/study/student-visa.html）"
@@ -35,7 +42,14 @@ class RunOutput:
     topic: str | None
     knowledge_read_id: str | None = None
     model_version: str = "none"
+    prompt_version: str = PROMPT_VERSION
+    gate_version: str = gate_mod.GATE_VERSION
     advice: dict | None = None
+    advice_items: list = field(default_factory=list)
+    active_intents: list = field(default_factory=list)
+    # Ordered assistant bubbles for one user turn (necessity + per-domain answers).
+    # Empty means only `result` is persisted.
+    message_parts: list = field(default_factory=list)
     stage_ms: dict = field(default_factory=dict)
     assessments: list = field(default_factory=list)
 
@@ -106,7 +120,7 @@ class Agent2Runner:
         timer.add("m06_rules", assessment.rule_ms)
         if assessment.model_ms:
             timer.add("m06_model", assessment.model_ms)
-        notices = list(assessment.notices) + self._stated_notice(assessment)
+        notices = list(assessment.notices)
         if not assessment.ready:
             notices.append(Notice(code=assessment.state, message=assessment.explanation))
             out = result("needs_input", assessment.explanation,
@@ -117,7 +131,8 @@ class Agent2Runner:
 
         facts = {k: f.value for k, f in assessment.facts.items()}
         if topic not in KNOWLEDGE_TOPIC:
-            out = result("cannot_answer", "该主题的已发布资料尚未接入（目前只覆盖英国、美国、香港学生签证材料），暂不作确定回答。",
+            out = result("cannot_answer", UNIMPLEMENTED_TOPIC_SUMMARY.get(
+                topic, "该领域流程尚未接入，当前不能生成确定建议。"),
                          notices=notices)
             return self._finish(out, timer, turn.facts, turn.basis, topic)
 
@@ -191,15 +206,6 @@ class Agent2Runner:
             out.advice_updates = [TOPIC_ADVICE[topic]]
         return self._finish(out, timer, turn.facts, turn.basis, topic, read_id=self.knowledge.read_id,
                             model_version=self.generator.model_version, advice=advice)
-
-    @staticmethod
-    def _stated_notice(assessment):
-        stated = [k for k, f in assessment.facts.items() if f.source == "conversation"]
-        if not stated:
-            return []
-        return [Notice(code="unsaved_conditions",
-                       message="以下条件来自本次对话，未写入档案：" + "、".join(clarify.label(k) for k in stated)
-                               + "。如需保存，请在档案变更提案中确认。")]
 
     @staticmethod
     def _finish(out, timer, facts, basis, topic, read_id=None, model_version="none", advice=None):

@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 
 TAG="${1:-$(git rev-parse --short HEAD 2>/dev/null || echo manual)}"
 export ADMIN_IMAGE="globalpathway/admin:${TAG}"
+export USER_IMAGE="globalpathway/user:${TAG}"
 
 echo "[deploy] 构建镜像 ${ADMIN_IMAGE} ..."
 docker compose -f docker-compose.prod.yml build
@@ -18,3 +19,4 @@ docker compose -f docker-compose.prod.yml ps
 
 echo "[deploy] 健康检查："
 curl -fsS "http://127.0.0.1:8765/healthz" && echo "" && echo "[deploy] OK"
+curl -fsS "http://127.0.0.1:8787/healthz" && echo "" && echo "[deploy] user OK"

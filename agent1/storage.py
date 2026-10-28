@@ -112,8 +112,6 @@ CREATE TABLE IF NOT EXISTS CREDIT_CARD (
         CHECK (product_status IN ('ACTIVE','SUSPENDED','DISCONTINUED')),
     target_audience   TEXT,
     official_url      TEXT,
-    data_status       TEXT NOT NULL DEFAULT 'synthetic'
-        CHECK (data_status IN ('verified','estimated','synthetic')),
     effective_from    DATE,
     effective_to      DATE,
     last_verified_at  TIMESTAMPTZ,
@@ -128,10 +126,16 @@ CREATE TABLE IF NOT EXISTS CARD_REWARD_RULE (
     reward_type              TEXT NOT NULL CHECK (reward_type IN ('cashback','points','miles')),
     reward_rate              NUMERIC CHECK (reward_rate IS NULL OR reward_rate BETWEEN 0 AND 1),
     points_per_currency_unit NUMERIC CHECK (points_per_currency_unit IS NULL OR points_per_currency_unit >= 0),
+    cash_equivalent_rate     NUMERIC CHECK (cash_equivalent_rate IS NULL OR cash_equivalent_rate BETWEEN 0 AND 1),
     spend_cap                NUMERIC CHECK (spend_cap IS NULL OR spend_cap >= 0),
     cap_currency             TEXT CHECK (cap_currency IS NULL OR cap_currency ~ '^[A-Z]{3}$'),
     cap_period               TEXT CHECK (cap_period IS NULL OR cap_period IN ('transaction','month','quarter','year')),
+    qualification_type       TEXT NOT NULL DEFAULT 'automatic'
+        CHECK (qualification_type IN ('automatic','selected_category','payment_method','designated_merchant')),
+    qualification_value      TEXT,
     description              TEXT,
+    source_url               TEXT,
+    last_verified_at         TIMESTAMPTZ,
     CHECK (reward_rate IS NOT NULL OR points_per_currency_unit IS NOT NULL),
     CHECK (spend_cap IS NULL OR cap_currency IS NOT NULL)
 );
@@ -146,10 +150,41 @@ CREATE TABLE IF NOT EXISTS CARD_FEE (
     rate              NUMERIC CHECK (rate IS NULL OR rate BETWEEN 0 AND 1),
     waiver_condition  TEXT,
     notes             TEXT,
+    scope_text        TEXT,
+    source_url        TEXT,
+    last_verified_at  TIMESTAMPTZ,
     CHECK (amount IS NOT NULL OR rate IS NOT NULL),
     CHECK (amount IS NULL OR currency IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_card_fee_card ON CARD_FEE(card_id);
+
+CREATE TABLE IF NOT EXISTS CARD_BORROWING_TERM (
+    borrowing_term_id       TEXT PRIMARY KEY,
+    card_id                 TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
+    term_type               TEXT NOT NULL CHECK (term_type IN (
+        'purchase_apr','cash_advance_apr','interest_free_period',
+        'cash_instalment_offer','cash_instalment_example','spending_instalment'
+    )),
+    apr                     NUMERIC CHECK (apr IS NULL OR apr BETWEEN 0 AND 1),
+    monthly_fee_rate        NUMERIC CHECK (monthly_fee_rate IS NULL OR monthly_fee_rate BETWEEN 0 AND 1),
+    tenor_months            INTEGER CHECK (tenor_months IS NULL OR tenor_months > 0),
+    max_interest_free_days  INTEGER CHECK (max_interest_free_days IS NULL OR max_interest_free_days >= 0),
+    example_principal       NUMERIC CHECK (example_principal IS NULL OR example_principal >= 0),
+    periodic_repayment      NUMERIC CHECK (periodic_repayment IS NULL OR periodic_repayment >= 0),
+    total_repayment         NUMERIC CHECK (total_repayment IS NULL OR total_repayment >= 0),
+    currency                TEXT CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$'),
+    available               BOOLEAN NOT NULL DEFAULT TRUE,
+    personalized_pricing    BOOLEAN NOT NULL DEFAULT FALSE,
+    description             TEXT NOT NULL,
+    source_url              TEXT NOT NULL,
+    source_effective_date   DATE,
+    last_verified_at        TIMESTAMPTZ NOT NULL,
+    UNIQUE (card_id, term_type, tenor_months),
+    CHECK (example_principal IS NULL OR currency IS NOT NULL),
+    CHECK (periodic_repayment IS NULL OR currency IS NOT NULL),
+    CHECK (total_repayment IS NULL OR currency IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_card_borrowing_term_card ON CARD_BORROWING_TERM(card_id);
 
 CREATE TABLE IF NOT EXISTS CARD_BENEFIT (
     benefit_id    TEXT PRIMARY KEY,
@@ -158,24 +193,34 @@ CREATE TABLE IF NOT EXISTS CARD_BENEFIT (
     benefit_name  TEXT NOT NULL,
     quantity      NUMERIC CHECK (quantity IS NULL OR quantity >= 0),
     period        TEXT CHECK (period IS NULL OR period IN ('transaction','month','quarter','year')),
-    description   TEXT
+    description   TEXT,
+    source_url    TEXT,
+    last_verified_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_card_benefit_card ON CARD_BENEFIT(card_id);
 
 CREATE TABLE IF NOT EXISTS CARD_ELIGIBILITY_RULE (
     eligibility_rule_id  TEXT PRIMARY KEY,
     card_id              TEXT NOT NULL REFERENCES CREDIT_CARD(card_id) ON DELETE CASCADE,
-    rule_type            TEXT NOT NULL CHECK (rule_type IN ('minimum_age','minimum_income','student_status','banking_relationship','credit_assessment','residency','other')),
-    operator             TEXT NOT NULL CHECK (operator IN ('eq','gte','lte','in','required')),
+    rule_type            TEXT NOT NULL CHECK (rule_type IN ('minimum_age','minimum_income','minimum_assets','asset_proof','student_status','institution_status','banking_relationship','relationship_balance','credit_assessment','residency','other')),
+    operator             TEXT NOT NULL CHECK (operator IN ('eq','gte','lte','in','required','available')),
     value_text           TEXT,
     value_numeric        NUMERIC,
     currency             TEXT CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$'),
     required             INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0,1)),
+    path_id              TEXT NOT NULL DEFAULT 'hard',
+    outcome_if_met       TEXT NOT NULL DEFAULT 'meets_public_criteria'
+        CHECK (outcome_if_met IN ('meets_public_criteria','needs_bank_assessment')),
+    application_channel  TEXT NOT NULL DEFAULT 'all'
+        CHECK (application_channel IN ('all','digital','phone','document_submission')),
     description          TEXT,
+    source_url           TEXT,
+    last_verified_at     TIMESTAMPTZ,
     CHECK (value_text IS NOT NULL OR value_numeric IS NOT NULL),
     CHECK (currency IS NULL OR value_numeric IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_card_eligibility_card ON CARD_ELIGIBILITY_RULE(card_id);
+CREATE INDEX IF NOT EXISTS idx_card_eligibility_path ON CARD_ELIGIBILITY_RULE(card_id, path_id);
 
 CREATE TABLE IF NOT EXISTS SCHOOL (
     school_id   TEXT PRIMARY KEY,
@@ -387,6 +432,21 @@ def session(paths=None, readonly=True):
     try:
         _prepare(connection)
         connection.read_only = readonly
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+@contextmanager
+def read_session():
+    """Read an already-initialized RDS schema without running startup DDL."""
+    connection = _connect()
+    try:
+        connection.read_only = True
         yield connection
         connection.commit()
     except Exception:

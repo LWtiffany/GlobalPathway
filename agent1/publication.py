@@ -413,10 +413,18 @@ def search(country=None, policy_type="student", *, now=None, paths=None):
     paths = paths or config.PATHS
     now = now or _now()
     with storage.session(paths) as connection:
-        rows = _rows(connection, """SELECT p.*, r.revision_no, r.payload_json FROM POLICY_PUBLICATION p
-            JOIN POLICY_REVISION r USING (revision_id) JOIN VISA_POLICY v USING (policy_id)
-            WHERE p.status='ACTIVE' AND (%s IS NULL OR v.country=%s) AND v.policy_type=%s
-            ORDER BY v.country, v.title""", (country, country, policy_type))
+        # Use ON (not USING): after joining revision, both p and r expose policy_id,
+        # so PostgreSQL rejects JOIN VISA_POLICY USING (policy_id) as ambiguous.
+        sql = """SELECT p.*, r.revision_no, r.payload_json FROM POLICY_PUBLICATION p
+            JOIN POLICY_REVISION r ON r.revision_id = p.revision_id
+            JOIN VISA_POLICY v ON v.policy_id = p.policy_id
+            WHERE p.status='ACTIVE' AND v.policy_type=%s"""
+        params: list = [policy_type]
+        if country is not None:
+            sql += " AND v.country=%s"
+            params.append(country)
+        sql += " ORDER BY v.country, v.title"
+        rows = _rows(connection, sql, params)
     return [_envelope(row, row, now, paths) for row in rows]
 
 
@@ -428,8 +436,12 @@ def get(policy_id, revision_id, *, now=None, paths=None):
     paths = paths or config.PATHS
     now = now or _now()
     with storage.session(paths) as connection:
-        revision = _row(connection, """SELECT * FROM POLICY_REVISION
-            WHERE revision_id=%s AND (%s IS NULL OR policy_id=%s)""", (revision_id, policy_id, policy_id))
+        if policy_id is None:
+            revision = _row(connection, "SELECT * FROM POLICY_REVISION WHERE revision_id=%s",
+                            (revision_id,))
+        else:
+            revision = _row(connection, """SELECT * FROM POLICY_REVISION
+                WHERE revision_id=%s AND policy_id=%s""", (revision_id, policy_id))
         pub = revision and _row(connection, "SELECT * FROM POLICY_PUBLICATION WHERE policy_id=%s",
                                 (revision["policy_id"],))
     if revision is None or pub is None:
@@ -442,5 +454,7 @@ def list_publications(paths=None):
     with storage.session(paths) as connection:
         return _rows(connection, """SELECT v.country, v.title, p.policy_id, p.status, p.revision_id,
                 r.revision_no, p.published_by, p.published_at, p.verified_at, p.withdraw_reason
-            FROM POLICY_PUBLICATION p JOIN POLICY_REVISION r USING (revision_id)
-            JOIN VISA_POLICY v USING (policy_id) ORDER BY v.country, v.title""")
+            FROM POLICY_PUBLICATION p
+            JOIN POLICY_REVISION r ON r.revision_id = p.revision_id
+            JOIN VISA_POLICY v ON v.policy_id = p.policy_id
+            ORDER BY v.country, v.title""")

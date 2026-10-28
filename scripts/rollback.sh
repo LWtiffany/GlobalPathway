@@ -13,7 +13,8 @@ if [ -z "$TAG" ]; then
 fi
 
 export ADMIN_IMAGE="globalpathway/admin:${TAG}"
-echo "[rollback] 回滚到 ${ADMIN_IMAGE} ..."
+export USER_IMAGE="globalpathway/user:${TAG}"
+echo "[rollback] 回滚到 ${ADMIN_IMAGE} / ${USER_IMAGE} ..."
 docker compose -f docker-compose.prod.yml up -d
 echo "[rollback] 状态："
 docker compose -f docker-compose.prod.yml ps

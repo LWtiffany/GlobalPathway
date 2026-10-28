@@ -1,0 +1,206 @@
+"""Deterministic response composition with a single-intent fast path."""
+
+import re
+
+from agent2.models import AnswerBody, Notice
+from agent2.runner import SCOPE_BOUNDARY
+
+from .contracts import QualityReport, TaskPlan, UnifiedAnswer
+
+DOMAIN_LABEL = {"visa": "签证", "fx": "外汇与汇款", "bank_account": "银行开户", "credit_card": "信用卡"}
+MATERIAL_TAG = {"required": "必需", "conditional": "视情况", "unverified": "待核实"}
+# Multi-intent turns: at most one follow-up per domain, hard cap across domains.
+MAX_FOLLOWUPS_MULTI = 2
+
+REFUSAL_OTHER = (
+    "暂时无法识别为签证、外汇汇款、银行开户或信用卡问题。"
+    "可以换一种说法，例如「英国学费怎么汇」「汇丰怎么开户」或「推荐信用卡」。"
+)
+PARTIAL_OOS = "部分内容超出服务范围（选校/代办/租房合同/投资理财等），未纳入本轮建议。"
+# Routing audit stays on TaskPlan.routing_audit / answer snapshot — never in user notices.
+
+# 「需不需要 / 要不要 / …吗」先给结论，再展开产品建议。避开「需要什么材料」。
+_NEED_QUESTION = re.compile(
+    r"需不需要|要不要|有没有必要|是否需要|有必要(?:吗|么)?"
+    r"|我?需要(?:开|办).{0,20}吗"
+    r"|(?:要(?:开|办)|开|办)(?:银行账户|银行开户|开户|信用卡|汇丰卡).{0,6}吗",
+    re.I,
+)
+
+_NECESSITY_VERDICT = {
+    "bank_account": (
+        "需要（强烈建议）。当地银行账户方便收付款、交房租和生活费，"
+        "也常是申请当地信用卡的前提。"
+    ),
+    "credit_card": (
+        "不是硬性必需，但很实用。订票、酒店和日常消费更方便；"
+        "有当地银行账户后再申请通常更顺。"
+    ),
+    "fx": (
+        "若学费或生活费要从境内汇出，一般需要按购汇/汇款要求办理；"
+        "具体看你的付款方式。"
+    ),
+    "visa": (
+        "留学通常需要办理相应学生签证；是否已持有有效签证以你的行程和官方要求为准。"
+    ),
+}
+
+
+def is_necessity_question(text: str) -> bool:
+    return bool(text and _NEED_QUESTION.search(text))
+
+
+def necessity_summary(domains: list[str]) -> str:
+    labels = [DOMAIN_LABEL[d] for d in domains if d in DOMAIN_LABEL]
+    if domains == ["bank_account", "credit_card"] or set(domains) == {"bank_account", "credit_card"}:
+        return ("开户一般需要；信用卡不是硬性必需，但建议准备。"
+                "下面先说结论；若你想办卡，再确认后给你具体方案。")
+    if len(labels) == 1:
+        short = {
+            "bank_account": "需要开。下面是具体怎么开、准备什么。",
+            "credit_card": "不是硬性必需，但建议办。若你想办，我再帮你比较卡片。",
+            "fx": "涉及跨境付学费/生活费时通常需要。下面是具体准备。",
+            "visa": "通常需要。下面是材料与要点。",
+        }.get(domains[0], "结论如下，随后是具体建议。")
+        return short
+    if len(labels) == 2:
+        return f"关于{labels[0]}和{labels[1]}：先回答要不要，再分开给具体建议。"
+    return f"关于{'、'.join(labels[:-1])}和{labels[-1]}：先回答要不要，再分开给具体建议。"
+
+
+def necessity_preamble(domains: list[str]) -> list[str]:
+    lines = ["## 先说要不要"]
+    for domain in domains:
+        verdict = _NECESSITY_VERDICT.get(domain)
+        if verdict:
+            lines.append(f"{DOMAIN_LABEL[domain]}：{verdict}")
+    return lines
+
+
+# Back-compat aliases used by older call sites / tests.
+_necessity_summary = necessity_summary
+_necessity_preamble = necessity_preamble
+
+
+class DefaultResponseComposer:
+    async def compose(self, plan: TaskPlan, report: QualityReport,
+                      *, user_text: str = "") -> UnifiedAnswer:
+        if not report.results:
+            reason = (plan.routing_audit.refusal_reason if plan.routing_audit
+                      else (plan.unsupported_intents[0] if plan.unsupported_intents else "other"))
+            if reason == "out_of_scope" or "out_of_scope" in plan.unsupported_intents:
+                summary = SCOPE_BOUNDARY
+            else:
+                summary = REFUSAL_OTHER
+            return UnifiedAnswer(
+                status="out_of_scope",
+                answer=AnswerBody(summary=summary),
+            )
+
+        ask_need = is_necessity_question(user_text)
+        domains = [item.domain for item in report.results]
+
+        if len(report.results) == 1 and not plan.unsupported_intents:
+            result = report.results[0]
+            limitations = list(result.answer.limitations)
+            if plan.tasks and plan.tasks[0].source == "llm":
+                limitations.append(
+                    f"若你问的不是{DOMAIN_LABEL[plan.tasks[0].domain]}，请换个更明确的说法。"
+                )
+            answer = result.answer if not limitations else result.answer.model_copy(
+                update={"limitations": limitations})
+            if ask_need and result.status in {"answered", "needs_verification", "needs_input"}:
+                # Single-bubble path keeps necessity inline; multi-intent chat
+                # splits into separate messages in the legacy adapter instead.
+                preamble = necessity_preamble(domains)
+                steps = list(preamble)
+                if answer.summary:
+                    steps.append(answer.summary)
+                steps.extend(s for s in answer.steps if s and s != answer.summary)
+                answer = answer.model_copy(update={
+                    "summary": necessity_summary(domains),
+                    "steps": steps,
+                })
+            return UnifiedAnswer(
+                status=result.status, answer=answer, domain_results=report.results,
+                missing_fields=result.missing_fields, next_actions=result.next_actions,
+                notices=result.notices, follow_up_questions=result.follow_up_questions,
+            )
+
+        statuses = [item.status for item in report.results]
+        if "needs_input" in statuses:
+            status = "needs_input"
+        elif all(item == "answered" for item in statuses):
+            status = "answered"
+        elif all(item == "cannot_answer" for item in statuses):
+            status = "cannot_answer"
+        else:
+            status = "needs_verification"
+
+        # Each domain already ran its full workflow; merge complete answers without
+        # truncating steps/materials (side-panel advice uses the same DomainResult).
+        sections: list[str] = []
+        labels = []
+        if ask_need:
+            sections.extend(necessity_preamble(domains))
+        for item in report.results:
+            label = DOMAIN_LABEL[item.domain]
+            labels.append(label)
+            sections.append(f"## {label}")
+            if item.answer.summary:
+                sections.append(item.answer.summary)
+            for step in item.answer.steps:
+                if step and step != item.answer.summary:
+                    sections.append(step)
+            for material in item.answer.materials:
+                tag = MATERIAL_TAG.get(material.applicability, "")
+                line = f"{material.name_zh}（{tag}）" if tag else material.name_zh
+                if material.name_en and material.name_en != material.name_zh:
+                    line += f" / {material.name_en}"
+                if material.condition_text:
+                    line += f"；条件：{material.condition_text}"
+                sections.append(line)
+
+        if ask_need:
+            summary = necessity_summary(domains)
+        elif len(labels) == 2:
+            summary = f"{labels[0]}和{labels[1]}我分开说。"
+        elif len(labels) > 2:
+            summary = f"{'、'.join(labels[:-1])}和{labels[-1]}我分开说。"
+        else:
+            summary = labels[0] if labels else ""
+
+        limitations = [note for item in report.results for note in item.answer.limitations]
+        notices = [note for item in report.results for note in item.notices]
+        # Keep materials on the unified body for citation/todo wiring; chat UI nests
+        # them under ## sections for multi-intent and skips the top-level list.
+        materials = [m for item in report.results for m in item.answer.materials]
+        if plan.unsupported_intents:
+            limitations.append(PARTIAL_OOS)
+
+        follow_ups = []
+        seen_fields: set[str] = set()
+        for item in report.results:
+            if len(follow_ups) >= MAX_FOLLOWUPS_MULTI:
+                break
+            for question in item.follow_up_questions:
+                if question.field in seen_fields:
+                    continue
+                follow_ups.append(question)
+                seen_fields.add(question.field)
+                break  # one follow-up per domain
+
+        if plan.tasks and all(task.source == "llm" for task in plan.tasks):
+            joined = "、".join(DOMAIN_LABEL[task.domain] for task in plan.tasks)
+            limitations.append(f"若你问的不是{joined}，请换个更明确的说法。")
+
+        return UnifiedAnswer(
+            status=status,
+            answer=AnswerBody(summary=summary, steps=sections,
+                              materials=materials, limitations=limitations),
+            domain_results=report.results,
+            missing_fields=list(dict.fromkeys(f for item in report.results for f in item.missing_fields)),
+            next_actions=list(dict.fromkeys(a for item in report.results for a in item.next_actions)),
+            notices=notices,
+            follow_up_questions=follow_ups,
+        )
