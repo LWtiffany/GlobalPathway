@@ -4,7 +4,6 @@ Agent 2 的唯一事实入口。S1 只有合成夹具实现（synthetic=true）�
 接口完成后，以同一协议替换，编排与门控不变。本模块不连接 Agent 1 数据库。
 """
 import json
-from datetime import timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -13,8 +12,8 @@ from .models import KnowledgeRecord, ReadRecord
 FIXTURES = Path(__file__).with_name("fixtures")
 DEFAULT_FIXTURE = FIXTURES / "knowledge_uk_student_visa.json"
 
-# PRD 7.4 试点 SLA：签证/开户材料 7 天
-FRESHNESS_SLA = {"documents": timedelta(days=7)}
+# Freshness SLA removed for answer generation: use published ACTIVE rows as-is.
+# Effective dates / withdrawn / missing evidence still block definite answers.
 
 
 class KnowledgeRead(Protocol):
@@ -35,9 +34,6 @@ def availability(record: KnowledgeRecord, now):
         return "not_yet_effective"
     if record.effective_to and today > record.effective_to:
         return "expired"
-    sla = FRESHNESS_SLA.get(record.topic, timedelta(days=7))
-    if now - record.verified_at > sla:
-        return "stale"
     if record.snapshot is not None and any(
             not r.evidence_quote.strip() or r.evidence_quote not in record.snapshot
             for r in record.requirements):

@@ -64,12 +64,46 @@ class TemplateGenerator:
         visa = VISA_ZH.get(facts.get("visa_category"), facts.get("visa_category"))
         required = [m for m in materials if m.applicability == "required"]
         conditional = [m for m in materials if m.applicability == "conditional"]
-        summary = f"{place} {visa}：按你目前的条件，确定需要准备 {len(required)} 项材料"
+        unverified = [m for m in materials if m.applicability == "unverified"]
+        summary = f"{place} {visa}：按你目前的条件，需准备 {len(required)} 项必需材料"
         if conditional:
-            summary += f"，另有 {len(conditional)} 项取决于尚未确认的条件"
+            summary += f"，另有 {len(conditional)} 项视情况而定"
+        if unverified:
+            summary += f"，{len(unverified)} 项待核实"
         summary += "。"
-        steps = ["对照下方「确定需要」的材料逐项准备，每项都可展开查看来源原文。"]
-        if conditional:
-            steps.append("补充下方追问的条件后，再确认「视条件而定」的材料是否需要。")
-        steps.append("提交申请前，到官方入口核对最新要求（本回答的资料核验时间见每条引用）。")
+        steps = _prep_steps(required, conditional, unverified, assessment)
         return Draft(summary=summary, steps=steps, materials=materials, claims=claims)
+
+
+def _names(materials, limit=5):
+    shown = [m.name_zh for m in materials[:limit]]
+    text = "、".join(shown)
+    if len(materials) > limit:
+        text += f"等 {len(materials)} 项"
+    return text
+
+
+def _prep_steps(required, conditional, unverified, assessment):
+    """Only add prep lines that add information beyond the material list above.
+
+    Wording matches UI tags（必需 / 视情况 / 待核实）. Pure「必需」lists leave
+    steps empty so the chat does not show a generic「准备要点」block.
+    """
+    steps = []
+    for material in conditional:
+        if material.condition_text:
+            steps.append(f"若{material.condition_text}，再准备{material.name_zh}。")
+        elif material.pending_fields:
+            labels = "、".join(material.pending_fields)
+            steps.append(f"确认{labels}后，再判断是否需要{material.name_zh}。")
+        else:
+            steps.append(f"「{material.name_zh}」视个人情况而定，对照其条件说明。")
+    if unverified:
+        steps.append(
+            f"「{_names(unverified)}」在资料中未写清适用条件，标为待核实，"
+            "对照引用原文后再决定是否提交。")
+    pending = list(getattr(assessment, "pending_fields", None) or [])
+    if pending and not conditional and not unverified and required:
+        steps.append(
+            f"上方 {len(required)} 项「必需」可先备齐；回答追问后，视情况材料会再收窄。")
+    return steps

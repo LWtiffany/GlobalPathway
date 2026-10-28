@@ -33,7 +33,7 @@ ERROR_KINDS = ("too_many_questions", "repeated_ask", "guessed_unknown", "definit
 def _profile(case):
     spec = case.get("profile") or {}
     fields = {code: ProfileField(value=f.get("value"), status=f.get("status", "unknown"),
-                                 source="user" if f.get("status") == "confirmed" else None)
+                                 source_type="user_edit" if f.get("status") == "confirmed" else None)
               for code, f in (spec.get("fields") or {}).items()}
     return Profile(profile_id=f"eval-{case['case_id']}", user_id="eval", version=spec.get("version", 1),
                    synthetic=True, fields=fields)

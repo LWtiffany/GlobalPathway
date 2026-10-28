@@ -36,6 +36,12 @@ def _dump(value):
     return value
 
 
+@route("GET", r"/healthz", auth=False)
+def healthz(service, user_id, body, query):
+    """Process-level health check; it deliberately does not expose user data."""
+    return 200, {"status": "ok", "service": "user"}
+
+
 @route("POST", r"/v1/demo/login", auth=False)
 def demo_login(service, user_id, body, query):
     return 200, service.demo_login(body.get("user"))
@@ -48,7 +54,9 @@ def me(service, user_id, body, query):
 
 @route("POST", r"/v1/profiles")
 def create_profile(service, user_id, body, query):
-    return 201, service.create_profile(user_id, body.get("fields") or {}, synthetic=bool(body.get("synthetic")))
+    return 201, service.create_profile(user_id, body.get("fields") or {},
+                                       synthetic=bool(body.get("synthetic")),
+                                       display_name=body.get("display_name"))
 
 
 @route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)")
@@ -78,25 +86,33 @@ def dismiss_proposal(service, user_id, body, query, proposal_id):
     return 200, service.dismiss_proposal(user_id, proposal_id)
 
 
-@route("POST", r"/v1/conversations")
+@route("POST", r"/v1/conversations")  # compatibility alias
+@route("POST", r"/v1/sessions")
 def create_conversation(service, user_id, body, query):
     return 201, service.create_conversation(user_id, body.get("profile_id"))
 
 
-@route("GET", r"/v1/conversations")
+@route("GET", r"/v1/conversations")  # compatibility alias
+@route("GET", r"/v1/sessions")
 def list_conversations(service, user_id, body, query):
     return 200, service.list_conversations(user_id)
 
 
-@route("GET", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")
+@route("GET", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")  # compatibility alias
+@route("GET", r"/v1/sessions/(?P<conversation_id>[\w-]+)/messages")
 def list_messages(service, user_id, body, query, conversation_id):
     return 200, service.list_messages(user_id, conversation_id, after_seq=int(query.get("after_seq", 0)),
                                       limit=int(query.get("limit", 50)))
 
 
-@route("POST", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")
+@route("POST", r"/v1/conversations/(?P<conversation_id>[\w-]+)/messages")  # compatibility alias
+@route("POST", r"/v1/sessions/(?P<conversation_id>[\w-]+)/messages")
 def post_message(service, user_id, body, query, conversation_id):
-    return 200, service.post_message(user_id, conversation_id, body.get("text"), body.get("client_message_id"))
+    return 200, service.post_message(
+        user_id, conversation_id, body.get("text"), body.get("client_message_id"),
+        confirmed_fields=body.get("confirmed_fields") or {},
+        expected_profile_version=body.get("expected_profile_version"),
+        cleared_fields=body.get("cleared_fields") or [])
 
 
 @route("POST", r"/v1/messages/(?P<message_id>[\w-]+)/reaction")
@@ -119,12 +135,26 @@ def fields(service, user_id, body, query):
     return 200, {"fields": clarify.field_catalog()}
 
 
+@route("GET", r"/v1/schools", auth=False)
+def list_schools(service, user_id, body, query):
+    from . import catalog
+    country = (query.get("country") or "").strip() or None
+    return 200, {"schools": catalog.list_schools(country=country)}
+
+
+@route("GET", r"/v1/schools/(?P<school_id>[\w-]+)/programs", auth=False)
+def list_programs(service, user_id, body, query, school_id):
+    from . import catalog
+    return 200, {"programs": catalog.list_programs(school_id)}
+
+
 @route("GET", r"/v1/profiles")
 def list_profiles(service, user_id, body, query):
     return 200, service.list_profiles(user_id)
 
 
-@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/conversation")
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/conversation")  # compatibility alias
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/session")
 def profile_conversation(service, user_id, body, query, profile_id):
     return 200, service.profile_conversation(user_id, profile_id)
 
@@ -240,7 +270,11 @@ def make_handler(service):
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path.startswith("/v1/"):
+            path = self.path.partition("?")[0]
+            # Registered API routes (including /healthz) must win over the SPA fallback.
+            if path.startswith("/v1/") or any(
+                    verb == "GET" and pattern.match(path)
+                    for verb, pattern, handler, auth in ROUTES):
                 return self._handle("GET")
             found = static_file(self.path)
             if not found:

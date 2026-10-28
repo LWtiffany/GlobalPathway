@@ -173,8 +173,12 @@ def to_read_record(envelope, visa_category="student_visa", topic="documents"):
         effective_from=envelope["effective_from"], effective_to=envelope["effective_to"],
         source=_source(primary, sources), snapshot=None, requirements=requirements,
     )
-    return ReadRecord(record=record, available=envelope["availability"] == "available",
-                      availability_reason=envelope["availability"])
+    # Agent1 may flag ACTIVE rows as "stale" after its source SLA; Agent2 answer path
+    # still treats them as usable so advice follows published DB content without an
+    # extra freshness gate. Withdrawn / pending / expired remain unavailable.
+    reason = envelope["availability"]
+    usable = reason in {"available", "stale"}
+    return ReadRecord(record=record, available=usable, availability_reason=reason)
 
 
 class Agent1KnowledgeRead:

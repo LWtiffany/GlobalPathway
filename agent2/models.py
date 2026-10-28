@@ -12,15 +12,24 @@ ANSWER_STATUSES = ("answered", "needs_input", "needs_verification", "cannot_answ
 
 class ProfileField(BaseModel):
     value: Any = None
-    status: Literal["confirmed", "unknown"] = "unknown"
-    source: Literal["user", "import", "demo"] | None = None
+    status: Literal["unknown", "inferred", "proposed", "confirmed", "stale", "disputed"] = "unknown"
+    source_type: Literal[
+        "user_selection", "user_message", "user_edit", "document_import",
+        "system_derived", "agent_inference", "demo",
+    ] | None = None
     confirmed_at: str | None = None
+    expires_at: str | None = None
+    source_message_id: str | None = None
+    field_version: int = 0
+    sensitivity: Literal["standard", "personal", "financial", "sensitive"] = "standard"
 
 
 class Profile(BaseModel):
     profile_id: str
     user_id: str
+    display_name: str | None = None
     version: int
+    status: Literal["active", "archived"] = "active"
     synthetic: bool = False
     fields: dict[str, ProfileField] = Field(default_factory=dict)
 
@@ -116,6 +125,10 @@ class FollowUpQuestion(BaseModel):
     text: str
     rule: str
     profile_version: int
+    input_type: Literal["single_select", "multi_select", "text", "number", "date"] = "text"
+    options: list[dict[str, Any]] = Field(default_factory=list)
+    max_selections: int | None = None
+    persist_mode: Literal["save_on_select", "proposal", "session_only"] = "proposal"
 
 
 class Notice(BaseModel):

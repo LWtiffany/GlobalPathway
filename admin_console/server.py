@@ -52,7 +52,7 @@ def _dump(value):
 
 @route("GET", r"/healthz", auth=False)
 def healthz(console, actor, body, query):
-    return 200, {"status": "ok"}
+    return 200, {"status": "ok", "service": "admin"}
 
 
 @route("POST", r"/v1/admin/login", auth=False)

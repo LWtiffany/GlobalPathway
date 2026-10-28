@@ -1,5 +1,7 @@
 crawl4ai==0.9.4
 unclecode-litellm==1.81.13
 openai>=2,<3
-pydantic>=2,<3
+pydantic>=2.12,<3
+pydantic-graph==2.57.0
 psycopg[binary]>=3.2,<4
+Jinja2>=3.1,<4

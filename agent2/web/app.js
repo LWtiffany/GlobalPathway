@@ -4,49 +4,49 @@ const $app = document.getElementById("app");
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const GRID = ["role", "beneficiary", "destination_country", "school", "course", "offer_status",
   "planned_start_date", "payer", "visa_category"];
-const GRID_LABEL = { destination_country: "目的地", offer_status: "Offer", planned_start_date: "入学日期" };
+const GRID_LABEL = { destination_country: "目的地", offer_status: "录取状态", planned_start_date: "入学日期" };
 const STATUS = {
-  answered: { label: "已通过质量检查", cls: "ok", why: "" },
+  answered: { label: "已确认", cls: "ok", why: "" },
   needs_input: { label: "待补充", cls: "", why: "还缺少关键信息，补充后再给出确定答案。" },
   needs_verification: { label: "待核实", cls: "warn", why: "部分材料是否需要取决于尚未确认的条件，已逐项标出。" },
   cannot_answer: { label: "无法回答", cls: "warn", why: "已发布的官方资料不足以支持确定回答，不做猜测。" },
   out_of_scope: { label: "范围外", cls: "", why: "该问题不在留学准备顾问的服务范围内。" },
 };
-const STEPS = ["识别问题", "必要时追问", "查询已发布知识", "质量检查", "保存正式回答", "展示结果"];
 const TOPICS = [
-  { key: "remittance", no: "01", title: "汇款建议", rows: ["用途", "金额", "材料", "时间点"],
-    why: "汇款类官方资料尚未接入发布面，暂不生成建议。" },
-  { key: "account", no: "02", title: "开户建议", rows: ["地区", "产品", "材料", "门槛"],
-    why: "开户类资料尚未接入发布面，暂不生成建议。" },
+  { key: "remittance", no: "01", title: "汇款建议", rows: ["用途", "金额", "材料", "时间点"] },
+  { key: "account", no: "02", title: "开户建议", rows: ["地区", "产品", "材料", "门槛"] },
   { key: "visa", no: "03", title: "签证建议" },
-  { key: "credit_card", no: "04", title: "信用卡建议", rows: ["产品", "费用 / 限制", "合作披露"],
-    why: "信用卡建议待补充：需要银行产品资料与合作披露。" },
+  { key: "credit_card", no: "04", title: "信用卡建议", rows: ["产品", "费用 / 限制", "申请条件"] },
 ];
 const AVAIL = { available: "有效", stale: "待复核（超过核验时效）", withdrawn: "已撤回", superseded: "已被新版本取代",
   missing_evidence: "证据缺失" };
 const TAG = { required: "必需", conditional: "视情况", unverified: "待核实" };
 const PRESETS = [
   { user: "王女士", tag: "家长 · 英国 + 香港",
-    desc: "两个孩子：王小明（英国 UCL 硕士，签证类别未填，演示追问）、王小悦（香港 HKU 本科）。",
+    desc: "两个孩子：王小明（英国 UCL 硕士，签证类别未填）、王小悦（香港 HKU 本科）。",
     profiles: [
-      { fields: { role: "parent", beneficiary: "王小明", destination_country: "UK", school: "UCL",
-        course: "MSc Computer Science", offer_status: "conditional", planned_start_date: "2026-09-21", payer: "parent" },
+      { fields: { role: "parent", beneficiary: "王小明", destination_country: "UK",
+        school: "f545e6b8-2118-5951-8f44-6f8e1f15110c", // University College London
+        offer_status: "conditional", planned_start_date: "2026-09-21", payer: "parent" },
         todos: ["与学校确认 CAS 发放时间", "预约签证中心递交时间"] },
-      { fields: { role: "parent", beneficiary: "王小悦", destination_country: "CN-HK", school: "HKU",
-        course: "BSc 本科", offer_status: "none" } },
+      { fields: { role: "parent", beneficiary: "王小悦", destination_country: "CN-HK",
+        school: "6ee509ee-2598-5cdc-8b73-01de1d34015f", // The University of Hong Kong (HKU)
+        offer_status: "none" } },
     ] },
   { user: "李同学", tag: "学生 · 美国",
     desc: "本人申请：李华，美国 NYU 数据科学硕士，无条件录取，学生签证。",
     profiles: [
-      { fields: { role: "student", beneficiary: "李华", destination_country: "US", school: "NYU",
-        course: "MS Data Science", offer_status: "unconditional", planned_start_date: "2026-09-02",
+      { fields: { role: "student", beneficiary: "李华", destination_country: "US",
+        school: "fdda5cc2-8be6-5f9b-a148-e93c1972cc8c", // New York University
+        offer_status: "unconditional", planned_start_date: "2026-09-02",
         visa_category: "student_visa", payer: "self" } },
     ] },
   { user: "陈同学", tag: "学生 · 香港",
-    desc: "本人申请：陈思，香港中文大学 MPhil，内地居民，学生签证（演示条件化材料）。",
+    desc: "本人申请：陈思，香港中文大学 MPhil，内地居民，学生签证。",
     profiles: [
-      { fields: { role: "student", beneficiary: "陈思", destination_country: "CN-HK", school: "CUHK",
-        course: "MPhil", offer_status: "unconditional", planned_start_date: "2026-09-01",
+      { fields: { role: "student", beneficiary: "陈思", destination_country: "CN-HK",
+        school: "f8b7d239-425b-5234-8277-a81abf4fc163", // The Chinese University of Hong Kong
+        offer_status: "unconditional", planned_start_date: "2026-09-01",
         visa_category: "student_visa", applicant_residence: "CN" } },
     ] },
 ];
@@ -55,7 +55,20 @@ const S = {
   token: localStorage.getItem("gp_token"), user: null, fields: null, profiles: [], pid: localStorage.getItem("gp_pid"),
   profile: null, conv: null, messages: [], advice: {}, plan: [], proposals: [], missing: new Set(),
   highlight: new Set(), flash: [], busy: false, pending: null, sheetH: null, collapsed: false, fb: {}, el: {},
+  // One-question-at-a-time follow-ups; trail lets the user undo a wrong tap.
+  followSeed: null, followTrail: [], suppressFields: [],
+  schools: [], programs: [], schoolById: {}, programById: {}, catalogReady: false,
 };
+
+// 追问撤销顺序（靠前的可先被「上一步」清掉）。trail 丢失时仍可按档案回退。
+const FOLLOW_UNDO_ORDER = [
+  "want_credit_card", "application_region", "applicant_age_band", "applicant_age",
+  "us_hsbc_account_path", "uk_hsbc_account_path", "annual_income_band_hkd", "annual_income_hkd",
+  "hk_resident", "hsbc_premier_path", "premier_relationship", "hsbc_relationship_balance_band",
+  "full_time_student", "student_institution_eligible", "repayment_mode", "spending_scenarios",
+  "study_card_focus", "reward_preference", "monthly_card_spend_band_hkd", "mainland_payment_method",
+  "asset_band",
+];
 
 // ---------- helpers ----------
 
@@ -109,11 +122,98 @@ const label = (code) => (S.fields && S.fields[code] ? S.fields[code].label : cod
 
 function valueLabel(code, v) {
   if (v === undefined || v === null) return "—";
+  if (code === "school") {
+    if (S.schoolById[v]) return S.schoolById[v].name;
+    // Prefer a readable placeholder over raw UUIDs when catalog miss/orphan.
+    if (looksLikeId(v)) return S.catalogReady ? "未知学校" : "学校加载中…";
+  }
+  if (code === "course") {
+    if (S.programById[v]) return S.programById[v].label;
+    if (looksLikeId(v)) return S.catalogReady ? "未知课程" : "课程加载中…";
+  }
   const f = S.fields && S.fields[code];
   const opt = f && f.options.find((o) => o.value === v);
   if (opt) return opt.label;
   if (f && f.kind === "date") return fmtDate(v);
   return String(v);
+}
+
+async function ensureSchools(country) {
+  const q = country ? `?country=${encodeURIComponent(country)}` : "";
+  const { schools } = await api("GET", `/schools${q}`);
+  S.schools = schools || [];
+  for (const s of S.schools) S.schoolById[s.school_id] = s;
+  return S.schools;
+}
+
+async function ensurePrograms(schoolId) {
+  if (!schoolId) { S.programs = []; return []; }
+  const { programs } = await api("GET", `/schools/${encodeURIComponent(schoolId)}/programs`);
+  S.programs = programs || [];
+  for (const p of S.programs) S.programById[p.program_id] = p;
+  return S.programs;
+}
+
+function looksLikeId(v) {
+  return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
+
+async function ensureCatalogForProfiles(profiles) {
+  // Sidebar shows every profile: load the full school list once, then programs
+  // for each school_id still stored as a UUID on any profile.
+  await ensureSchools();
+  const schoolIds = [...new Set((profiles || []).map((p) => val(p, "school")).filter(looksLikeId))];
+  await Promise.all(schoolIds.map((id) => ensurePrograms(id)));
+  S.catalogReady = true;
+}
+
+function schoolCourseInputs(initial = {}) {
+  const dest = initial.destination_country;
+  const schoolSel = h("select", { name: "school" }, h("option", { value: "" }, "请先选择目的地"));
+  const courseSel = h("select", { name: "course" }, h("option", { value: "" }, "请先选择学校"));
+  const fillSchools = async (country, keepSchool) => {
+    schoolSel.replaceChildren(h("option", { value: "" }, country ? "加载学校…" : "请先选择目的地"));
+    courseSel.replaceChildren(h("option", { value: "" }, "请先选择学校"));
+    if (!country) return;
+    let schools = [];
+    try {
+      schools = await ensureSchools(country);
+    } catch (e) {
+      schoolSel.replaceChildren(h("option", { value: "" }, "学校列表暂不可用"));
+      toast(e.message || "无法加载学校列表", true);
+      return;
+    }
+    schoolSel.replaceChildren(h("option", { value: "" }, schools.length ? "未填写" : "暂无该地区学校"));
+    for (const s of schools) {
+      schoolSel.append(h("option", {
+        value: s.school_id,
+        selected: keepSchool !== undefined && keepSchool === s.school_id,
+      }, s.name));
+    }
+  };
+  const fillPrograms = async (schoolId, keepCourse) => {
+    courseSel.replaceChildren(h("option", { value: "" }, schoolId ? "加载课程…" : "请先选择学校"));
+    if (!schoolId) return;
+    let programs = [];
+    try {
+      programs = await ensurePrograms(schoolId);
+    } catch (e) {
+      courseSel.replaceChildren(h("option", { value: "" }, "课程列表暂不可用"));
+      toast(e.message || "无法加载课程列表", true);
+      return;
+    }
+    courseSel.replaceChildren(h("option", { value: "" }, programs.length ? "未填写" : "暂无该校课程"));
+    for (const p of programs) {
+      courseSel.append(h("option", {
+        value: p.program_id,
+        selected: keepCourse !== undefined && keepCourse === p.program_id,
+      }, p.label));
+    }
+  };
+  schoolSel.addEventListener("change", () => {
+    fillPrograms(schoolSel.value || undefined);
+  });
+  return { schoolSel, courseSel, fillSchools, fillPrograms };
 }
 
 function val(profile, code) {
@@ -158,7 +258,7 @@ async function api(method, path, body, { timeout = 20000 } = {}) {
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 401 && path !== "/demo/login") logout("登录已失效，请重新选择模拟身份");
+    if (res.status === 401 && path !== "/demo/login") logout("登录已失效，请重新选择身份");
     throw new ApiError(data.code || `HTTP_${res.status}`, data.message || "请求失败", data.trace_id);
   }
   return data;
@@ -179,7 +279,7 @@ function closeOverlay() {
 // ---------- shell / routing ----------
 
 function topBar(cur) {
-  const right = [h("span", { class: "mock" }, "模拟环境 · 合成数据")];
+  const right = [];
   if (S.user) {
     right.push(
       h("a", { class: "nav" + (cur === "chat" ? " cur" : ""), href: "#/chat" }, "我的方案"),
@@ -200,6 +300,7 @@ function shell(content, cur) {
 
 function logout(message) {
   S.token = null; S.user = null; S.pid = null; S.profiles = []; S.fb = {}; S.pending = null;
+  S.followSeed = null; S.followTrail = []; S.suppressFields = [];
   localStorage.removeItem("gp_token");
   localStorage.removeItem("gp_pid");
   if (message) toast(message, true);
@@ -229,12 +330,10 @@ async function route() {
 // ---------- /login ----------
 
 function renderLogin() {
-  const name = h("input", { name: "n", placeholder: "或输入其他模拟用户名（进入后手动建档）", maxlength: "20" });
+  const name = h("input", { name: "n", placeholder: "或输入其他用户名（进入后手动建档）", maxlength: "20" });
   shell(h("div", { class: "page" },
-    h("h1", { class: "sf" }, "选择模拟身份"),
+    h("h1", { class: "sf" }, "选择身份"),
     h("p", { class: "lead" }, "选择一位预设客户进入，体验「上方案表 · 下对话」的留学准备顾问。"),
-    h("div", { class: "banner" }, h("b", null, "模拟环境"),
-      "　这不是银行登录：不需要、也不会收集任何银行账号、密码、证件号或验证码。所有客户与档案均为合成数据。"),
     h("div", { class: "presets" }, PRESETS.map((p) => h("button", { class: "preset", onclick: () => login(p) },
       h("span", { class: "who" }, p.tag), h("b", { class: "sf" }, p.user), h("span", { class: "kids" }, p.desc)))),
     h("form", { class: "custom", onsubmit: (e) => {
@@ -269,6 +368,10 @@ async function login(preset) {
 
 function fieldInput(code, value) {
   const f = S.fields[code] || { kind: "text", options: [] };
+  if (code === "school" || code === "course") {
+    // Populated by schoolCourseInputs / form wiring — placeholder until then.
+    return h("select", { name: code }, h("option", { value: "" }, "加载中…"));
+  }
   if (f.options.length) {
     return h("select", { name: code }, h("option", { value: "" }, "未填写"),
       f.options.map((o) => h("option", { value: JSON.stringify(o.value), selected: value !== undefined && o.value === value },
@@ -283,6 +386,8 @@ function readInput(el, code) {
   const f = S.fields[code] || { kind: "text", options: [] };
   const raw = (el.value || "").trim();
   if (raw === "") return undefined;
+  // School / program selects store raw ids (not JSON-encoded enum values).
+  if (code === "school" || code === "course") return raw;
   if (f.options.length) return JSON.parse(raw);
   if (f.kind === "age") return parseInt(raw, 10);
   if (f.kind === "amount") return Number(raw);
@@ -296,6 +401,13 @@ async function renderOnboarding() {
   const required = ["role", "beneficiary", "destination_country"];
   const { profiles } = await api("GET", "/profiles");
   const err = h("div", { class: "formerr" });
+  const { schoolSel, courseSel, fillSchools, fillPrograms } = schoolCourseInputs();
+  const destInput = fieldInput("destination_country");
+  destInput.addEventListener("change", () => {
+    let dest;
+    try { dest = destInput.value ? JSON.parse(destInput.value) : undefined; } catch (_) { dest = undefined; }
+    fillSchools(dest);
+  });
   const form = h("form", { class: "card", onsubmit: async (e) => {
     e.preventDefault();
     const fields = {};
@@ -314,22 +426,32 @@ async function renderOnboarding() {
       err.textContent = x.message;
     }
   } },
-  h("div", { class: "form" }, codes.map((c) => h("label", null,
-    (GRID_LABEL[c] || label(c)) + (required.includes(c) ? " *" : ""), fieldInput(c)))),
+  h("div", { class: "form" },
+    h("label", null, "角色 *", fieldInput("role")),
+    h("label", null, "服务对象 *", fieldInput("beneficiary")),
+    h("label", null, "目的地 *", destInput),
+    h("label", null, "学校", schoolSel),
+    h("label", null, "课程 / 学位", courseSel),
+    h("label", null, "Offer 状态", fieldInput("offer_status")),
+    h("label", null, "入学日期", fieldInput("planned_start_date"))),
   err,
   h("div", { class: "btns" },
     profiles.length ? h("button", { class: "btn ghost", type: "button", onclick: () => go("#/chat") }, "返回") : null,
     h("button", { class: "btn" }, "创建并进入方案")));
   shell(h("div", { class: "page" },
     h("h1", { class: "sf" }, "新建留学档案"),
-    h("p", { class: "lead" }, "只需最少信息即可开始；其余信息会在对话中按需追问。档案事实只有经您确认才会保存。"),
     form), "onboarding");
+  // Prefill school list if destination already selected somehow.
+  try {
+    const dest = destInput.value ? JSON.parse(destInput.value) : undefined;
+    if (dest) await fillSchools(dest);
+  } catch (_) {}
 }
 
 // ---------- /chat ----------
 
 async function loadMessages() {
-  S.messages = (await api("GET", `/conversations/${S.conv.conversation_id}/messages?limit=200`)).messages;
+  S.messages = (await api("GET", `/sessions/${S.conv.session_id || S.conv.conversation_id}/messages?limit=200`)).messages;
 }
 async function loadAdvice() { S.advice = (await api("GET", `/profiles/${S.pid}/advice`)).advice; }
 async function loadPlan() { S.plan = (await api("GET", `/profiles/${S.pid}/plan`)).items; }
@@ -365,12 +487,22 @@ async function renderChat(pidArg) {
   S.profiles = (await api("GET", "/profiles")).profiles;
   if (!S.profiles.length) return go("#/onboarding");
   const pid = [pidArg, S.pid].find((id) => id && S.profiles.some((p) => p.profile_id === id)) || S.profiles[0].profile_id;
-  if (pid !== S.pid) { S.highlight = new Set(); S.pending = null; }
+  if (pid !== S.pid) {
+    S.highlight = new Set(); S.pending = null;
+    S.followSeed = null; S.followTrail = []; S.suppressFields = [];
+  }
   S.pid = pid;
   localStorage.setItem("gp_pid", pid);
   S.profile = S.profiles.find((p) => p.profile_id === pid);
-  S.conv = await api("POST", `/profiles/${pid}/conversation`);
+  S.conv = await api("POST", `/profiles/${pid}/session`);
   await Promise.all([loadMessages(), loadAdvice(), loadPlan(), loadProposals()]);
+  // Resolve school / program labels for the sheet and every sidebar row.
+  try {
+    await ensureCatalogForProfiles(S.profiles);
+  } catch (e) {
+    S.catalogReady = false;
+    toast((e && e.message) || "学校/课程目录暂不可用，将显示占位文案", true);
+  }
   deriveMissing();
   drawChatPage();
 }
@@ -395,8 +527,7 @@ function drawChatPage() {
   const sendBtn = h("button", { class: "btn", onclick: submit }, "发送");
   S.el = { side, sheet, chat, input, sendBtn };
   shell(h("div", { class: "wrap" }, side, h("div", { class: "main" }, sheet, bar, chat,
-    h("div", { class: "in" }, input, sendBtn),
-    h("div", { class: "foot" }, `模拟环境 · 时间按 ${TZ} 显示 · 回答仅基于已发布的官方资料，政策以官方最新公布为准`))), "chat");
+    h("div", { class: "in" }, input, sendBtn))), "chat");
   drawSide();
   drawSheet();
   drawChat();
@@ -426,8 +557,13 @@ function setupDrag(bar, sheet) {
 function profileSub(p) {
   const start = val(p, "planned_start_date");
   const m = /^(\d{4})-(\d{2})/.exec(start || "");
-  const parts = [val(p, "school") || valueLabel("destination_country", val(p, "destination_country")),
-    val(p, "course"), m ? `${m[1]}年${+m[2]}月` : "入学待定"];
+  const school = valueLabel("school", val(p, "school"));
+  const course = valueLabel("course", val(p, "course"));
+  const parts = [
+    (school !== "—" ? school : null) || valueLabel("destination_country", val(p, "destination_country")),
+    course !== "—" ? course : null,
+    m ? `${m[1]}年${+m[2]}月` : "入学待定",
+  ];
   return parts.filter((x) => x && x !== "—").join(" · ");
 }
 
@@ -440,8 +576,7 @@ function drawSide() {
         h("div", { class: "av2 sf" }, name.slice(-1)),
         h("div", null, h("b", { class: "sf" }, name), h("div", { class: "sub" }, profileSub(p))));
     }),
-    h("button", { class: "new", onclick: () => go("#/onboarding") }, "＋ 添加 profile"),
-    h("div", { class: "note" }, "每个 Profile 是一位学生的独立方案与对话，切换后方案表和对话同步切换。"));
+    h("button", { class: "new", onclick: () => go("#/onboarding") }, "＋ 添加 profile"));
 }
 
 function drawSheet() {
@@ -449,26 +584,18 @@ function drawSheet() {
   const name = val(p, "beneficiary") || "未命名档案";
   const filled = GRID.filter((c) => val(p, c) !== undefined).length;
   const done = S.plan.filter((i) => i.done).length;
-  const updated = Object.values(S.advice).map((a) => a.updated_at).sort().pop();
-  const extraCodes = Object.keys(p.fields).filter((c) => !GRID.includes(c) && val(p, c) !== undefined);
-  const missingExtra = [...S.missing].filter((c) => !GRID.includes(c));
   S.el.sheet.replaceChildren(
     h("div", { class: "sh" },
       h("h2", { class: "sf" }, `${name} · 留学准备方案`),
       h("span", { class: "meta" },
         h("span", null, "基本信息 ", h("em", { class: "sf" }, filled), ` / ${GRID.length}`),
         h("span", null, "待办已完成 ", h("em", { class: "sf" }, done), ` / ${S.plan.length}`),
-        h("span", null, updated ? `方案更新于 ${fmtClock(updated)}` : "方案尚未生成"),
         h("button", { class: "btn", onclick: () => go("#/report/" + S.pid) }, "导出报告"))),
     h("div", { class: "mt" }, "一 · 留学基本信息", h("button", { class: "ed", onclick: () => openEdit() }, "✎ 编辑信息")),
     h("div", { class: "grid" }, GRID.map(cell)),
-    extraCodes.length || missingExtra.length ? h("div", { class: "extra" },
-      extraCodes.map((c) => h("span", { class: "tag" + (S.highlight.has(c) ? " hl" : "") },
-        `${label(c)}：${valueLabel(c, val(p, c))}`)),
-      missingExtra.map((c) => h("span", { class: "tag miss" }, `${label(c)}：待确认`))) : h("div", { class: "extra" }),
-    h("div", { class: "mt" }, "二 · 为您定制的方案", h("span", { class: "lockn" }, "仅在回答通过质量检查后自动更新")),
+    h("div", { class: "mt" }, "二 · 为您定制的方案"),
     h("div", { class: "plan" }, TOPICS.map(planCard)),
-    h("div", { class: "mt" }, "三 · 我的待办", h("span", { class: "lockn" }, "由您编辑，不会被自动覆盖")),
+    h("div", { class: "mt" }, "三 · 我的待办"),
     todoBox());
   if (S.flash.length) {
     const flashed = S.flash;
@@ -497,19 +624,216 @@ function row(k, ...v) {
 
 const empty = () => h("span", { class: "e" }, "—");
 
-function planCard(t) {
-  if (t.key === "visa") return visaCard(t);
-  return h("div", { class: "p", id: "card-" + t.key }, cardHead(t, h("span", { class: "st" }, "待补充")),
-    t.rows.map((r) => row(r, empty())), h("div", { class: "why" }, t.why));
+function remittanceCard(t) {
+  const a = S.advice.remittance;
+  const flash = S.flash.includes("remittance") ? " flash" : "";
+  if (!a) {
+    return h("div", { class: "p" + flash, id: "card-remittance" },
+      cardHead(t, h("span", { class: "st" }, "未开始")),
+      row("用途", empty()), row("材料", empty()), row("来源", empty()));
+  }
+  const pl = a.payload || {};
+  const purpose = pl.remittance_purpose || pl.fx_mode || pl.domain_payload?.remittance_purpose
+    || pl.domain_payload?.fx_mode;
+  const purposeLabel = { tuition: "学费", living: "生活费", overseas: "境外消费/换汇" }[purpose]
+    || valueLabel("remittance_purpose", purpose) || purpose || "—";
+  const mats = pl.materials || pl.domain_payload?.materials || [];
+  const cites = pl.citations || pl.domain_payload?.citations || [];
+  const req = mats.filter((m) => m.applicability === "required");
+  const names = req.slice(0, 2).map((m) => m.name_zh).join("、");
+  return h("div", { class: "p" + flash, id: "card-remittance" },
+    cardHead(t, h("span", { class: "st ok" }, "已确认")),
+    row("用途", purposeLabel),
+    row("必备材料", req.length ? `${names}${req.length > 2 ? " 等" : ""} ${req.length} 项` : empty()),
+    row("来源", sourceRefs(cites)));
 }
 
-function sourceChips(citations) {
-  const seen = new Map();
-  (citations || []).forEach((c) => { if (!seen.has(c.source_name)) seen.set(c.source_name, c); });
-  const sources = [...seen.values()];
-  return [sources.slice(0, 2).map((c) => h("button", { class: "cite", title: c.source_name, onclick: () => openCitation(c) },
-    `${c.source_name.length > 14 ? c.source_name.slice(0, 13) + "…" : c.source_name} · ${fmtVerified(c.verified_at)}`)),
-  sources.length > 2 ? h("span", { class: "e" }, ` 等 ${sources.length} 处`) : null];
+function accountCard(t) {
+  const a = S.advice.account;
+  const flash = S.flash.includes("account") ? " flash" : "";
+  if (!a) {
+    return h("div", { class: "p" + flash, id: "card-account" },
+      cardHead(t, h("span", { class: "st" }, "未开始")),
+      row("地区", empty()), row("产品", empty()), row("材料", empty()), row("门槛", empty()));
+  }
+  const pl = a.payload || {};
+  const dp = pl.domain_payload || {};
+  const region = dp.account_region || pl.account_region
+    || val(S.profile, "account_region") || val(S.profile, "destination_country");
+  const identity = dp.applicant_identity || pl.applicant_identity
+    || val(S.profile, "applicant_identity");
+  const products = dp.products || pl.products || [];
+  const primary = products[0] || {};
+  const productName = primary.name_zh || primary.product_name
+    || (pl.summary || "").match(/「(.+?)」/)?.[1] || empty();
+  const mats = pl.materials || dp.materials || [];
+  const req = mats.filter((m) => m.applicability === "required" || !m.applicability);
+  const names = req.slice(0, 2).map((m) => m.name_zh || m).filter(Boolean).join("、");
+  const eligibility = (primary.eligibility || []).slice(0, 2).join("；")
+    || (pl.steps || []).find((s) => String(s).startsWith("公开资格要点："))?.replace("公开资格要点：", "")
+    || empty();
+  const warn = pl.result_status === "needs_verification";
+  return h("div", { class: "p" + flash, id: "card-account" },
+    cardHead(t, h("span", { class: "st " + (warn ? "warn" : "ok") }, warn ? "待核实" : "已确认")),
+    row("地区", valueLabel("destination_country", region) || region || empty()),
+    row("产品", typeof productName === "string" ? productName : productName),
+    row("申请人", valueLabel("applicant_identity", identity) || identity || empty()),
+    row("必备材料", req.length ? `${names}${req.length > 2 ? " 等" : ""} ${req.length} 项` : empty()),
+    row("门槛", eligibility),
+    row("来源", sourceRefs(pl.citations || dp.citations || [])));
+}
+
+function planCard(t) {
+  if (t.key === "visa") return visaCard(t);
+  if (t.key === "credit_card") return creditCardCard(t);
+  if (t.key === "remittance") return remittanceCard(t);
+  if (t.key === "account") return accountCard(t);
+  return h("div", { class: "p", id: "card-" + t.key }, cardHead(t, h("span", { class: "st" }, "待补充")),
+    t.rows.map((r) => row(r, empty())));
+}
+
+function cardsFromAnswerSteps(steps) {
+  const cards = [];
+  let marketRequirement = "";
+  (steps || []).forEach((line, index) => {
+    if (line.endsWith("发行的卡") && steps[index + 1]) marketRequirement = steps[index + 1];
+    const colon = line.indexOf("：");
+    const label = colon >= 0 ? line.slice(0, colon) : "";
+    const value = colon >= 0 ? line.slice(colon + 1).trim() : "";
+    const roles = { 主推荐: "primary", 场景搭配: "supplement", 其他选择: "alternative" };
+    const network = line.match(/^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$/);
+    if (roles[label]) cards.push({ product_name: value, role: roles[label] });
+    else if (network) cards.push({ product_name: network[1], role: "candidate" });
+    else if (cards.length && ["为什么适合你", "推荐理由", "年费", "主要权益", "申请前提", "申请限制"].includes(label)) {
+      const field = { 为什么适合你: "reason_text", 推荐理由: "reason_text", 年费: "fee_text",
+        主要权益: "benefits_text", 申请前提: "application_note", 申请限制: "application_note" }[label];
+      cards[cards.length - 1][field] = value;
+    }
+  });
+  cards.forEach((card) => { if (!card.application_note && marketRequirement) card.application_note = marketRequirement; });
+  return cards;
+}
+
+function savedCardDisplay(advice) {
+  const pl = advice.payload || {};
+  const source = S.messages.find((message) =>
+    message.role === "assistant" && message.message_id === advice.source_message_id);
+  const steps = source?.body?.answer?.steps || [];
+  const recovered = cardsFromAnswerSteps(steps);
+  const saved = Array.isArray(pl.cards) ? pl.cards : [];
+  const fromAnswer = new Map(recovered.map((card) => [card.product_name, card]));
+  const cards = saved.length ? saved.map((card) => {
+    const match = fromAnswer.get(card.product_name) || {};
+    const merged = { ...match, ...card };
+    for (const field of ["reason_text", "fee_text", "benefits_text", "application_note"])
+      if (!merged[field] && match[field]) merged[field] = match[field];
+    return merged;
+  }) : recovered;
+  return { cards,
+    preview: !!pl.preview || steps.some((step) => step.startsWith("提前了解：")) };
+}
+
+function cardAdviceOption(card, label, featured) {
+  return h("div", { class: "cc-option" + (featured ? " featured" : "") },
+    h("div", { class: "cc-label" }, label),
+    h("div", { class: "cc-name" }, card.product_name),
+    card.reason_text ? h("p", { class: "cc-reason" }, card.reason_text) : null,
+    h("div", { class: "cc-fact" }, h("span", null, "年费及费用"),
+      h("strong", null, card.fee_text || "请以官网最新条款为准")),
+    card.benefits_text ? h("div", { class: "cc-fact" }, h("span", null, "主要权益"),
+      h("span", null, card.benefits_text)) : null);
+}
+
+function isBackupCard(card) {
+  const market = String(card.market || "");
+  return card.role === "backup"
+    || /Hong Kong|^HK$|CN-HK/i.test(market);
+}
+
+function creditCardCard(t) {
+  const a = S.advice.credit_card;
+  const flash = S.flash.includes("credit_card") ? " flash" : "";
+  const base = "p credit-advice" + flash;
+  if (!a) return h("div", { class: base, id: "card-credit_card" },
+    cardHead(t, h("span", { class: "st" }, "未开始")),
+    ...(t.rows || ["产品", "费用 / 限制", "申请条件"]).map((r) => row(r, empty())));
+
+  const pl = a.payload || {};
+  const display = savedCardDisplay(a);
+  // 侧栏只展示当地主推/备选，香港备用卡留在对话正文。
+  const cards = display.cards.filter((card) => !isBackupCard(card));
+  const hasPrimary = cards.some((card) => card.role === "primary");
+  const state = !cards.length ? "当前建议" :
+    pl.result_status === "needs_verification" ? "待核实" :
+    hasPrimary ? "已推荐" : "供你比较";
+  const stateClass = pl.result_status === "needs_verification" ? "warn" :
+    hasPrimary ? "ok" : "";
+  const first = cards.find((card) => card.role === "primary") || cards[0];
+  const others = cards.filter((card) => card !== first);
+  const source = S.messages.find((message) =>
+    message.role === "assistant" && message.message_id === a.source_message_id);
+  const marketPrereq = (source?.body?.answer?.steps || []).find((step) =>
+    /均要求已有|到英国读书|香港卡可在留学地使用/.test(step));
+  const condition = marketPrereq || first?.application_note
+    || "申请资格及最终批核以当地汇丰的官方规定为准。";
+  return h("div", { class: base, id: "card-credit_card" },
+    cardHead(t, h("span", { class: "st " + stateClass }, state)),
+    cards.length ? [
+      cardAdviceOption(first, hasPrimary ? "首选推荐" : "方案一 · 供比较", hasPrimary),
+      others.length ? h("div", { class: "cc-others" },
+        h("div", { class: "cc-section" }, hasPrimary ? "其他选择" : "一起比较"),
+        others.slice(0, 2).map((card, index) => h("div", { class: "cc-secondary" },
+          cardAdviceOption(card, card.role === "supplement" ? "场景搭配" :
+            hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`, false))),
+        others.length > 2 ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`) : null) : null,
+      h("div", { class: "cc-apply" }, h("b", null, "申请前请确认"), h("span", null, condition)),
+    ] : h("p", { class: "cc-empty" }, pl.summary || "目前还没有可展示的具体卡片。"));
+}
+
+/** Citations: numbered pills inline; numbered named links in the reference list. */
+function buildCiteMap(citations) {
+  const cmap = {};
+  const unique = [];
+  const byKey = new Map();
+  (citations || []).forEach((c) => {
+    const key = c.source_url || c.source_name || c.citation_id;
+    if (!byKey.has(key)) {
+      const item = { ...c, n: byKey.size + 1 };
+      byKey.set(key, item);
+      unique.push(item);
+    }
+    cmap[c.citation_id] = byKey.get(key);
+  });
+  return { cmap, unique };
+}
+
+function citeLabel(c) {
+  const name = (c.source_name || "").trim();
+  if (name) return name;
+  try { return new URL(c.source_url).hostname.replace(/^www\./, ""); }
+  catch { return "来源"; }
+}
+
+function citeMark(c) {
+  if (!c) return null;
+  const label = `[${c.n}]`;
+  if (!c.source_url) return h("span", { class: "cite-mark" }, label);
+  return h("a", { class: "cite-mark", href: c.source_url, target: "_blank", rel: "noopener noreferrer",
+    title: citeLabel(c) }, label);
+}
+
+function citeRef(c) {
+  if (!c) return null;
+  const text = `[${c.n}] ${citeLabel(c)}`;
+  if (!c.source_url) return h("span", { class: "cite-ref" }, text);
+  return h("a", { class: "cite-ref", href: c.source_url, target: "_blank", rel: "noopener noreferrer",
+    title: c.source_url }, text);
+}
+
+function sourceRefs(citations) {
+  const { unique } = buildCiteMap(citations);
+  if (!unique.length) return empty();
+  return h("div", { class: "cites-list" }, unique.map((c) => h("div", null, citeRef(c))));
 }
 
 function visaCard(t) {
@@ -518,8 +842,7 @@ function visaCard(t) {
   const visa = val(S.profile, "visa_category");
   if (!a) {
     return h("div", { class: "p" + flash, id: "card-visa" }, cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("类别", visa ? valueLabel("visa_category", visa) : empty()), row("材料", empty()), row("待确认", empty()),
-      h("div", { class: "why" }, "在下方提问「签证需要准备哪些材料？」，回答通过质量检查后自动生成。"));
+      row("类别", visa ? valueLabel("visa_category", visa) : empty()), row("材料", empty()), row("待确认", empty()));
   }
   const pl = a.payload;
   const mats = pl.materials || [];
@@ -534,8 +857,7 @@ function visaCard(t) {
     row("必备材料", req.length ? `${names}${req.length > 2 ? " 等" : ""} ${req.length} 项` : empty()),
     row("视情况", cond.length ? `${cond.length} 项` : "无"),
     row("待确认", unconfirmed.length ? h("span", { class: "warn" }, unconfirmed.map(label).join("、")) : "无"),
-    row("来源", sourceChips(pl.citations)),
-    h("div", { class: "why" }, `v${a.version} · 更新于 ${fmtClock(a.updated_at)}`));
+    row("来源", sourceRefs(pl.citations)));
 }
 
 function todoBox() {
@@ -583,32 +905,11 @@ async function deletePlan(item) {
 
 // ---------- chat stream ----------
 
-function stepsLine(states) {
-  return h("div", { class: "steps" }, states.map(([text, cls]) => h("span", { class: cls }, text)));
-}
-
-function finalSteps(status) {
-  const s = STEPS.map((text) => [text, "d"]);
-  if (status === "needs_input") {
-    s[1] = ["追问 · 等待您补充", "a"];
-    for (let i = 2; i < s.length; i++) s[i][1] = "";
-  } else if (status === "out_of_scope") {
-    s[1] = ["范围外 · 未查询资料", "w"];
-    for (let i = 2; i < s.length; i++) s[i][1] = "";
-  } else {
-    s[1] = ["无需追问", "d"];
-    if (status !== "answered") s[3] = [status === "needs_verification" ? "质量检查 · 待核实" : "质量检查 · 无法确定", "w"];
-  }
-  return s;
-}
-
-function pendingSteps(k) {
-  return STEPS.map((text, i) => [text, i < k ? "d" : i === k ? "a pulse" : ""]);
-}
-
 function suggestions() {
   const dest = valueLabel("destination_country", val(S.profile, "destination_country"));
-  return [`去${dest === "—" ? "留学" : dest}读书，签证需要准备哪些材料？`, "学费怎么汇？", "需要先开户吗？"];
+  const place = dest === "—" ? "留学" : dest;
+  return [`去${place}读书，签证需要准备哪些材料？`, "学费怎么汇？", "需要先开户吗？",
+    `去${place}留学，应该办哪张信用卡？`];
 }
 
 function drawChat({ keep } = {}) {
@@ -631,8 +932,8 @@ function drawChat({ keep } = {}) {
       return;
     }
     const latest = i === lastIdx && !S.pending;
-    if (latest) items.push(stepsLine(finalSteps(m.body.status)));
-    items.push(answerBubble(m.body, latest));
+    const bubble = answerBubble(m.body, latest);
+    if (bubble) items.push(bubble);
   });
   if (S.pending) {
     items.push(h("div", { class: "m u pending" }, S.pending.text));
@@ -640,35 +941,143 @@ function drawChat({ keep } = {}) {
       const p = S.pending;
       items.push(h("div", { class: "m err" }, h("p", null, p.error.message),
         h("div", { class: "chips" },
-          h("button", { class: "s", onclick: () => { S.pending = null; send(p.text, p.cid); } }, "重试"),
+          h("button", { class: "s", onclick: () => {
+            S.pending = null;
+            send(p.text, p.cid, p.changed, p.confirmedFields, p.expectedProfileVersion);
+          } }, "重试"),
           h("button", { onclick: () => { S.pending = null; drawChat(); } }, "放弃"))));
     } else {
-      items.push(stepsLine(pendingSteps(S.pending.k)));
+      items.push(h("div", { class: "m thinking" }, "正在回答…"));
     }
   }
   box.replaceChildren(...items);
   box.scrollTop = keep ? scroll : box.scrollHeight;
 }
 
+function isCardRecommendationSteps(steps) {
+  return steps.some((s) => s.startsWith("年费："))
+    && steps.some((s) => /主推荐：|汇丰.+发行的卡/.test(s));
+}
+
+function multiDomainSections(steps) {
+  const sections = [];
+  let current = null;
+  for (const step of steps || []) {
+    if (String(step).startsWith("## ")) {
+      current = { title: String(step).replace(/^##\s*/, ""), lines: [] };
+      sections.push(current);
+    } else if (current) {
+      current.lines.push(step);
+    }
+  }
+  return sections;
+}
+
+function renderAnswerSteps(steps) {
+  const multi = multiDomainSections(steps);
+  if (multi.length && steps.some((s) => String(s).startsWith("## "))) {
+    return multi.map((sec) => h("div", { class: "multi-sec" },
+      h("div", { class: "sub-h" }, sec.title),
+      ...sec.lines.map((line) => h("p", null, line))));
+  }
+  if (!isCardRecommendationSteps(steps)) {
+    return [h("div", { class: "sub-h" }, "准备要点"),
+      h("ol", { class: "lim" }, steps.map((s) => h("li", null, s)))];
+  }
+  // Card copy is not a procedure — do not number section titles as 1. 2. 3.
+  const box = h("div", { class: "card-rec" });
+  for (const s of steps) {
+    if (/^(优先|备用)?[：:]?汇丰.+发行的卡/.test(s)) {
+      const market = s.includes("英国") ? "英国" : s.includes("美国") ? "美国" : "香港";
+      box.append(h("div", { class: "card-sec primary" },
+        h("span", { class: "market-tag" }, "申请地区"),
+        h("span", null, `${market}发行的卡`)));
+    }
+    else if (/^(主推荐|场景搭配|其他选择)：/.test(s)) {
+      const i = s.indexOf("：");
+      box.append(h("div", { class: "card-name" },
+        h("span", { class: "role-tag" }, s.slice(0, i)),
+        h("span", null, s.slice(i + 1))));
+    }
+    else if (/^(推荐理由|为什么适合你|年费|主要权益|你可享|申请限制|申请前提)：/.test(s)) {
+      const i = s.indexOf("：");
+      box.append(h("div", { class: `card-detail ${/^(?:推荐理由|为什么适合你)/.test(s) ? "reason" : ""}` },
+        h("span", { class: "k" }, s.slice(0, i + 1)), s.slice(i + 1)));
+    } else if (s.startsWith("免年费选择：")) box.append(h("div", { class: "card-alt" }, s));
+    else if (/（(?:Visa|Mastercard|UnionPay|银联卡|威士卡|万事达卡)/.test(s) || /（[A-Za-z]+）$/.test(s)) {
+      box.append(h("div", { class: "card-name" }, s));
+    } else box.append(h("div", { class: "card-note" }, s));
+  }
+  const preview = steps.some((s) => s.startsWith("提前了解："));
+  const compare = steps.some((s) => s.startsWith("对比参考："));
+  return [h("div", { class: "sub-h" }, preview ? "提前了解的信用卡" :
+    compare ? "两张卡怎么选" : "为你挑选的信用卡"), box];
+}
+
 function answerBubble(b, latest) {
+  // Follow-ups: chat only ever shows the current question + answer controls.
+  // Past needs_input turns are dropped so the cluttered status/steps/proposal card
+  // cannot reappear above the latest ask.
+  if (b.status === "needs_input") {
+    if (!latest) return null;
+    const question = (b.follow_up_questions || []).find((q) => val(S.profile, q.field) === undefined)
+      || (b.follow_up_questions || [])[0];
+    if (!question) return null;
+    const kids = [];
+    // Multi-intent: show each domain's short summary before the first follow-up.
+    const multi = multiDomainSections(b.answer?.steps || []);
+    if (multi.length > 1) {
+      if (b.answer?.summary) kids.push(h("p", null, b.answer.summary));
+      kids.push(...multi.map((sec) => h("div", { class: "multi-sec" },
+        h("div", { class: "sub-h" }, sec.title),
+        sec.lines[0] ? h("p", null, sec.lines[0]) : null)));
+    }
+    kids.push(followUp(question));
+    if (canGoBackFollowUp(question.field)) {
+      kids.push(h("div", { class: "fq-nav" },
+        h("button", {
+          class: "btn sm back",
+          type: "button",
+          disabled: !!S.busy,
+          title: S.busy ? "正在处理上一条，请稍候" : "返回上一道追问并重新选择",
+          onclick: goBackFollowUp,
+        }, "上一步")));
+    }
+    return h("div", { class: "m s-needs_input ask-only" }, kids);
+  }
+
   const st = STATUS[b.status] || STATUS.cannot_answer;
-  const cmap = {};
-  (b.citations || []).forEach((c, i) => { cmap[c.citation_id] = { ...c, n: i + 1 }; });
+  const { cmap, unique: citeList } = buildCiteMap(b.citations || []);
   const mats = b.answer.materials || [];
   const kids = [];
+
   if (b.status !== "answered") {
     kids.push(h("div", { class: "status" }, h("span", { class: "st " + st.cls }, st.label), h("span", { class: "why" }, st.why)));
   }
-  kids.push(h("p", null, b.answer.summary));
-  if (mats.length) kids.push(h("ul", { class: "mat" }, mats.map((m) => materialItem(m, cmap))));
-  if ((b.answer.steps || []).length) {
-    kids.push(h("div", { class: "sub-h" }, "步骤"), h("ol", { class: "lim" }, b.answer.steps.map((s) => h("li", null, s))));
+  const stepList = (b.answer.steps || []).filter((s) => !String(s).startsWith("政策原文："));
+  const multi = multiDomainSections(stepList);
+  const cardAnswer = isCardRecommendationSteps(stepList);
+  if (!cardAnswer) {
+    kids.push(h("p", null, b.answer.summary,
+      citeList.length && multi.length <= 1
+        ? h("span", { class: "cites-inline" }, citeList.map((c) => citeMark(c))) : null));
   }
+  // Multi-intent answers already nest domain copy under ## sections; keep materials
+  // out of the top so bank docs do not look like a free-floating visa list.
+  if (mats.length && multi.length <= 1) {
+    kids.push(h("ul", { class: "mat" }, mats.map((m) => materialItem(m, cmap))));
+  }
+  if (stepList.length) kids.push(...renderAnswerSteps(stepList));
   if ((b.conflicts || []).length) {
     kids.push(h("div", { class: "sub-h" }, "不同来源说法不一致（并列展示，未替您取舍）"));
     b.conflicts.forEach((cf) => kids.push(h("div", null, cf.name_zh), h("div", { class: "conf" }, cf.variants.map((v) =>
       h("div", null, h("b", null, v.source_name), v.required ? "需要" : "不需要", v.condition ? `（${v.condition}）` : "",
-        citeChip(cmap[v.citation_id]))))));
+        citeMark(cmap[v.citation_id]))))));
+  }
+  if (citeList.length) {
+    kids.push(h("div", { class: "cites-row" },
+      h("div", { class: "cites-label" }, "参考来源"),
+      h("div", { class: "cites-list" }, citeList.map((c) => h("div", null, citeRef(c))))));
   }
   if ((b.answer.limitations || []).length) {
     kids.push(h("div", { class: "sub-h" }, "说明与限制"), h("ul", { class: "lim" }, b.answer.limitations.map((s) => h("li", null, s))));
@@ -676,20 +1085,19 @@ function answerBubble(b, latest) {
   if (b.status !== "answered" && (b.next_actions || []).length) {
     kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, b.next_actions.map((s) => h("li", null, s))));
   }
-  (b.notices || []).forEach((n) => kids.push(h("div", { class: "notice" }, n.message)));
-  if (latest) {
-    (b.follow_up_questions || []).filter((q) => val(S.profile, q.field) === undefined)
-      .forEach((q) => kids.push(followUp(q)));
-  }
+  // Hide internal/debug notices (routing audit JSON, etc.) from the customer UI.
+  const HIDDEN_NOTICE = new Set([
+    "intent_routing", "llm_routing_low_confidence", "unsupported_intent", "partial_out_of_scope",
+  ]);
+  (b.notices || []).filter((n) => n && !HIDDEN_NOTICE.has(n.code) && !(n.message || "").trim().startsWith("{"))
+    .forEach((n) => kids.push(h("div", { class: "notice" }, n.message)));
   const open = new Set(S.proposals.map((p) => p.proposal_id));
-  (b.profile_change_proposals || []).filter((p) => open.has(p.proposal_id)).forEach((p) => kids.push(proposalCard(p)));
+  // Only propose fields the UI knows how to label (registered profile fields).
+  (b.profile_change_proposals || [])
+    .filter((p) => open.has(p.proposal_id) && S.fields && S.fields[p.field_code])
+    .forEach((p) => kids.push(proposalCard(p)));
   kids.push(actsRow(b));
   return h("div", { class: "m s-" + b.status }, kids);
-}
-
-function citeChip(c) {
-  return c ? h("button", { class: "cite", title: c.source_name, onclick: () => openCitation(c) },
-    `来源${c.n} · ${fmtVerified(c.verified_at)}`) : null;
 }
 
 function materialItem(m, cmap) {
@@ -699,17 +1107,68 @@ function materialItem(m, cmap) {
     h("span", null, m.name_zh),
     m.name_en && m.name_en !== m.name_zh ? h("span", { class: "en" }, m.name_en) : null,
     h("span", { class: "tagx " + m.applicability }, TAG[m.applicability] || m.applicability),
-    citeChip(cmap[m.citation_id]),
+    citeMark(cmap[m.citation_id]),
     h("button", { class: "addtodo", disabled: exists, onclick: () => addPlan(todo) }, exists ? "✓ 已在待办" : "+ 待办"),
     m.condition_text ? h("span", { class: "cond" }, `条件：${m.condition_text}`) : null,
     (m.pending_fields || []).length ? h("span", { class: "pend" }, `待确认：${m.pending_fields.map(label).join("、")}`) : null);
 }
 
+function currentFollowUpQuestion() {
+  for (let i = S.messages.length - 1; i >= 0; i--) {
+    const m = S.messages[i];
+    if (m.role !== "assistant" || m.body?.status !== "needs_input") continue;
+    const qs = m.body.follow_up_questions || [];
+    return qs.find((q) => val(S.profile, q.field) === undefined) || qs[0] || null;
+  }
+  return null;
+}
+
+/** 当前问题之前、档案里已确认且可撤销的追问字段（trail 丢了也能继续上一步）。 */
+function undoableFollowFields(currentField) {
+  const suppressed = new Set(S.suppressFields || []);
+  const trailFields = new Set((S.followTrail || []).map((item) => item.field));
+  const idx = FOLLOW_UNDO_ORDER.indexOf(currentField);
+  const candidates = idx >= 0 ? FOLLOW_UNDO_ORDER.slice(0, idx) : FOLLOW_UNDO_ORDER.slice();
+  return candidates.filter((code) => {
+    if (suppressed.has(code) || code === currentField) return false;
+    if (trailFields.has(code)) return true;
+    return val(S.profile, code) !== undefined;
+  });
+}
+
+function canGoBackFollowUp(currentField) {
+  return (S.followTrail && S.followTrail.length > 0)
+    || undoableFollowFields(currentField).length > 0;
+}
+
 function followUp(q) {
   const f = S.fields[q.field] || { kind: "text", options: [], label: q.field };
+  const options = (q.options && q.options.length) ? q.options : f.options;
   const chips = h("div", { class: "chips" });
-  if (f.options.length) {
-    f.options.forEach((o) => chips.append(h("button", { onclick: () => answerField(q.field, o.value, o.label) }, o.label)));
+  if (q.input_type === "multi_select") {
+    const selected = new Map();
+    const confirm = h("button", { class: "s", disabled: true }, "确认并保存到画像");
+    options.forEach((o) => {
+      const button = h("button", { onclick: () => {
+        if (selected.has(o.value)) { selected.delete(o.value); button.classList.remove("on"); }
+        else if (!q.max_selections || selected.size < q.max_selections) {
+          selected.set(o.value, o.label); button.classList.add("on");
+        } else {
+          // At the cap: flash the button so the rejected click is not silent.
+          button.classList.add("deny");
+          setTimeout(() => button.classList.remove("deny"), 350);
+        }
+        confirm.disabled = selected.size === 0;
+      } }, o.label);
+      chips.append(button);
+    });
+    confirm.addEventListener("click", () => answerField(
+      q.field, [...selected.keys()], [...selected.values()].join("、"), q.persist_mode));
+    chips.append(confirm);
+  } else if (options.length) {
+    options.forEach((o) => chips.append(h("button", {
+      onclick: () => answerField(q.field, o.value, o.label, q.persist_mode)
+    }, o.label)));
   } else {
     const input = h("input", { type: f.kind === "date" ? "date" : f.kind === "age" ? "number" : "text", placeholder: f.label });
     input.dataset.field = q.field;
@@ -736,30 +1195,43 @@ function typedAnswers(except) {
   return out;
 }
 
-async function answerField(code, value, text) {
+async function answerField(code, value, text, persistMode) {
   if (S.busy) { toast("上一条还在处理中，请稍候再提交"); return; }
-  const typed = typedAnswers(code);
-  const fields = { ...typed, [code]: value };
-  try {
-    S.profile = await api("PATCH", `/profiles/${S.pid}`,
-      { expected_version: S.profile.version, fields });
-  } catch (e) {
-    if (e.code === "VERSION_CONFLICT") {
-      await refreshProfile();
-      drawSheet();
-      toast("档案刚刚更新过，已刷新，请再选一次");
-    } else {
-      toast(e.message, true);
-    }
+  // Always confirm the answered follow-up. Date/text fields used to use
+  // proposal-only mode, so the value never reached conversation facts and the
+  // same question was asked again (display text is Chinese, e.g. 2027年1月1日).
+  const confirmed = { [code]: value };
+  S.suppressFields = S.suppressFields.filter((item) => item !== code);
+  S.followTrail.push({ field: code, value, label: text, persistMode: persistMode || "save_on_select" });
+  await send(`${label(code)}：${text}`, null, Object.keys(confirmed), confirmed, S.profile.version);
+}
+
+async function goBackFollowUp() {
+  if (S.busy) { toast("上一条还在处理中，请稍候"); return; }
+  let last = S.followTrail.length ? S.followTrail.pop() : null;
+  if (!last) {
+    const current = currentFollowUpQuestion();
+    const priors = undoableFollowFields(current && current.field);
+    if (!priors.length) { toast("没有可返回的步骤"); return; }
+    const field = priors[priors.length - 1];
+    const value = val(S.profile, field);
+    last = { field, value, label: valueLabel(field, value), persistMode: "save_on_select" };
+  }
+  if (!S.suppressFields.includes(last.field)) S.suppressFields.push(last.field);
+  // 同步丢掉 trail 里同一字段及之后的步骤，避免和档案回退错位。
+  const cut = S.followTrail.findIndex((item) => item.field === last.field);
+  if (cut >= 0) S.followTrail = S.followTrail.slice(0, cut);
+  // One request undoes the profile value and session fact, then re-asks.
+  const res = await send("（返回上一步）", null, [last.field], {}, S.profile.version, {
+    clearedFields: S.suppressFields.slice(),
+    isBack: true,
+  });
+  if (!res) {
+    S.followTrail.push(last);
+    S.suppressFields = S.suppressFields.filter((item) => item !== last.field);
     return;
   }
-  syncProfile();
-  Object.keys(fields).forEach((c) => S.missing.delete(c));
-  drawSheet();
-  drawSide();
-  const parts = Object.entries(typed).map(([c, v]) => `${label(c)}：${valueLabel(c, v)}`);
-  parts.push(`${label(code)}：${text}`);
-  await send(parts.join("；"), null, Object.keys(fields));
+  toast(`已返回，请重新选择「${label(last.field)}」`);
 }
 
 function proposalCard(p) {
@@ -767,7 +1239,6 @@ function proposalCard(p) {
     h("div", null, "档案变更提议：", h("b", null, label(p.field_code)), "　",
       p.old_value !== null && p.old_value !== undefined ? valueLabel(p.field_code, p.old_value) : "（空）", " → ",
       h("b", null, valueLabel(p.field_code, p.new_value))),
-    h("div", { class: "why" }, `${p.basis}。确认后才会写入档案。`),
     h("div", { class: "btns" },
       h("button", { class: "btn sm", onclick: () => decide(p, true) }, "确认更新"),
       h("button", { class: "btn sm ghost", onclick: () => decide(p, false) }, "暂不")));
@@ -787,7 +1258,7 @@ async function decide(p, confirm) {
     drawSheet();
     drawSide();
     drawChat({ keep: true });
-    toast(confirm ? "已写入档案，建议会在下一次通过质量检查的回答后更新" : "已忽略该提议");
+    toast(confirm ? "已写入档案" : "已忽略该提议");
   } catch (e) {
     if (e.code === "VERSION_CONFLICT") await refreshProfile();
     toast(e.message, true);
@@ -800,15 +1271,11 @@ function actsRow(b) {
   const parts = [h("div", { class: "acts" },
     h("span", { class: "fb" },
       h("span", { class: "st " + st.cls }, st.label), h("span", { class: "sep" }, "｜"),
-      h("button", { class: state.kind === "helpful" ? "on" : "", onclick: () => feedback(b, "helpful") },
-        state.kind === "helpful" ? "已标记有帮助" : "有帮助"), "·",
       h("button", { class: state.kind === "wrong" ? "on" : "", onclick: () => {
         state.open = !state.open;
         drawChat({ keep: true });
       } }, "信息有误"), "·",
-      h("button", { onclick: () => { S.el.input.placeholder = "继续补充您的情况或追问…"; S.el.input.focus(); } }, "继续补充")),
-    h("span", { class: "trace", title: `trace_id：${b.trace_id}` },
-      `${(b.citations || []).length} 条来源 · ${b.trace_id.slice(0, 8)}`))];
+      h("button", { onclick: () => { S.el.input.placeholder = "继续补充您的情况或追问…"; S.el.input.focus(); } }, "继续补充")))];
   if (state.feedbackId) {
     parts.push(h("div", { class: "fbok" }, `已提交纠错，编号 ${state.feedbackId}。可在「纠错记录」查看处理状态。`));
   } else if (state.open) {
@@ -830,33 +1297,51 @@ async function feedback(b, kind, note) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function send(text, retryCid, changed) {
-  if (S.busy) return;
+async function send(text, retryCid, changed, confirmedFields, expectedProfileVersion, opts = {}) {
+  if (S.busy) {
+    toast("上一条还在处理中，请稍候再提交");
+    return null;
+  }
   S.busy = true;
-  S.el.sendBtn.disabled = true;
+  if (S.el.sendBtn) S.el.sendBtn.disabled = true;
+  const confirmed = confirmedFields || {};
+  const clearedFields = opts.clearedFields || [];
+  const isStructured = Object.keys(confirmed).length > 0;
+  // Fresh free-text starts a new chain. Structured answers and "上一步" keep it.
+  if (!isStructured && !opts.isBack && !retryCid) {
+    S.followTrail = [];
+    S.followSeed = text;
+    S.suppressFields = [];
+  }
   S.highlight = new Set(changed || []);
-  S.pending = { text, cid: retryCid || uuid(), k: 0, error: null };
+  S.pending = { text, cid: retryCid || uuid(), error: null, changed,
+    confirmedFields: confirmed, expectedProfileVersion, clearedFields };
   drawChat();
-  const ticker = setInterval(() => {
-    if (S.pending && !S.pending.error && S.pending.k < 3) { S.pending.k += 1; drawChat(); }
-  }, 600);
   try {
-    const res = await api("POST", `/conversations/${S.conv.conversation_id}/messages`,
-      { text, client_message_id: S.pending.cid }, { timeout: 90000 });
-    clearInterval(ticker);
+    const res = await api("POST", `/sessions/${S.conv.session_id || S.conv.conversation_id}/messages`,
+      { text, client_message_id: S.pending.cid, confirmed_fields: S.pending.confirmedFields,
+        expected_profile_version: S.pending.expectedProfileVersion,
+        cleared_fields: S.pending.clearedFields }, { timeout: 90000 });
     S.pending = null;
     await Promise.all([loadMessages(), refreshProfile(), loadAdvice(), loadProposals()]);
     deriveMissing();
     S.flash = res.advice_updates || [];
+    if (res.status && res.status !== "needs_input") {
+      S.followTrail = [];
+      S.followSeed = null;
+      S.suppressFields = [];
+    }
     drawSheet();
     drawSide();
-    drawChat();
+    return res;
   } catch (e) {
-    clearInterval(ticker);
-    if (S.pending) { S.pending.error = e; drawChat(); }
+    if (S.pending) S.pending.error = e;
+    return null;
   } finally {
+    // busy 必须在重绘前清掉，否则「上一步」会带着 disabled 画进 DOM 后一直点不了。
     S.busy = false;
     if (S.el.sendBtn) S.el.sendBtn.disabled = false;
+    drawChat({ keep: true });
   }
 }
 
@@ -868,7 +1353,7 @@ async function openCitation(c) {
     h("button", { class: "close", onclick: closeOverlay, title: "关闭" }, "×"),
     h("div", { class: "lab" }, "引用来源"),
     h("h3", { class: "sf" }, c.source_name),
-    c.synthetic ? h("span", { class: "mock" }, "合成资料") : null,
+    c.synthetic ? h("span", { class: "mock" }, "示例资料") : null,
     h("div", { class: "kv" },
       h("span", null, "官方链接"), h("span", null, safeLink(c.source_url)),
       h("span", null, "核验时间"), h("span", null, fmtFull(c.verified_at)),
@@ -881,20 +1366,39 @@ async function openCitation(c) {
   try {
     const s = await api("GET", `/knowledge/snapshots/${encodeURIComponent(c.revision_id)}`);
     snap.textContent = `资料状态：${AVAIL[s.availability] || s.availability} · 本版本共 ${(s.evidence || []).length} 条证据 · `
-      + `发布面核验于 ${fmtFull(s.verified_at)}`;
+      + `核验于 ${fmtFull(s.verified_at)}`;
   } catch (e) {
     snap.textContent = `资料快照暂不可读：${e.message}`;
   }
 }
 
-function openEdit(focus) {
+async function openEdit(focus) {
   const p = S.profile;
   const extra = Object.keys(p.fields).filter((c) => !GRID.includes(c) && S.fields[c] && val(p, c) !== undefined);
   const missing = [...S.missing].filter((c) => !GRID.includes(c) && !extra.includes(c) && S.fields[c]);
   const codes = [...GRID, ...extra, ...missing];
+  const { schoolSel, courseSel, fillSchools, fillPrograms } = schoolCourseInputs({
+    destination_country: val(p, "destination_country"),
+  });
+  const inputs = {};
+  for (const c of codes) {
+    if (c === "school") inputs[c] = schoolSel;
+    else if (c === "course") inputs[c] = courseSel;
+    else inputs[c] = fieldInput(c, val(p, c));
+  }
+  if (inputs.destination_country) {
+    inputs.destination_country.addEventListener("change", async () => {
+      let dest;
+      try { dest = inputs.destination_country.value ? JSON.parse(inputs.destination_country.value) : undefined; }
+      catch (_) { dest = undefined; }
+      await fillSchools(dest);
+    });
+  }
   const form = h("form", { class: "form", onsubmit: (e) => e.preventDefault() },
-    codes.map((c) => h("label", { class: c === focus ? "focus" : "" }, GRID_LABEL[c] || label(c), fieldInput(c, val(p, c)))));
+    codes.map((c) => h("label", { class: c === focus ? "focus" : "" }, GRID_LABEL[c] || label(c), inputs[c])));
   const err = h("div", { class: "formerr" });
+  await fillSchools(val(p, "destination_country"), val(p, "school"));
+  await fillPrograms(val(p, "school"), val(p, "course"));
   const save = async () => {
     const set = {};
     const clear = [];
@@ -914,7 +1418,7 @@ function openEdit(focus) {
       drawSheet();
       drawSide();
       drawChat({ keep: true });
-      toast(`档案已保存（v${S.profile.version}）。建议会在下一次通过质量检查的回答后更新。`);
+      toast(`档案已保存（v${S.profile.version}）。`);
     } catch (e) {
       err.textContent = e.message;
       if (e.code === "VERSION_CONFLICT") refreshProfile();
@@ -942,12 +1446,11 @@ async function renderReport(pid) {
   const cites = visa ? visa.payload.citations || [] : [];
   const cn = {};
   cites.forEach((c, i) => { cn[c.citation_id] = i + 1; });
-  const codes = [...GRID, ...Object.keys(profile.fields).filter((c) => !GRID.includes(c) && val(profile, c) !== undefined)];
   const pairs = [];
-  for (let i = 0; i < codes.length; i += 2) pairs.push(codes.slice(i, i + 2));
+  for (let i = 0; i < GRID.length; i += 2) pairs.push(GRID.slice(i, i + 2));
   const topicBlock = (t) => {
-    if (t.key !== "visa") return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 待补充`), h("p", { class: "note" }, t.why)];
-    if (!visa) return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 未开始`), h("p", { class: "note" }, "尚未生成签证建议。")];
+    if (t.key !== "visa") return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 待补充`)];
+    if (!visa) return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 未开始`)];
     const pl = visa.payload;
     return [h("h3", { class: "sf" }, `${t.no} ${t.title} · v${visa.version}（${fmtFull(visa.updated_at)}）`),
       h("p", null, pl.summary),
@@ -963,8 +1466,7 @@ async function renderReport(pid) {
       h("button", { class: "btn ghost", onclick: () => go("#/chat/" + pid) }, "返回方案"),
       h("button", { class: "btn", onclick: () => window.print() }, "打印 / 导出 PDF")),
     h("h1", { class: "sf" }, `${name} · 留学准备方案报告`),
-    h("div", { class: "rmeta" }, h("span", null, `生成于 ${fmtFull(now)} · 档案版本 v${profile.version}`),
-      h("span", { class: "warn" }, "模拟数据 · 仅供演示")),
+    h("div", { class: "rmeta" }, h("span", null, `生成于 ${fmtFull(now)} · 档案版本 v${profile.version}`)),
     h("h2", null, "一 · 留学基本信息"),
     h("table", null, pairs.map((pair) => h("tr", null, pair.map((c) => [h("th", null, GRID_LABEL[c] || label(c)),
       h("td", null, val(profile, c) === undefined ? "待确认" : valueLabel(c, val(profile, c)))])))),
@@ -980,7 +1482,7 @@ async function renderReport(pid) {
       : h("p", { class: "note" }, "暂无引用来源。"),
     h("div", { class: "disc" },
       `本报告是 ${fmtFull(now)} 的方案快照，内容仅基于当时已发布的官方资料；政策可能变化，请以官方最新公布为准。`,
-      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。本 Demo 的客户与档案为合成数据。")), "report");
+      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。")), "report");
 }
 
 // ---------- /feedback ----------

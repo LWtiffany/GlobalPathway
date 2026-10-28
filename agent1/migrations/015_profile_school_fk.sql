@@ -1,0 +1,8 @@
+-- userinformation.profiles.school → public.school(school_id)
+--
+-- Applied by scripts/migrate_profile_school_fk.py which:
+--   1) backfills school_id from free-text school names
+--   2) deletes rows whose school text cannot be matched
+--   3) replaces the text column with a FK-backed school column
+--
+-- Do not run this file alone against a database that still has free-text names.

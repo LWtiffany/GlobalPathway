@@ -37,10 +37,11 @@ class M06MetricsTests(unittest.TestCase):
 
 
 class ConditionTableTests(unittest.TestCase):
-    def test_never_more_than_two_questions_but_all_missing_are_identified(self):
+    def test_never_more_than_one_question_but_all_missing_are_identified(self):
         result = clarify.assess("credit_card", profile())
         self.assertEqual(len(result.missing_fields), 4)
         self.assertEqual(len(result.questions), clarify.MAX_QUESTIONS_PER_ROUND)
+        self.assertEqual(1, clarify.MAX_QUESTIONS_PER_ROUND)
 
     def test_unknown_status_value_is_never_used(self):
         p = Profile(profile_id="p", user_id="u", version=1,
@@ -60,6 +61,18 @@ class ConditionTableTests(unittest.TestCase):
         self.assertEqual(result.questions, [])
         self.assertEqual(result.assumption_gaps, ["school", "planned_start_date"])
 
+    def test_study_profile_infers_student_visa_without_asking(self):
+        result = clarify.assess(
+            "visa_documents",
+            profile(role="student", destination_country="US", school="Massachusetts Institute of Technology",
+                    offer_status="unconditional"),
+        )
+        self.assertTrue(result.ready)
+        self.assertEqual("student_visa", result.facts["visa_category"].value)
+        self.assertNotIn("visa_category", result.missing_fields)
+        self.assertEqual([], result.questions)
+        self.assertIn("visa_category_inferred", [n.code for n in result.notices])
+
     def test_model_suggestions_are_rechecked_against_the_table(self):
         def suggest(topic, eligible):
             return ["nationality_secret", "funding_source"]
@@ -67,7 +80,7 @@ class ConditionTableTests(unittest.TestCase):
         result = clarify.assess("visa_documents", profile(destination_country="UK", visa_category="student_visa"),
                                 condition_fields=["applicant_age", "funding_source", "tb_listed_country_resident"],
                                 suggest=suggest)
-        self.assertEqual([q.field for q in result.questions], ["funding_source", "applicant_age"])
+        self.assertEqual([q.field for q in result.questions], ["funding_source"])
         self.assertIn("suggestion_rejected", [n.code for n in result.notices])
         self.assertGreaterEqual(result.model_ms, 0)
 

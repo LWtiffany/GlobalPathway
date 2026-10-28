@@ -41,6 +41,15 @@ jobs:
           tags: |
             ${{ env.IMAGE_BASE }}/agent1:${{ github.sha }}
             ${{ env.IMAGE_BASE }}/agent1:latest
+      - name: Build and push user
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.user
+          push: true
+          tags: |
+            ${{ env.IMAGE_BASE }}/user:${{ github.sha }}
+            ${{ env.IMAGE_BASE }}/user:latest
 
   deploy:
     needs: build
@@ -64,21 +73,36 @@ jobs:
             cd /srv/globalpathway
             git fetch origin prod && git reset --hard origin/prod
             # 预检：config.py 默认已改为本地 SSH 隧道，prod 必须靠 .env 覆盖 RDS，缺则中止部署
-            for key in ADMIN_DB_HOST ADMIN_DB_PORT; do
+            for key in ADMIN_DB_HOST ADMIN_DB_PORT AGENT1_DB_HOST AGENT1_DB_PORT AGENT1_DB_PASSWORD; do
               grep -qE "^${key}=.+" .env || { echo "ERROR: .env 缺少 ${key}，中止部署" >&2; exit 1; }
             done
             echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
             export ADMIN_IMAGE=${{ env.IMAGE_BASE }}/admin:${{ github.sha }}
-            docker compose -f docker-compose.prod.yml pull admin
-            docker compose -f docker-compose.prod.yml up -d admin
+            export USER_IMAGE=${{ env.IMAGE_BASE }}/user:${{ github.sha }}
+            docker compose -f docker-compose.prod.yml pull admin user
+            docker compose -f docker-compose.prod.yml up -d admin user
             docker pull ${{ env.IMAGE_BASE }}/agent1:${{ github.sha }}
             docker tag ${{ env.IMAGE_BASE }}/agent1:${{ github.sha }} ${{ env.IMAGE_BASE }}/agent1:latest
             curl -fsS http://127.0.0.1:8765/healthz
+            curl -fsS http://127.0.0.1:8787/healthz
+            # 两个应用都健康后，原子切换公网入口：/=user，/admin/=admin。
+            if [ "$(id -u)" -eq 0 ]; then
+              sh deploy/install-nginx-prod.sh
+            else
+              sudo -n sh deploy/install-nginx-prod.sh
+            fi
+            # 运行镜像由 allowlist COPY 构建；服务器部署工作区也不保留测试文件。
+            repo_root="$(pwd -P)"
+            test "$repo_root" = "/srv/globalpathway"
+            rm -rf -- "$repo_root/tests"
+            rm -f -- "$repo_root/scripts/test_agent2_followups.py"
 
   smoke:
     needs: deploy
     runs-on: ubuntu-latest
     steps:
       - name: Health check
-        run: curl -fsS "https://${{ secrets.ECS_HOST }}/healthz" || exit 1
+        run: |
+          curl -fsS "https://${{ secrets.ECS_HOST }}/healthz" | grep -q '"service": "user"'
+          curl -fsS "https://${{ secrets.ECS_HOST }}/admin/healthz" | grep -q '"service": "admin"'

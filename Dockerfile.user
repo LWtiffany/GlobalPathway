@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    AGENT2_HOST=127.0.0.1 \
+    AGENT2_PORT=8787 \
+    AGENT2_DB_PATH=/var/lib/globalpathway/agent2.sqlite3 \
+    AGENT1_ENV=production
+
+ARG PIP_INDEX_URL=https://pypi.org/simple/
+COPY requirements.txt .
+RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r requirements.txt
+
+COPY sources.json ./sources.json
+COPY agent1 ./agent1
+COPY agent2 ./agent2
+
+VOLUME ["/var/lib/globalpathway"]
+EXPOSE 8787
+
+CMD ["python", "-m", "agent2.cli", "serve"]
