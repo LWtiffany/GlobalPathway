@@ -780,4 +780,3 @@ class Agent2Service:
         if not snapshot:
             raise not_found("资料快照")
         return snapshot
-
