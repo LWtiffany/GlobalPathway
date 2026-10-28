@@ -36,6 +36,12 @@ def _dump(value):
     return value
 
 
+@route("GET", r"/healthz", auth=False)
+def healthz(service, user_id, body, query):
+    """Process-level health check; it deliberately does not expose user data."""
+    return 200, {"status": "ok", "service": "user"}
+
+
 @route("POST", r"/v1/demo/login", auth=False)
 def demo_login(service, user_id, body, query):
     return 200, service.demo_login(body.get("user"))
@@ -264,7 +270,11 @@ def make_handler(service):
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path.startswith("/v1/"):
+            path = self.path.partition("?")[0]
+            # Registered API routes (including /healthz) must win over the SPA fallback.
+            if path.startswith("/v1/") or any(
+                    verb == "GET" and pattern.match(path)
+                    for verb, pattern, handler, auth in ROUTES):
                 return self._handle("GET")
             found = static_file(self.path)
             if not found:

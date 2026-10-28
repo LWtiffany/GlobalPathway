@@ -2,6 +2,7 @@
 data/*
 !data/development/
 !data/agent2/
+data/agent2/*.sqlite3
 data/**/*.bak-*
 data/agent2/eval/
 *.sqlite3-journal

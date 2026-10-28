@@ -122,7 +122,7 @@ flowchart LR
 .venv/bin/python agent2.py eval-m06 --repeat 50
 ```
 
-`serve` 默认监听 `127.0.0.1:8765`，知识源默认 `agent1`。
+`serve` 默认监听 `127.0.0.1:8787`，知识源默认 `agent1`。`8765` 专供管理员端使用。
 
 前端是 `agent2/web/` 的原生 HTML/CSS/JS，没有构建步骤。
 

@@ -53,9 +53,9 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     agent1_env = os.environ.get("AGENT1_ENV", "development")
     p = sub.add_parser("serve", help="启动 S1 HTTP API")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--db", default=str(DATA / "agent2.sqlite3"))
+    p.add_argument("--host", default=os.environ.get("AGENT2_HOST", "127.0.0.1"))
+    p.add_argument("--port", type=int, default=int(os.environ.get("AGENT2_PORT", "8787")))
+    p.add_argument("--db", default=os.environ.get("AGENT2_DB_PATH", str(DATA / "agent2.sqlite3")))
     p.add_argument("--knowledge", choices=("agent1", "fixture"), default="agent1",
                    help="agent1：读 Agent1 已发布政策；fixture：合成知识夹具")
     p.add_argument("--agent1-env", default=agent1_env)
