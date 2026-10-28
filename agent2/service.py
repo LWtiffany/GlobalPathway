@@ -549,6 +549,11 @@ class Agent2Service:
         for code, value in output.turn_facts.items():
             if code not in clarify.FIELDS:
                 continue
+            # A free-text request such as “想办信用卡” is a turn-routing intent,
+            # not a durable profile change. Persist this field only when the user
+            # explicitly answers the structured consent question via confirmed_fields.
+            if code == "want_credit_card":
+                continue
             if profile.confirmed(code) == value or (code, dumps(value)) in already:
                 continue
             # Skip mirrors of already-confirmed profile facts — they are not new choices.
@@ -775,3 +780,4 @@ class Agent2Service:
         if not snapshot:
             raise not_found("资料快照")
         return snapshot
+
