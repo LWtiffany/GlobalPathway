@@ -19,6 +19,10 @@ def catalog_question(field: str, profile_version: int) -> FollowUpQuestion:
     input_type = "single_select" if item.get("options") else "text"
     if item.get("kind") == "multi_enum":
         input_type = "multi_select"
+    policy = clarify.persistence_policy(field)
+    persist_mode = "session_only" if policy["confirmation_mode"] == "never" else \
+        "proposal" if policy["confirmation_mode"] == "proposal" else \
+        "save_on_select" if item.get("options") else "proposal"
     return FollowUpQuestion(
         question_code=f"ask_{field}",
         field=field,
@@ -28,7 +32,7 @@ def catalog_question(field: str, profile_version: int) -> FollowUpQuestion:
         input_type=input_type,
         options=list(item.get("options") or []),
         max_selections=item.get("max_selections"),
-        persist_mode="save_on_select" if item.get("options") else "proposal",
+        persist_mode=persist_mode,
     )
 
 

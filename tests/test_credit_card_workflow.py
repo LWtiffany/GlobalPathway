@@ -148,7 +148,7 @@ class CreditCardWorkflowTests(unittest.TestCase):
         self.assertEqual(["application_region"],
                          [question.field for question in result.follow_up_questions])
         self.assertTrue(all(q.input_type == "single_select" for q in result.follow_up_questions))
-        self.assertTrue(all(q.persist_mode == "save_on_select" for q in result.follow_up_questions))
+        self.assertTrue(all(q.persist_mode == "session_only" for q in result.follow_up_questions))
         self.assertFalse(repo.called)
 
     def test_low_income_asks_for_asset_evidence_before_usage(self):
@@ -311,7 +311,7 @@ class CreditCardWorkflowTests(unittest.TestCase):
             clock=lambda: NOW).run(TASK, request()))
 
         self.assertEqual("answered", result.status)
-        self.assertIn("可以再为你比较", result.answer.summary)
+        self.assertIn("可以再为您比较", result.answer.summary)
         self.assertIn("申请条件：", "\n".join(result.answer.steps))
 
     def test_hong_kong_account_gate_stops_before_spending_questions(self):
@@ -327,7 +327,7 @@ class CreditCardWorkflowTests(unittest.TestCase):
                           hsbc_premier_path="not_applicable")))
         self.assertEqual("answered", result.status)
         self.assertEqual([], result.follow_up_questions)
-        self.assertIn("可以再为你比较", result.answer.summary)
+        self.assertIn("可以再为您比较", result.answer.summary)
 
     def test_asset_proof_path_keeps_low_income_card_in_recommendations(self):
         card = asset_review_product()
@@ -557,7 +557,7 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         self.assertEqual("needs_input", result.status)
         self.assertEqual(["want_credit_card"],
                          [q.field for q in result.follow_up_questions])
-        self.assertIn("想继续比较", result.answer.summary)
+        self.assertIn("您这次想继续看看", result.answer.summary)
         self.assertEqual([], result.payload.get("groups", []))
 
     def test_declined_credit_card_skips_product_recommendation(self):
@@ -590,7 +590,7 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         text = "\n".join(result.answer.steps)
         self.assertIn("提前了解：", text)
         self.assertIn("主推荐：", text)
-        self.assertIn("为什么适合你：", text)
+        self.assertIn("为什么适合您：", text)
         self.assertIn("其他选择：", text)
         self.assertIn("申请前提：先开立美国汇丰卓越理财支票账户", text)
         self.assertIn("Premier", result.answer.summary)
@@ -640,7 +640,7 @@ class StudyDestinationCatalogTests(unittest.TestCase):
         self.assertEqual([], result.payload["groups"][0]["cards"])
         self.assertEqual([], result.answer.steps)
         self.assertIn("最低申请年龄", result.answer.summary)
-        self.assertIn("可以再为你比较", result.answer.summary)
+        self.assertIn("可以再为您比较", result.answer.summary)
 
     def test_us_underage_does_not_ask_for_an_account_either(self):
         premier = self._study_card("premier", "US", "World", "us_premier_checking", 95)
@@ -1237,7 +1237,7 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
             llm_components=LlmComponents()).v2_workflow
         profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
         self.service.patch_profile(self.user, profile_id, set_fields={
-            "destination_country": "US", "application_region": "US",
+            "destination_country": "US",
             "us_hsbc_account_path": "existing_premier_checking", "applicant_age_band": "18_or_over"},
             expected_version=1)
 
@@ -1253,7 +1253,7 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
         profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
         steps = ["汇丰美国发行的卡", "申请仍须通过银行审批。",
                  "主推荐：HSBC Elite World Elite Mastercard",
-                 "为什么适合你：更看重旅行权益。", "年费：495 美元",
+                 "为什么适合您：更看重旅行权益。", "年费：495 美元",
                  "主要权益：机场贵宾室礼遇", "其他选择：HSBC Premier World Mastercard",
                  "推荐理由：更希望控制年费时可比较。", "年费：95 美元"]
         with self.store.transaction() as db:
@@ -1297,11 +1297,11 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
 
         second = self.ask("25岁，年收入20万港币", "m2")
         self.assertEqual("needs_input", second.status)
-        self.assertEqual(["applicant_age_band"],
+        self.assertEqual(["repayment_mode"],
                          [item.field for item in second.follow_up_questions])
         profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
         proposal_fields = {item.field_code for item in self.service.list_proposals(self.user, profile_id)}
-        self.assertEqual({"application_region"}, proposal_fields)
+        self.assertEqual({"applicant_age", "annual_income_hkd"}, proposal_fields)
         self.assertEqual(1, self.service.get_profile(self.user, profile_id).version)
 
     def test_structured_follow_up_choices_are_saved_to_profile_atomically(self):
@@ -1314,53 +1314,54 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
         self.assertEqual(["applicant_age_band"], [q.field for q in region.follow_up_questions])
         second = self.service.post_message(
             self.user, self.conversation, "年龄区间：18 岁或以上", "choice-2b",
-            confirmed_fields={"applicant_age_band": "18_or_over"}, expected_profile_version=2)
+            confirmed_fields={"applicant_age_band": "18_or_over"}, expected_profile_version=1)
         self.assertEqual(["annual_income_band_hkd"], [q.field for q in second.follow_up_questions])
         income_value = second.follow_up_questions[0].options[-1]["value"]
         third = self.service.post_message(
             self.user, self.conversation, "税前年收入区间：最高档", "choice-3",
-            confirmed_fields={"annual_income_band_hkd": income_value}, expected_profile_version=3)
+            confirmed_fields={"annual_income_band_hkd": income_value}, expected_profile_version=2)
         self.assertEqual(["repayment_mode"],
                          [q.field for q in third.follow_up_questions])
         repay = self.service.post_message(
             self.user, self.conversation, "每月全额还款", "choice-4a",
-            confirmed_fields={"repayment_mode": "full"}, expected_profile_version=4)
+            confirmed_fields={"repayment_mode": "full"}, expected_profile_version=3)
         self.assertEqual(["spending_scenarios"], [q.field for q in repay.follow_up_questions])
         fourth = self.service.post_message(
             self.user, self.conversation, "主要消费场景：网购、境外消费、内地消费", "choice-4b",
             confirmed_fields={"spending_scenarios": ["online", "overseas", "mainland_china"]},
-            expected_profile_version=5)
+            expected_profile_version=4)
         self.assertEqual(["mainland_payment_method"],
                          [q.field for q in fourth.follow_up_questions])
         pay = self.service.post_message(
             self.user, self.conversation, "主要使用手机支付或银联二维码", "choice-4c",
             confirmed_fields={"mainland_payment_method": "mobile_or_qr"},
-            expected_profile_version=6)
+            expected_profile_version=5)
         self.assertEqual(["monthly_card_spend_band_hkd"],
                          [q.field for q in pay.follow_up_questions])
         fifth = self.service.post_message(
             self.user, self.conversation, "每月消费约七千", "choice-5",
             confirmed_fields={"monthly_card_spend_band_hkd": "5k_10k"},
-            expected_profile_version=7)
+            expected_profile_version=6)
         self.assertEqual(["reward_preference"],
                          [q.field for q in fifth.follow_up_questions])
         final = self.service.post_message(
             self.user, self.conversation, "按预计价值比较", "choice-6",
             confirmed_fields={"reward_preference": "no_preference"},
-            expected_profile_version=8)
+            expected_profile_version=7)
         self.assertEqual("answered", final.status)
         self.assertEqual([], final.follow_up_questions)
         profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
         profile = self.service.get_profile(self.user, profile_id)
-        self.assertEqual(9, profile.version)
-        for code in ("application_region", "applicant_age_band", "annual_income_band_hkd",
+        self.assertEqual(8, profile.version)
+        self.assertIsNone(profile.confirmed("application_region"))
+        for code in ("applicant_age_band", "annual_income_band_hkd",
                      "repayment_mode", "spending_scenarios", "monthly_card_spend_band_hkd",
                      "mainland_payment_method", "reward_preference"):
             self.assertEqual("user_selection", profile.fields[code].source_type)
             self.assertEqual("confirmed", profile.fields[code].status)
         events = self.store.all("SELECT field_code FROM profile_field_events WHERE profile_id=?",
                                 (profile_id,))
-        self.assertEqual(8, len(events))
+        self.assertEqual(7, len(events))
         self.assertEqual([], self.service.list_proposals(self.user, profile_id))
         self.assertTrue(self.repository.called)
         advice = self.service.get_advice(self.user, profile_id, "credit_card")
@@ -1379,10 +1380,15 @@ class ProfileSchemaTests(unittest.TestCase):
         tables = {row["name"] for row in store.all(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"auth_sessions", "sessions", "profile_field_values",
-                         "profile_field_definitions", "profile_field_events"} <= tables)
+                         "profile_field_definitions", "profile_field_events",
+                         "bank_relationships", "bank_relationship_events",
+                         "bank_relationship_proposals", "advice_scoped_current"} <= tables)
         session_columns = {row["name"] for row in store.all("PRAGMA table_info(sessions)")}
         self.assertIn("session_id", session_columns)
         self.assertNotIn("token", session_columns)
+        policy_columns = {row["name"] for row in store.all(
+            "PRAGMA table_info(profile_field_definitions)")}
+        self.assertTrue({"storage_class", "confirmation_mode", "scope"} <= policy_columns)
 
     def test_legacy_profile_fields_are_migrated(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1576,7 +1582,7 @@ class CreditCardNonResidentServiceIntegrationTests(unittest.TestCase):
         self.assertIn("非香港居民", joined)
         self.assertIn("几率很低", joined)
         joined = " ".join(final.answer.limitations)
-        self.assertIn("你不是香港居民", joined)
+        self.assertIn("您不是香港居民", joined)
         self.assertIn("最终由银行审批", joined)
         self.assertNotIn("满足：", joined)
         self.assertNotIn("不满足：", joined)

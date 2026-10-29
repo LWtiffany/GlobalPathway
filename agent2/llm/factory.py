@@ -34,6 +34,13 @@ def build_llm_components(env=None) -> LlmComponents:
             base_url = AGENT2_LLM_BASE_URL.strip()
         except (ImportError, AttributeError):
             pass
+    local_model = None
+    if use_local_secrets:
+        try:
+            from local_secrets import AGENT2_LLM_MODEL
+            local_model = AGENT2_LLM_MODEL.strip()
+        except (ImportError, AttributeError):
+            pass
     enabled = bool(api_key) if setting == "auto" else setting in {"1", "true", "yes", "on"}
     if not enabled:
         return LlmComponents()
@@ -41,7 +48,7 @@ def build_llm_components(env=None) -> LlmComponents:
         raise RuntimeError("AGENT2_LLM_ENABLED is on but AGENT2_LLM_API_KEY is missing")
     if not base_url.startswith("https://"):
         raise RuntimeError("AGENT2_LLM_BASE_URL must be an HTTPS URL")
-    model_name = env.get("AGENT2_LLM_MODEL", "qwen3.8-flash")
+    model_name = env.get("AGENT2_LLM_MODEL") or local_model or "qwen3.8-flash"
     structured_mode = env.get("AGENT2_LLM_STRUCTURED_MODE") or \
         ("json_object" if model_name.startswith("deepseek") else "json_schema")
     raw_extra = env.get("AGENT2_LLM_EXTRA_BODY", "")

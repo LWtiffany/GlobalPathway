@@ -11,6 +11,7 @@ from agent2.llm.factory import LlmComponents
 from agent2.orchestration import OrchestrationInput, build_default_workflow
 from agent2.orchestration.contracts import DomainTask
 from agent2.orchestration.domains.bank_account import BankAccountWorkflow
+from agent2.orchestration.domains.bank_account_repository import SeedBankAccountRepository
 from agent2.orchestration.domains.fx import FxWorkflow
 from agent2.service import Agent2Service
 from agent2.store import Store
@@ -131,14 +132,14 @@ class BankAccountWorkflowTests(unittest.TestCase):
         task = DomainTask(task_id="t1", domain="bank_account", intent="hsbc_account",
                           facts={"destination_country": "UK"},
                           basis={"destination_country": "英国"})
-        first = asyncio.run(BankAccountWorkflow().run(
+        first = asyncio.run(BankAccountWorkflow(repository=SeedBankAccountRepository()).run(
             task, OrchestrationInput(text="英国开户", profile_id="p1", profile_version=1)))
         self.assertEqual("needs_input", first.status)
         self.assertEqual(["applicant_identity"],
                          [q.field for q in first.follow_up_questions])
         self.assertEqual("UK", first.observed_facts.get("account_region"))
 
-        second = asyncio.run(BankAccountWorkflow().run(
+        second = asyncio.run(BankAccountWorkflow(repository=SeedBankAccountRepository()).run(
             task, OrchestrationInput(
                 text="学生本人", profile_id="p1", profile_version=2,
                 profile_values={"account_region": "UK", "applicant_identity": "student",
@@ -158,7 +159,7 @@ class BankAccountWorkflowTests(unittest.TestCase):
         task = DomainTask(task_id="t1", domain="bank_account", intent="hsbc_account",
                           facts={"account_region": "US", "applicant_identity": "student"},
                           basis={})
-        result = asyncio.run(BankAccountWorkflow().run(
+        result = asyncio.run(BankAccountWorkflow(repository=SeedBankAccountRepository()).run(
             task, OrchestrationInput(
                 text="去美国读书怎么开户", profile_id="p1", profile_version=1,
                 profile_values={"account_region": "US", "applicant_identity": "student"},
@@ -177,6 +178,7 @@ class ServiceFxAccountRoutingTests(unittest.TestCase):
         self.service = Agent2Service(
             self.store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,
             credit_card_repository=FakeRepository([product("online_card", "online", "0.04")]),
+            bank_account_repository=SeedBankAccountRepository(),
             llm_components=LlmComponents(),
         )
         # Inject FX fixture so service tests do not depend on live Agent1 SQLite.

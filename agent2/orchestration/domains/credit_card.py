@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from agent2 import clarify
 from agent2.models import AnswerBody, FollowUpQuestion, Notice
 
 from ..composer import is_necessity_question
@@ -203,10 +204,13 @@ def extract_credit_card_facts(text: str):
 
 
 def _question(field, text, version, *, options, input_type="single_select", max_selections=None):
+    policy = clarify.persistence_policy(field)
+    persist_mode = "session_only" if policy["confirmation_mode"] == "never" else \
+        "proposal" if policy["confirmation_mode"] == "proposal" else "save_on_select"
     return FollowUpQuestion(question_code=f"ask_{field}", field=field, text=text,
                             rule="credit_card_recommendation_v1", profile_version=version,
                             input_type=input_type, options=options, max_selections=max_selections,
-                            persist_mode="save_on_select")
+                            persist_mode=persist_mode)
 
 
 def _income_options(products):
@@ -369,16 +373,16 @@ class CreditCardWorkflow:
             return DomainResult(
                 task_id=task.task_id, domain="credit_card", status="needs_input",
                 answer=AnswerBody(
-                    summary="信用卡不是硬性必需。你这轮想继续比较可申请的卡吗？",
+                    summary="信用卡不是硬性必需。您这次想继续看看可申请的卡吗？",
                     steps=[
                         "若选择了解，我会按留学地优先推荐当地汇丰卡，香港卡仅作备用。",
-                        "若这轮先不办，可只看开户或其他事项；之后直接说「推荐信用卡」即可。",
+                        "若这次先不办也没关系；之后直接说「推荐信用卡」即可。",
                     ],
                 ),
                 missing_fields=["want_credit_card"],
                 follow_up_questions=[_question(
                     "want_credit_card",
-                    "信用卡不是硬性必需。你这轮想继续比较可申请的卡吗？",
+                    "信用卡不是硬性必需。您这次想继续看看可申请的卡吗？",
                     request.profile_version,
                     options=QUESTION_OPTIONS["want_credit_card"],
                 )],
@@ -388,7 +392,7 @@ class CreditCardWorkflow:
             return DomainResult(
                 task_id=task.task_id, domain="credit_card", status="answered",
                 answer=AnswerBody(
-                    summary="好的，这轮先不比较信用卡。之后想办时直接说「推荐信用卡」即可。",
+                    summary="好的，这次先不比较信用卡。之后想办时，直接说「推荐信用卡」就可以。",
                     steps=[],
                 ),
                 payload={"deferred": True, "groups": [], "market": facts.get("application_region")},
@@ -401,10 +405,10 @@ class CreditCardWorkflow:
                 missing.append("applicant_age_band")
             prompts = {
                 "application_region": (
-                    "你准备去哪里留学？去英国或美国时，会优先推荐汇丰当地卡，"
+                    "您准备去哪里留学？去英国或美国时，会优先推荐汇丰当地卡，"
                     "并另列香港卡作备用（非香港居民获批可能较难）。"
                 ),
-                "applicant_age_band": "你目前是否已满 18 岁？",
+                "applicant_age_band": "您目前是否已满 18 岁？",
             }
             return self._needs_input(task, request, extracted, basis, missing, prompts, QUESTION_OPTIONS)
 
@@ -424,16 +428,16 @@ class CreditCardWorkflow:
             prompts, options = {}, dict(QUESTION_OPTIONS)
             if facts.get("applicant_age") is None and facts.get("applicant_age_band") is None:
                 missing.append("applicant_age_band")
-                prompts["applicant_age_band"] = "你目前是否已满 18 岁？"
+                prompts["applicant_age_band"] = "您目前是否已满 18 岁？"
             missing.append("annual_income_band_hkd")
-            prompts["annual_income_band_hkd"] = "请选择你的税前年收入区间；选项按当前产品门槛生成。"
+            prompts["annual_income_band_hkd"] = "请选择您的税前年收入区间；选项按当前产品门槛生成。"
             options["annual_income_band_hkd"] = _income_options(catalog.products)
             return self._needs_input(
                 task, request, extracted, basis, missing, prompts, options)
 
         if facts.get("applicant_age") is None and facts.get("applicant_age_band") is None:
             return self._needs_input(task, request, extracted, basis, ["applicant_age_band"],
-                                     {"applicant_age_band": "你目前是否已满 18 岁？"}, QUESTION_OPTIONS)
+                                     {"applicant_age_band": "您目前是否已满 18 岁？"}, QUESTION_OPTIONS)
 
         if catalogs is None:
             try:
@@ -453,7 +457,7 @@ class CreditCardWorkflow:
             return self._needs_input(
                 task, request, extracted, basis, ["hk_resident"],
                 {"hk_resident": (
-                    "你目前是否为香港特别行政区居民？汇丰将其列为基本卡申请条件；"
+                    "您目前是否为香港特别行政区居民？汇丰将其列为基本卡申请条件；"
                     "非香港居民仍可尝试申请，但获批几率很低，将按个案审批展示。"
                 )},
                 QUESTION_OPTIONS,
@@ -472,7 +476,7 @@ class CreditCardWorkflow:
             return self._needs_input(
                 task, request, extracted, basis, ["hsbc_premier_path"],
                 {"hsbc_premier_path": (
-                    "以下哪种汇丰卓越理财情况与你相符？这里的一百万港元指在汇丰的"
+                    "以下哪种汇丰卓越理财情况与您相符？这里的一百万港元指在汇丰的"
                     "总关系结余，不是年收入。"
                 )},
                 QUESTION_OPTIONS,
@@ -484,8 +488,8 @@ class CreditCardWorkflow:
             return self._needs_input(
                 task, request, extracted, basis, ["hsbc_relationship_balance_band"],
                 {"hsbc_relationship_balance_band": (
-                    "你已确认是汇丰卓越理财客户。为核对 Premier Mastercard 的申请条件，"
-                    "请选择你在汇丰的总关系结余区间。"
+                    "您已确认是汇丰卓越理财客户。为核对 Premier Mastercard 的申请条件，"
+                    "请选择您在汇丰的总关系结余区间。"
                 )},
                 QUESTION_OPTIONS,
             )
@@ -495,7 +499,7 @@ class CreditCardWorkflow:
             return self._needs_input(
                 task, request, extracted, basis, ["asset_band"],
                 {"asset_band": (
-                    "你的收入未达到部分卡的公开门槛。你能否提供最近3个月的银行资产证明，"
+                    "您的收入未达到部分卡的公开门槛。您能否提供最近 3 个月的银行资产证明，"
                     "以及可证明资产大致在哪个区间？这条路径仍需汇丰个案审批。"
                 )},
                 QUESTION_OPTIONS,
@@ -505,11 +509,11 @@ class CreditCardWorkflow:
         if student_questions:
             prompts = {
                 "full_time_student": (
-                    "你的收入未达到一般信用卡的公开门槛。你是否为全日制学生？"
+                    "您的收入未达到一般信用卡的公开门槛。您是否为全日制学生？"
                     "学生信用卡不设收入要求。"
                 ),
                 "student_institution_eligible": (
-                    "你是否就读于汇丰指定名单内的香港全日制院校课程？"
+                    "您是否就读于汇丰指定名单内的香港全日制院校课程？"
                 ),
             }
             return self._needs_input(
@@ -525,17 +529,17 @@ class CreditCardWorkflow:
         missing = [field for field in required_usage_fields if not facts.get(field)]
         if missing:
             prompts = {
-                "repayment_mode": "你通常会每月全额还款，还是可能分期或保留余额？",
+                "repayment_mode": "您通常会每月全额还款，还是可能分期或保留余额？",
                 "spending_scenarios": (
                     "请按重要程度选择最主要的两到三个消费场景；先选的场景权重更高。"
                     "例如网购、餐饮、旅行、内地消费或学费。"
                 ),
                 "monthly_card_spend_band_hkd": (
-                    "你预计每月信用卡消费大约在哪个区间？这用于计算奖励上限、年费和外币手续费。"
+                    "您预计每月信用卡消费大约在哪个区间？这用于比较奖励上限、年费和外币手续费。"
                 ),
-                "reward_preference": "你更偏好现金回赠、积分、航空里程，还是按预计价值比较？",
+                "reward_preference": "您更偏好现金回赠、积分、航空里程，还是按预计价值比较？",
                 "mainland_payment_method": (
-                    "你在中国内地消费时通常怎样付款？Pulse 的 4.4% 是组合上限，"
+                    "您在中国内地消费时通常怎样付款？Pulse 的 4.4% 是组合上限，"
                     "需要符合手机/二维码支付及自选奖赏类别条件。"
                 ),
             }
@@ -549,7 +553,7 @@ class CreditCardWorkflow:
             return DomainResult(
                 task_id=task.task_id, domain="credit_card", status="needs_verification",
                 answer=AnswerBody(
-                    summary="你可能分期或保留余额，应优先比较借款成本；目前的借款成本资料还不完整。",
+                    summary="如果您可能分期或保留余额，应优先比较借款成本；目前这部分资料还不完整。",
                     limitations=["借款成本资料补齐前，不按返现或积分给出确定推荐。"],
                 ),
                 missing_fields=["card_apr_data"],
@@ -572,7 +576,7 @@ class CreditCardWorkflow:
                 task_id=task.task_id, domain="credit_card", status="answered",
                 answer=AnswerBody(
                     summary="根据目前已确认的申请条件，暂时没有可推荐的汇丰信用卡。"
-                            "若之后情况有变化，我们可以再为你比较适合的选择。",
+                            "若之后情况有变化，我们可以再为您比较适合的选择。",
                     steps=steps),
                 payload={"recommendations": result.model_dump(mode="json"),
                          "catalog": self._catalog_summary(catalog)},
@@ -607,7 +611,7 @@ class CreditCardWorkflow:
         # stay recommended with a prominent low-approval-chance disclosure.
         if any(card.eligibility.low_approval_chance for card in recommendations):
             limitations.insert(0, (
-                "你不是香港居民：汇丰香港成文条件要求申请人一般为香港居民，"
+                "您不是香港居民：汇丰香港成文条件要求申请人一般为香港居民，"
                 "获批几率很低，以下推荐仅为参考，最终由银行审批。"))
         if not product_data_ready:
             limitations.insert(0, "部分年费或奖赏资料仍待官网核验，请以发卡机构页面为准。")
@@ -681,9 +685,9 @@ class CreditCardWorkflow:
         if facts.get(account_field) is None:
             # Premier in another country does not establish a local account.
             prompt = (
-                "你是否已有英国汇丰卓越理财或私人银行账户？"
+                "您是否已有英国汇丰卓越理财或私人银行账户？"
                 if region == "UK" else
-                "为了准确介绍可申请的汇丰美国信用卡，想先确认你是否持有"
+                "为了准确介绍可申请的汇丰美国信用卡，想先确认您是否持有"
                 "美国汇丰卓越理财支票账户？"
             )
             return self._needs_input(
@@ -713,8 +717,8 @@ class CreditCardWorkflow:
             return self._needs_input(
                 task, request, extracted, basis, ["applicant_age_band"],
                 {"applicant_age_band": (
-                    "先确认一项申请条件：你目前是否已满 18 岁？"
-                    "确认后再按你的使用需求挑选卡片。"
+                    "先确认一项申请条件：您目前是否已满 18 岁？"
+                    "确认后再按您的使用需求挑选卡片。"
                 )}, QUESTION_OPTIONS)
         decision_pair = self._study_decision_pair(local_catalog.products, facts)
         if decision_pair and not facts.get("study_card_focus"):
@@ -724,7 +728,7 @@ class CreditCardWorkflow:
                 {"study_card_focus": (
                     f"{lower.product_name}年费{self._study_annual_fee_label(lower)}；"
                     f"{premium.product_name}年费{self._study_annual_fee_label(premium)}。"
-                    "你希望我们优先按年费成本，还是旅行权益来推荐？"
+                    "您希望我们优先按年费成本，还是旅行权益来推荐？"
                 )}, QUESTION_OPTIONS)
 
         raw_scenarios = facts.get("spending_scenarios") or []
@@ -814,7 +818,7 @@ class CreditCardWorkflow:
             task_id=task.task_id, domain="credit_card", status="answered",
             answer=AnswerBody(
                 summary="根据目前已确认的申请条件，暂时没有可推荐的汇丰信用卡。"
-                        "若之后情况有变化，我们可以再为你比较适合的选择。",
+                        "若之后情况有变化，我们可以再为您比较适合的选择。",
                 steps=steps),
             payload={"recommendations": CreditCardRecommendationSet(
                 excluded=excluded).model_dump(mode="json"),
@@ -848,11 +852,11 @@ class CreditCardWorkflow:
             if local_shown:
                 if us_account_path == "plan_to_open":
                     steps.append(
-                        "提前了解：你计划先开立美国汇丰卓越理财支票账户，"
+                        "提前了解：您计划先开立美国汇丰卓越理财支票账户，"
                         "下面先比较这几张卡的年费与权益。开户后仍须符合申请条件并通过银行审批。")
                 elif us_account_path == "not_applicable":
                     steps.append(
-                        "提前了解：你目前没有美国汇丰卓越理财支票账户；"
+                        "提前了解：您目前没有美国汇丰卓越理财支票账户；"
                         "下面仍先比较当地卡的年费与权益，正式申请通常需先开立该账户。")
                 elif preview:
                     steps.append(
@@ -865,7 +869,7 @@ class CreditCardWorkflow:
                         f"{self._study_annual_fee_label(lower)}；"
                         f"{premium.product_name}年费"
                         f"{self._study_annual_fee_label(premium)}，更侧重旅行权益。"
-                        "下面列出主要权益，方便你按实际使用情况选择。")
+                        "下面列出主要权益，方便您按实际使用情况选择。")
                 steps.extend((GROUP_TITLES[market], PREREQUISITES[market]))
                 steps.extend(lines)
             groups.append({"market": catalog.market,
@@ -884,9 +888,9 @@ class CreditCardWorkflow:
             steps.append(HK_BACKUP_TITLE)
             steps.append(
                 "香港卡仅作备用参考。"
-                + ("你是香港居民时，仍须满足各卡公开门槛。"
+                + ("您是香港居民时，仍须满足各卡公开门槛。"
                    if hk_resident is True else
-                   "你不是香港居民（或尚未确认）时，汇丰香港成文条件要求申请人一般为"
+                   "您不是香港居民（或尚未确认）时，汇丰香港成文条件要求申请人一般为"
                    "香港居民，获批几率很低，最终由银行个案审批。")
             )
             steps.append(PREREQUISITES["CN-HK"])
@@ -913,26 +917,26 @@ class CreditCardWorkflow:
             names = "、".join(item["product_name"] for item in local_shown)
             if facts.get("us_hsbc_account_path") == "plan_to_open":
                 summary = (
-                    f"你计划先开立美国汇丰卓越理财支票账户，我们先为你介绍{names}，"
+                    f"您计划先开立美国汇丰卓越理财支票账户，我们先为您介绍{names}，"
                     "方便提前比较年费与权益。正式申请仍需在开户后核对条件并通过银行审批。"
                     + ("另附香港卡作备用（获批可能较难）。" if hk_shown else "")
                 )
             else:
                 summary = (
-                    f"你目前没有美国汇丰卓越理财支票账户；我们仍先介绍{names}，"
+                    f"您目前没有美国汇丰卓越理财支票账户；我们仍先介绍{names}，"
                     "方便比较年费与权益。正式申请通常需先开立该账户并通过银行审批。"
                     + ("另附香港卡作备用（获批可能较难）。" if hk_shown else "")
                 )
         elif local_shown and facts.get("study_card_focus") == "compare" and decision_pair:
             summary = (
-                "这两张当地卡的年费与旅行权益各有取舍。先为你并列介绍，"
-                "你可以结合实际使用频率决定哪张更合适。"
+                "这两张当地卡的年费与旅行权益各有取舍。先为您并列介绍，"
+                "您可以结合实际使用频率决定哪张更合适。"
                 + ("香港卡仅作备用。" if hk_shown else "")
             )
         elif eligible_local:
             focus = facts.get("study_card_focus")
-            reason = ("你更重视年费成本。" if focus == "lower_fee" else
-                      "你更重视旅行权益，也接受较高年费。" if focus == "travel_benefits" else "")
+            reason = ("您更重视年费成本。" if focus == "lower_fee" else
+                      "您更重视旅行权益，也接受较高年费。" if focus == "travel_benefits" else "")
             summary = (
                 f"留学{place}优先考虑当地汇丰卡，主推 {eligible_local}。"
                 f"{reason}"
@@ -955,14 +959,14 @@ class CreditCardWorkflow:
                        and facts["applicant_age"] < 18))):
             summary = (
                 "所选地区的汇丰信用卡设有最低申请年龄。"
-                "等符合年龄条件后，我们可以再为你比较卡片权益与年费。"
+                "等符合年龄条件后，我们可以再为您比较卡片权益与年费。"
             )
         elif region == "US" and local_products:
             if facts.get("us_hsbc_account_path") == "plan_to_open":
                 summary = (
                     "汇丰美国现有信用卡目录暂未列出学生卡。两款卡的申请前提"
                     "是已持有美国汇丰卓越理财支票账户；待账户开立后，我们可以再结合"
-                    "你的需求比较两张卡的权益与年费。"
+                    "您的需求比较两张卡的权益与年费。"
                     + ("另附香港卡作备用（获批可能较难）。" if hk_shown else "")
                 )
             else:
@@ -972,11 +976,11 @@ class CreditCardWorkflow:
                     + ("下列香港卡仅作备用参考，获批可能较难。" if hk_shown else
                        "基于这些产品条件，这次先不列出具体卡片。"
                        "如果之后希望重新了解美国当地的信用卡选择，"
-                       "我们可以随时再为你比较。")
+                       "我们可以随时再为您比较。")
                 )
         elif local_products:
             summary = (
-                "目前没有确认适合你申请的汇丰英国信用卡。请核对年龄、英国居民身份及当地账户条件。"
+                "目前没有确认适合您申请的汇丰英国信用卡。请核对年龄、英国居民身份及当地账户条件。"
                 + ("另附香港卡作备用（获批可能较难）。" if hk_shown else "")
             )
         elif hk_shown:
@@ -1133,13 +1137,13 @@ class CreditCardWorkflow:
                 lines.append(f"{'主推荐' if role == 'primary' else '其他选择'}：{product.product_name}")
                 if role == "primary":
                     reason = (
-                        "你希望控制年费；这张卡在当前两款中年费较低，"
+                        "您希望控制年费；这张卡在当前两款中年费较低，"
                         "适合先关注持卡成本与日常使用。"
                         if focus == "lower_fee" else
-                        "你更看重旅行权益；这张卡提供相应礼遇，年费也较高，"
+                        "您更看重旅行权益；这张卡提供相应礼遇，年费也较高，"
                         "可结合预计使用频率衡量。"
                     )
-                    lines.append(f"为什么适合你：{reason}")
+                    lines.append(f"为什么适合您：{reason}")
                 else:
                     alternative = (
                         "如果之后更常使用旅行权益，也可以对比这张年费较高的卡。"
@@ -1275,16 +1279,16 @@ class CreditCardWorkflow:
         perk_text = "；".join(perks) if perks else "详见官网奖赏与附加权益"
         scene_text = "、".join(scenes)
         if card.role == "supplement" and scene_text:
-            opening = f"可以和主卡搭配使用，专门补足你在{scene_text}方面的需求。"
+            opening = f"可以和主卡搭配使用，专门补足您在{scene_text}方面的需求。"
         elif scene_text:
-            opening = f"如果你希望把{scene_text}用得更划算，这张卡会是更贴合的选择。"
+            opening = f"如果您希望把{scene_text}用得更划算，这张卡会是更贴合的选择。"
         else:
-            opening = "综合你的申请条件和消费习惯，这张卡的整体价值更突出。"
+            opening = "综合您的申请条件和消费习惯，这张卡的整体价值更突出。"
 
         value_points = []
         if card.estimated_annual_reward_hkd is not None and card.estimated_annual_reward_hkd > 0:
             value_points.append(
-                f"按你填写的消费区间估算，每年约可获得 "
+                f"按您填写的消费区间估算，每年约可获得 "
                 f"{card.estimated_annual_reward_hkd:,.0f}港元奖赏回报")
         if perks:
             value_points.append("还可享" + "、".join(perks[:2]))
@@ -1298,7 +1302,7 @@ class CreditCardWorkflow:
             reason_text += " " + "；".join(value_points) + "，日常使用更轻松。"
         lines = [
             f"{label}：{card.product_name}",
-            f"为什么适合你：{reason_text}",
+            f"为什么适合您：{reason_text}",
             f"年费：{fee}",
             f"主要权益：{perk_text}",
         ]

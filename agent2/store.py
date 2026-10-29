@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS profile_field_definitions (
     freshness_days   INTEGER,
     ask_priority     INTEGER NOT NULL DEFAULT 0,
     ask_only_when_needed INTEGER NOT NULL DEFAULT 1 CHECK (ask_only_when_needed IN (0,1)),
+    storage_class TEXT NOT NULL DEFAULT 'core_profile',
+    confirmation_mode TEXT NOT NULL DEFAULT 'direct_answer',
+    scope TEXT NOT NULL DEFAULT 'global',
     question_template TEXT NOT NULL,
     schema_version   INTEGER NOT NULL,
     active           INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
@@ -89,6 +92,49 @@ CREATE TABLE IF NOT EXISTS profile_change_proposals (
     created_at        TEXT NOT NULL,
     decided_at        TEXT
 );
+CREATE TABLE IF NOT EXISTS bank_relationships (
+    relationship_id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
+    institution TEXT NOT NULL,
+    market TEXT NOT NULL,
+    product_id TEXT,
+    product_name_snapshot TEXT NOT NULL,
+    holder_relation TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('selected','applying','open','blocked','closed')),
+    opened_on TEXT,
+    source_message_id TEXT,
+    confirmed_at TEXT NOT NULL,
+    last_confirmed_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bank_relationships_profile_market
+    ON bank_relationships(profile_id, market, status);
+CREATE TABLE IF NOT EXISTS bank_relationship_events (
+    event_id TEXT PRIMARY KEY,
+    relationship_id TEXT NOT NULL REFERENCES bank_relationships(relationship_id) ON DELETE CASCADE,
+    old_status TEXT,
+    new_status TEXT NOT NULL,
+    source_message_id TEXT,
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user','agent','system')),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bank_relationship_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
+    market TEXT NOT NULL,
+    product_id TEXT,
+    product_name_snapshot TEXT NOT NULL,
+    holder_relation TEXT NOT NULL,
+    proposed_status TEXT NOT NULL CHECK (proposed_status IN ('selected','applying','open','blocked','closed')),
+    existing_relationship_id TEXT REFERENCES bank_relationships(relationship_id),
+    source_message_id TEXT,
+    basis TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('open','confirmed','dismissed')),
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+);
 CREATE TABLE IF NOT EXISTS sessions (
     session_id      TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL REFERENCES users(user_id),
@@ -97,6 +143,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at      TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_profile ON sessions(profile_id);
+CREATE TABLE IF NOT EXISTS domain_conversation_state (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    domain     TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, domain)
+);
 CREATE TABLE IF NOT EXISTS message_index (
     message_id        TEXT PRIMARY KEY,
     session_id        TEXT NOT NULL REFERENCES sessions(session_id),
@@ -154,6 +208,17 @@ CREATE TABLE IF NOT EXISTS advice_history (
     created_at        TEXT NOT NULL,
     PRIMARY KEY (profile_id, topic, version)
 );
+CREATE TABLE IF NOT EXISTS advice_scoped_current (
+    profile_id TEXT NOT NULL REFERENCES profiles(profile_id),
+    topic TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    source_message_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (profile_id, topic, scope_key)
+);
 CREATE TABLE IF NOT EXISTS message_reactions (
     message_id TEXT NOT NULL REFERENCES message_index(message_id),
     user_id    TEXT NOT NULL REFERENCES users(user_id),
@@ -191,6 +256,7 @@ class Store:
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._migrate_legacy_names()
         self._connection.executescript(SCHEMA)
+        self._migrate_profile_policy_columns()
         self._migrate_legacy_profile_fields()
         self._lock = threading.RLock()
 
@@ -237,6 +303,18 @@ class Store:
               confirmed_at, NULL, NULL, CASE WHEN status='confirmed' THEN 1 ELSE 0 END,
               'standard', COALESCE(confirmed_at, ?)
             FROM profile_fields""", (now,))
+
+    def _migrate_profile_policy_columns(self):
+        columns = self._table_columns("profile_field_definitions")
+        additions = {
+            "storage_class": "TEXT NOT NULL DEFAULT 'core_profile'",
+            "confirmation_mode": "TEXT NOT NULL DEFAULT 'direct_answer'",
+            "scope": "TEXT NOT NULL DEFAULT 'global'",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                self._connection.execute(
+                    f"ALTER TABLE profile_field_definitions ADD COLUMN {name} {ddl}")
 
     @contextmanager
     def transaction(self):

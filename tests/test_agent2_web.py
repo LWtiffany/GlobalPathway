@@ -86,6 +86,8 @@ class WebApiCases(S1Base):
         self.assertEqual(payload["fields"]["planned_start_date"]["kind"], "date")
         self.assertEqual([o["value"] for o in payload["fields"]["stay_over_6_months"]["options"]], [True, False])
         self.assertEqual(payload["fields"]["beneficiary"]["label"], "服务对象")
+        self.assertEqual(payload["fields"]["account_region"]["storage_class"], "session_only")
+        self.assertEqual(payload["fields"]["destination_country"]["confirmation_mode"], "proposal")
 
 
 class StaticFileCases(unittest.TestCase):
@@ -98,7 +100,7 @@ class StaticFileCases(unittest.TestCase):
 
     def test_follow_up_choices_use_atomic_message_profile_update(self):
         source = api.static_file("/app.js")[0].decode("utf-8")
-        answer_field = source.split("async function answerField", 1)[1].split("function proposalCard", 1)[0]
+        answer_field = source.split("async function answerField", 1)[1].split("function proposalValue", 1)[0]
         self.assertNotIn('api("PATCH"', answer_field)
         self.assertIn("await send", answer_field)
         send = source.split("async function send", 1)[1]
@@ -166,8 +168,47 @@ process.stdout.write(JSON.stringify({ result, rendered, preview, comparison }));
         self.assertNotIn("提前了解", output["preview"])
         self.assertNotIn("优先美国", output["rendered"])
         self.assertNotIn("可以先比较产品权益和费用", output["rendered"])
-        self.assertIn("供你比较", output["comparison"])
+        self.assertIn("供您比较", output["comparison"])
         self.assertNotIn("已推荐", output["comparison"])
+
+    @unittest.skipUnless(shutil.which("node"), "需要 Node.js 验证开户建议卡数据映射")
+    def test_account_plan_reads_product_documents_and_rules_from_candidate_result(self):
+        app_path = Path(__file__).resolve().parents[1] / "agent2" / "web" / "app.js"
+        script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const helpers = source.slice(source.indexOf('function accountDocumentLabel('),
+  source.indexOf('function accountCard('));
+const context = {};
+vm.createContext(context);
+vm.runInContext(helpers, context);
+const display = context.accountAdviceDisplay({ payload: { result_status: 'answered', domain_payload: {
+  account_region: 'UK',
+  conversation_state: { focused_product_id: 'hsbc_uk_bank', unresolved_fields: ['applicant_age'] },
+  candidate_results: [{ status: 'needs_input',
+    product: { account_id: 'hsbc_uk_bank', product_name: 'HSBC Bank Account' },
+    rule_results: [
+      { rule: { field_code: 'applicant_age', operator: 'gte', value_numeric: '18' } },
+      { rule: { field_code: 'bank_confirmation', operator: 'note' } }
+    ],
+    documents: [
+      { document_type: 'identity', requirement_level: 'required' },
+      { document_type: 'address', requirement_level: 'required' },
+      { document_type: 'identity', requirement_level: 'required' }
+    ]
+  }]
+} } });
+process.stdout.write(JSON.stringify(display));
+"""
+        result = subprocess.run(["node", "-e", script, str(app_path)], check=True,
+                                capture_output=True, text=True, encoding="utf-8")
+        display = json.loads(result.stdout)
+        self.assertEqual("HSBC Bank Account", display["productName"])
+        self.assertEqual(["身份证明", "地址证明"], display["documentNames"])
+        self.assertEqual(["年龄至少 18 岁", "需通过银行的身份与地址核验"],
+                         display["ruleLabels"])
+        self.assertTrue(display["needsInput"])
 
     def test_paths_outside_web_root_never_escape(self):
         index = api.static_file("/")[0]

@@ -1,0 +1,323 @@
+{
+  "documents": [
+    {
+      "doc_id": "hsbc_hk_premier_product_page",
+      "account_key": "hsbc_hk_premier",
+      "market": "CN-HK",
+      "title": "汇丰香港 Premier 产品页（开户资格/费用/渠道/文件）",
+      "source_url": "https://www.hsbc.com.hk/accounts/products/premier/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_premier_product_page.md",
+      "chunks": [
+        {
+          "seq": 1,
+          "heading": "开户资格",
+          "content": "汇丰官方 Premier 产品页说明，符合以下任一条件即可申请香港汇丰 Premier 账户：1) 总关系结余（TRB）达 1,000,000 港元或以上；TRB 包含存款、投资与保险、参与的退休计划及已动用的贷款。若 TRB 低于该金额，新客户首 6 个月可获低结余费豁免。2) International Premier 路径：已在其他国家或地区持有汇丰 Premier，或符合当地 Premier 资格。单身账户可在线上几分钟内完成申请。"
+        },
+        {
+          "seq": 2,
+          "heading": "低结余费与豁免",
+          "content": "成为 Premier 客户后须维持连续 3 个月平均每日总关系结余（TRB）达 1,000,000 港元或以上；否则在 6 个月低结余费豁免期结束后，将收取每月 380 港元的低结余费。TRB 的计算范围包括存款结余、投资、已动用信贷、含储蓄或投资成分的人寿保险、汇丰强积金（MPF）结余及汇丰 ORSO 界定供款计划结余。"
+        },
+        {
+          "seq": 3,
+          "heading": "开户渠道",
+          "content": "新客户可通过汇丰香港手机银行 App 开立 Premier 账户，5 分钟内完成；该 App 渠道适用于 18 至 75 岁、且目前未持有任何汇丰银行/投资账户或信用卡的客户，不符合者可到网点或电话办理。其他开户渠道包括：手机/网上银行、网点办理、Digital Banker（数码银行家）及电话。Digital Banker 渠道适用 18 至 75 岁、持有效香港身份证、港澳通行证（EEP）或合资格海外护照（包括澳大利亚、加拿大、印度、新加坡、英国、美国）且目前未持有任何汇丰银行/投资账户或信用卡的客户。"
+        },
+        {
+          "seq": 4,
+          "heading": "所需文件",
+          "content": "新客户到汇丰网点办理 Premier 只需携带身份证明文件和近期地址证明；详细开户文件要求见汇丰官方账户申请说明（application notes PDF，见来源页）。现有客户升级 Premier 时到网点办理无需携带身份证明或地址证明。可在网点申请时同时为子女设置 Premier Junior Pack、Premier for Next Generation 账户，并可一并开立投资账户。"
+        },
+        {
+          "seq": 5,
+          "heading": "欢迎优惠与转账限制",
+          "content": "2026 年 9 月 1 日至 12 月 31 日期间成功加入 Premier 并完成指定银行交易的客户，可享价值超过 55,000 港元的欢迎奖励及 6 个月低结余费豁免。一般情况下，非香港身份证（HKID）新客户在开户后首 3 个工作日（公众假期除外）内的转账限额可能较低，请以汇丰 App 或网上银行显示的最新限额为准。"
+        }
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_one_product_page",
+      "account_key": "hsbc_hk_one",
+      "market": "CN-HK",
+      "title": "汇丰香港 HSBC One 产品页（开户/费用/功能/优惠）",
+      "source_url": "https://www.hsbc.com.hk/accounts/products/one/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_one_product_page.md",
+      "chunks": [
+        {
+          "seq": 1,
+          "heading": "开户渠道与流程",
+          "content": "HSBC One 主要通过汇丰香港 App 开户，约 5 分钟、4 步完成；开户成功并选择即时领卡可即时取 ATM 卡。其他渠道：网点、Digital Banker（数码银行家，需到指定 Express Banking 位置）。Digital Banker 渠道适用 18 至 75 岁且目前不持有任何汇丰银行/投资账户或信用卡的客户。"
+        },
+        {
+          "seq": 2,
+          "heading": "资格与费用",
+          "content": "香港身份证（HKID）客户开 HSBC One 无最低总关系结余（TRB）要求、无低结余月费。非 HKID 客户（2026 年 1 月 1 日或之后开户）需连续 3 个月维持平均 TRB 达 10,000 港元，方可豁免每月 100 港元的低结余费。非 HKID 客户开户后首 6 个月适用较低的转账及提款限额；App/数码渠道支持的海外护照包括澳大利亚、加拿大、印度、新加坡、英国、美国。"
+        },
+        {
+          "seq": 3,
+          "heading": "账户特点",
+          "content": "HSBC One 支持 12 种主要货币（港元加 11 种外币：美元、英镑、日元、人民币、欧元、泰铢、澳元、新西兰元、新加坡元、加拿大元、瑞士法郎），App 内 24 小时换汇并可设汇率提醒。日常功能包括薪金自动转账、定期存款、Budget 支出追踪与月度预算（覆盖汇丰账户和信用卡）、Future Planner 财务规划。投资方面有 Trade25（港/美/A 股，终身 0 佣金，仅有交易或持股月份收 25 港元月费）及 FlexInvest 基金（低至 100 港元起投）。"
+        },
+        {
+          "seq": 4,
+          "heading": "新客优惠（2026-09-01 至 2026-12-31 推广期）",
+          "content": "HSBC One 新客户存入达标新资金最高可获 3,530 RewardCash 奖励（无需登记）。新 Auto-Payroll 薪金转账客户最高 1,500 RewardCash 加最高 600 港元生活优惠。累积指定换汇金额可获 20% 点差折扣外汇优惠券。所有推广均受条款限制，以汇丰官方条款为准。"
+        }
+      ]
+    },
+    {
+      "doc_id": "hsbc_uk_bank_product_page",
+      "account_key": "hsbc_uk_bank",
+      "market": "UK",
+      "title": "汇丰英国 Bank Account 境外申请页（资格/渠道/文件/费用）",
+      "source_url": "https://www.hsbc.co.uk/international/apply-for-a-uk-account/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_uk_bank_product_page.md",
+      "chunks": [
+        {
+          "seq": 1,
+          "heading": "开户资格（谁能申请）",
+          "content": "汇丰官方页面说明，符合以下条件即可申请汇丰英国银行账户：1) 年满 18 岁；2) 同意汇丰以你的名义进行信用查核（如你在英国居住并申请联名账户）；3) 能够提供身份证明和地址证明。其他资格条件也可能适用。是否可在你所在的地区申请，以申请页面的资格检查结果为准。"
+        },
+        {
+          "seq": 2,
+          "heading": "开户渠道与境外申请",
+          "content": "开立汇丰英国银行账户最便捷的方式是使用汇丰英国 App。如需协助，也可以前往英国的汇丰网点，由网点协助完成申请；亲自前往英国网点时建议随身携带智能手机或平板电脑。你可以在境外多个地点直接申请汇丰英国账户：选定想要的账户后，点击申请按钮即可查看你是否可能符合资格。"
+        },
+        {
+          "seq": 3,
+          "heading": "所需文件与资料",
+          "content": "开立汇丰英国银行账户需要准备：1) 你目前的就业、收入及税务资料；2) 身份证明，例如护照或驾驶执照；3) 地址证明，例如水电费账单或银行月结单。"
+        },
+        {
+          "seq": 4,
+          "heading": "账户费用与境外使用",
+          "content": "汇丰英国银行账户无月费（不会仅因持有账户而收费）。账户可通过手机银行、网上银行、自动电话银行及借记卡 24 小时全天候使用。借记卡持有人可参加 home&Away 优惠计划，享受多家商户折扣。通过汇丰 App 及网上银行可在世界各地管理你在全球的汇丰账户。Bank Account 每日 ATM 提款限额为 300 英镑；在英国境外使用借记卡刷卡收 2.75% 费用，取现另加 2% 费用（最低 1.75 英镑、最高 5 英镑）。如果你持续居住在英国境外，部分账户功能可能不适用。"
+        },
+        {
+          "seq": 5,
+          "heading": "Premier 账户（同页信息）",
+          "content": "同页列出的 HSBC Premier Account 资格为满足以下任一条件：1) 年收入达 100,000 英镑或以上；2) 在汇丰持有 100,000 英镑的存款或投资；3) 已在其他国家或地区持有并符合汇丰 Premier 资格。持有其他国家和地区汇丰账户的客户可在线统一管理，并在数分钟内完成账户间免费转账。Premier 每日 ATM 提款限额为 1,000 英镑；在英国境外用卡费用为 2.75%。单人账户可在 App 内申请，联名账户可在线申请；如有需要可能被要求提供身份证明及地址证明。"
+        }
+      ]
+    },
+    {
+      "doc_id": "hsbc_uk_student_product_page",
+      "account_key": "hsbc_uk_student",
+      "market": "UK",
+      "title": "汇丰英国 Student Bank Account 产品页（资格/课程/证明/透支/问答）",
+      "source_url": "https://www.hsbc.co.uk/current-accounts/products/student/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_uk_student_product_page.md",
+      "chunks": [
+        {
+          "seq": 1,
+          "heading": "申请资格（谁能申请学生账户）",
+          "content": "申请汇丰英国 Student Bank Account 需满足：1) 年满 18 岁；2) 目前居住在英国，且过去 3 年一直居住在英国、海峡群岛或马恩岛；3) 持有被合格课程录取的证明（例如 16 位 UCAS 状态码）。若返回英国大学修读 1 年或以上的研究生或第二学位，必须在过去 3 年内完成过本科课程。若在英国、海峡群岛或马恩岛的居住时间不足 3 年，请改为申请汇丰普通银行账户（HSBC Bank Account）。"
+        },
+        {
+          "seq": 2,
+          "heading": "课程录取证明（UCAS 状态码与替代文件）",
+          "content": "在线申请需提供 16 位 UCAS 状态码（UCAS 会通过邮件发送给你）。如通过其他渠道申请或没有 16 位 UCAS 状态码，可使用以下替代证明之一：1) 大学或继续教育机构出具的确认你接受合格课程录取名额的信函——须为最近 4 个月内开具、使用官方抬头信纸（纸质或 PDF 均可）；2) UCAS Track 网站上显示 UCAS 状态的打印件。使用替代证明时，开户处理时间可能更长。"
+        },
+        {
+          "seq": 3,
+          "heading": "合格课程与非合格课程",
+          "content": "课程必须为全日制（如领取残障学生津贴 Disabled Students' Allowance 则可为非全日制），且就读于英国的大学或学院。合格课程包括：研究生学位（如 PhD、MBA、MSc、PGCE、MPhil、M.Ed、M.St 或 LL.M）、本科学位（如 BA、BSc、BEd、BN）、高等教育文凭（DipHE）、BTEC、NVQ 第 4 及第 5 级、基础学位 FDA（艺术类）或 FdSc（理科）及其后一年制的完整荣誉学位课程、注册前或第一级护理及助产文凭、以及作为上述课程组成部分的预备年（需院校书面证明）。不合格课程包括：各类学徒制（第 2 至第 7 级）、衔接与转换课程、A Level、AS、Scottish Highers、GCSE、非 HND/HNC 的 BTEC 国家奖、GNVQ 第 1 至 3 级、SQA 证书及非全日制课程（领取残障学生津贴者除外）。"
+        },
+        {
+          "seq": 4,
+          "heading": "费用与免息透支",
+          "content": "Student Bank Account 无月费。开户时可申请免息协定透支（arranged overdraft）：开户时额度最高 1,000 英镑（与年级无关），第 2 年可申请提高至 2,000 英镑，第 3 年可提高至 3,000 英镑，须视个人状况及账户使用情况而定。代表性示例：0% EAR（浮动）、代表性 0% APR（浮动），基于 1,000 英镑协定透支。透支仅适合短期周转并须还款；账户活动（含透支使用）会报送至征信机构。另有 Regular Saver 定期储蓄：年利率 5.00% AER/总利率，每月存 25 至 250 英镑，固定 12 个月期限（提取有限制）。"
+        },
+        {
+          "seq": 5,
+          "heading": "申请材料与流程",
+          "content": "申请时需提供以下资料：过去 3 年的地址、收入、大学课程信息及 16 位 UCAS 状态码；也可能需要提供身份证明、地址证明及移民身份文件。新客户可在线数分钟内完成申请；已是汇丰往来账户客户在线申请后，现有账户将升级为学生账户，已有的直接借记（Direct Debit）及常设转账（standing order）保持不变。通常只允许持有一个学生银行账户。"
+        },
+        {
+          "seq": 6,
+          "heading": "常见问题（毕业转户与存款保障）",
+          "content": "毕业时学生账户自动转换：汇丰 Student Bank Account 会在你完成学业的当年 7 月 31 日自动转为 Graduate Account（毕业生账户），毕业后仍提供免息透支，但免息额度逐年递减，请及时还款并留意开始计息的时间。存款保障：汇丰英国银行（HSBC UK Bank plc）的合格存款受英国金融服务补偿计划（FSCS）保障，总额上限 120,000 英镑（联名账户 240,000 英镑）；该上限适用于你持有的 HSBC UK、HSBC Private Bank、first direct、M&S Bank 及 M&S Savings and Investments 的存款合计。"
+        }
+      ]
+    },
+    {
+      "doc_id": "hsbc_us_premier_checking_product_page",
+      "account_key": "hsbc_us_premier_checking",
+      "market": "US",
+      "title": "汇丰美国 Premier Checking 产品页（资格/月费豁免/关户规则/新客奖励）",
+      "source_url": "https://www.us.hsbc.com/checking-accounts/products/premier/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_us_premier_checking_product_page.md",
+      "chunks": [
+        {
+          "seq": 1,
+          "heading": "申请资格与渠道",
+          "content": "申请汇丰美国 Premier Checking（卓越理财支票账户）须年满 18 岁，且申请时位于汇丰指定的国家或地区（名单可能变动）。已是汇丰美国客户的，可登录网上银行直接申请；其他申请人可在线申请，联名账户或不满足在线渠道条件者可请求回电安排。"
+        },
+        {
+          "seq": 2,
+          "heading": "月费与豁免路径（门槛）",
+          "content": "未满足任一汇丰 Premier 资格条件时，将收取每月 50 美元的账户维护费（详见 HSBC Premier Terms and Charges Disclosure）。满足以下任一条件即可豁免月费：1) 美国个人及合资格商业美元存款与投资账户的综合余额达 100,000 美元；2) 每月由第三方存入汇丰 Premier 支票账户的定期直接存款合计达 5,000 美元——合资格直接存款指雇主或外部机构通过 ACH 网络存入的工资、养老金、社保等定期款项，账户间转账、移动端存款及网点/ATM 存款不算；3) 持有由汇丰服务的美国住宅按揭贷款（房屋净值产品、处于止赎或破产程序的贷款及已转移服务权的贷款不包含在内）；4) 维持汇丰私人银行（Private Bank）客户身份（须受邀并经逐案审核）。"
+        },
+        {
+          "seq": 3,
+          "heading": "豁免期与账户关闭规则",
+          "content": "开户当月及其后 3 个日历月为豁免期（Waiver Period），期间无论是否达到资格条件均不收取月费。若豁免期结束后仍未满足任一 Premier 资格条件、且账户被连续收取 3 个月月费，账户将被关闭；你名下的其他支票、储蓄、信用卡及 Global Money 账户也将一并关闭——除非你（或这些账户的联名持有人）持有另一个汇丰 Premier 支票账户。"
+        },
+        {
+          "seq": 4,
+          "heading": "新客奖励",
+          "content": "限时优惠：开立新的 Premier 支票账户并完成指定合格活动，最高可获 3,000 美元奖励。优惠截至 2026 年 12 月 31 日，受活动条款限制。"
+        }
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_children_savings_product_page",
+      "account_key": "hsbc_hk_children_savings",
+      "market": "CN-HK",
+      "title": "汇丰香港 Children Savings Account 产品页（资格/家长陪同/代开/费用/功能）",
+      "source_url": "https://www.hsbc.com.hk/accounts/products/savings/children/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_children_savings_product_page.md",
+      "chunks": [
+        {
+          "seq": 1,
+          "heading": "开户资格与办理方式",
+          "content": "汇丰 Children Savings Account（儿童储蓄账户）适用于未满 18 岁的儿童。办理时家长或监护人必须陪同到场。办理方式：通过汇丰官网在线预约表格填写基本资料，汇丰将安排在香港网点开立账户；有兴趣的孩子应先与家长或监护人商量，由家长预约。所需文件以汇丰官方开户申请须知（PDF）为准。"
+        },
+        {
+          "seq": 2,
+          "heading": "11 岁以下的代开规则",
+          "content": "对于未满 11 岁的儿童，家长可以本人名义为孩子开立汇丰 Children Savings Account，作为孩子理财教育的起点。家长可与孩子一起查看每月月结单，认识存款、提款、储蓄及利息等基本银行概念，并可通过网上银行、手机银行、ATM 及电话银行全天候监督孩子的账户。官方脚注说明：若孩子未满 18 岁且暂未能独立管理财务，家长可选择以本人名义为孩子开立 Children Savings Account（in re account），所有交易均须经家长签署授权。"
+        },
+        {
+          "seq": 3,
+          "heading": "费用与结余要求",
+          "content": "Children Savings Account 无账户费用、无最低结余要求。"
+        },
+        {
+          "seq": 4,
+          "heading": "账户功能",
+          "content": "账户功能包括：通过汇丰香港 App 查询余额并开启账户动态推送通知；手机提款——用 App 在本地任何汇丰及恒生 ATM 提取现金；App 提供 Lite 简易模式，方便初学者上手。收款与付款：可登记 PayMe（以香港身份证及个人资料注册），向亲友付款、分账及领取商户礼券；支援转数快（FPS），以手机号码、电邮、FPS 识别码或扫码即时免费转账（汇丰不收费，其他银行的收费政策可能不同）。储蓄管理：App 内 Budget 功能按类别追踪支出并提供个人化洞察。境外消费可考虑与家长商量申请汇丰 Mastercard 借记卡附属卡，支援 12 种主要货币、零费用。年满 18 岁后可升级至 HSBC One 作为首个成人账户（无最低结余要求）。"
+        }
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_teens_product_page",
+      "account_key": "hsbc_hk_teens",
+      "market": "CN-HK",
+      "title": "汇丰香港 HSBC Teens 产品页（资格/材料/流程/费用/升级）",
+      "source_url": "https://www.hsbc.com.hk/accounts/products/teens/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_teens_product_page.md",
+      "chunks": [
+        {"seq": 1, "heading": "开户资格", "content": "HSBC Teens 适用于 11 至 17 岁、持有效香港永久性居民身份证、香港出生证明或中国内地出生医学证明的汇丰新客户；申请时须在香港居住并身处香港，且家长须为可使用 HSBC HK App 的现有汇丰客户。"},
+        {"seq": 2, "heading": "App 开户材料与流程", "content": "家长与青少年各用一部装有 HSBC HK App 的手机，约 15 分钟完成申请。家长先填写双方资料并上传出生证明作为关系证明；青少年扫码后拍摄香港身份证、自拍核验并接受条款。"},
+        {"seq": 3, "heading": "费用与账户功能", "content": "HSBC Teens 无月费、无最低结余要求，支持 12 种货币；可用 FPS、ATM、转账及 Budget 工具，但适用每日转账及提款限额，家长和青少年均会收到实时转账通知。"},
+        {"seq": 4, "heading": "年满 18 岁后的升级", "content": "年满 18 岁后可提交综合账户转换表，按需要升级；官网说明可沿用原账户号码升级至 HSBC One。"}
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_premier_elite_product_page",
+      "account_key": "hsbc_hk_premier_elite",
+      "market": "CN-HK",
+      "title": "汇丰香港 Premier Elite 资格与服务层级",
+      "source_url": "https://www.hsbc.com.hk/premier-elite/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_premier_elite_product_page.md",
+      "chunks": [
+        {"seq": 1, "heading": "资格与层级", "content": "HSBC Premier Elite 是 HSBC Premier 之上的服务层级。申请人须持有 HSBC Premier Bank Account，并在香港汇丰维持至少 7,800,000 港元总关系结余。"},
+        {"seq": 2, "heading": "总关系结余计算", "content": "条款要求在紧接服务开始前的连续 3 个日历月维持平均总关系结余至少 7,800,000 港元；计算范围可包括合资格存款、投资、已动用贷款、保险及强积金或职业退休计划结余，具体以条款为准。"},
+        {"seq": 3, "heading": "办理方式", "content": "Premier Elite 并非一般日常账户的入门选择；客户须通过 Premier Elite 渠道或香港网点登记并完成银行资格核验。"}
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_hkd_savings_product_page",
+      "account_key": "hsbc_hk_hkd_savings",
+      "market": "CN-HK",
+      "title": "汇丰香港港元储蓄账户（用途/渠道/材料）",
+      "source_url": "https://servicing.hsbc.com.hk/accounts/products/savings/hk-dollar/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_hkd_savings_product_page.md",
+      "chunks": [
+        {"seq": 1, "heading": "账户用途", "content": "港元储蓄账户可赚取存款利息并灵活存取，支持 ATM、电话银行、网上及手机银行管理；利率为浮动并以汇丰最新存款利率为准。"},
+        {"seq": 2, "heading": "申请渠道与身份证明", "content": "官网指引申请人携带所需文件到香港网点办理。成年申请人须提供银行接受的身份证明；银行可按居住地、账户类型和个案要求地址证明或补充文件。"},
+        {"seq": 3, "heading": "银行可能核对的资料", "content": "银行可核对国籍、职业和雇主、开户目的、在香港开户原因、财富或收入来源、预计交易活动、开户资金来源、拟使用服务、税务居民地及税号等资料。"},
+        {"seq": 4, "heading": "与往来及定期存款的区别", "content": "储蓄账户用于赚取利息并保留资金存取灵活性；往来账户侧重日常付款和签发支票；定期存款把资金锁定一段期限，提前支取须经银行同意。"}
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_hkd_current_product_page",
+      "account_key": "hsbc_hk_hkd_current",
+      "market": "CN-HK",
+      "title": "汇丰香港港元往来账户（用途/渠道/材料）",
+      "source_url": "https://www.hsbc.com.hk/accounts/products/current/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_hkd_current_product_page.md",
+      "chunks": [
+        {"seq": 1, "heading": "账户用途", "content": "港元往来账户是用于日常银行服务的简单账户，可签发港元纸质支票处理日常付款。"},
+        {"seq": 2, "heading": "申请渠道", "content": "产品页要求申请人携带所需文件到香港汇丰网点办理。"},
+        {"seq": 3, "heading": "身份证明与补充资料", "content": "成年香港永久居民提供香港身份证；非永久居民或非香港居民提供银行接受的香港身份证或有效旅行证件。银行可要求地址证明及开户目的、资金来源、预计交易和税务居民地等补充资料。"},
+        {"seq": 4, "heading": "与储蓄账户的区别", "content": "汇丰账户 FAQ 说明，储蓄账户可赚取利息并随时存取；往来账户用于管理日常资金并签发支票。"}
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_time_deposit_product_page",
+      "account_key": "hsbc_hk_time_deposit",
+      "market": "CN-HK",
+      "title": "汇丰香港定期存款（币种/最低金额/期限/渠道）",
+      "source_url": "https://www.hsbc.com.hk/accounts/products/time-deposits/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_time_deposit_product_page.md",
+      "chunks": [
+        {"seq": 1, "heading": "港元定期存款", "content": "港元定期存款最低 10,000 港元，存期可由 1 日至 36 个月，并可通过网点、电话银行、手机及网上银行管理。"},
+        {"seq": 2, "heading": "人民币与外币门槛", "content": "人民币定期存款最低 RMB10,000。外币定存一般可由 2,000 个货币单位起；日元和泰铢为 100,000 单位，瑞士法郎和新加坡元为 10,000 单位，以当前页面为准。"},
+        {"seq": 3, "heading": "开立渠道与账户关系", "content": "现有定期存款、HSBC One 或 HSBC Premier 客户可在 App 或网上银行作定存；新客户须先开立或升级至 One/Premier，成功后的下一工作日才可作定期存款。"},
+        {"seq": 4, "heading": "提前支取", "content": "提前支取须经银行酌情批准；银行可不支付利息并收取提前支取费用。本金通常在到期日返还。"}
+      ]
+    },
+    {
+      "doc_id": "hsbc_hk_basic_independence_product_page",
+      "account_key": "hsbc_hk_basic_independence",
+      "market": "CN-HK",
+      "title": "自主基础银行账户（用途/法律授权/材料）",
+      "source_url": "https://www.hsbc.com.hk/community-banking/age-friendly/basic-banking-account/",
+      "doc_type": "product_page",
+      "fetched_at": "2026-10-29",
+      "verified_at": "2026-10-29",
+      "source_file": "hsbc_hk_basic_independence_product_page.md",
+      "chunks": [
+        {"seq": 1, "heading": "账户用途", "content": "自主基础银行账户用于支持心智能力受损客户处理日常银行事务，同时由获授权人士协助监督财务安排。"},
+        {"seq": 2, "heading": "法律授权要求", "content": "持久授权书路径要求授权人在仍具精神行为能力时，于香港执业律师面前签署；其后若失去能力，受权人须向高等法院注册。银行也可按个案审核监护令或法院委任委员会等法律授权。"},
+        {"seq": 3, "heading": "办理渠道", "content": "授权人和受权人到香港汇丰网点办理，银行会核对个案和受权人士采取行动的法律依据。"},
+        {"seq": 4, "heading": "所需文件", "content": "持久授权书路径需携带已注册的持久授权书、受权人的身份证明和地址证明；银行可按授权形式和个案要求补充资料。"}
+      ]
+    }
+  ]
+}

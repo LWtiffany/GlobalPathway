@@ -86,6 +86,35 @@ def dismiss_proposal(service, user_id, body, query, proposal_id):
     return 200, service.dismiss_proposal(user_id, proposal_id)
 
 
+@route("POST", r"/v1/profile-proposals/confirm-batch")
+def confirm_proposals_batch(service, user_id, body, query):
+    return 200, service.confirm_proposals(
+        user_id, body.get("proposal_ids") or [],
+        expected_version=body.get("expected_version"))
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/bank-relationships")
+def list_bank_relationships(service, user_id, body, query, profile_id):
+    return 200, service.list_bank_relationships(user_id, profile_id)
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/bank-relationship-proposals")
+def list_bank_relationship_proposals(service, user_id, body, query, profile_id):
+    return 200, service.list_bank_relationship_proposals(user_id, profile_id)
+
+
+@route("POST", r"/v1/bank-relationship-proposals/(?P<proposal_id>[\w-]+)/confirm")
+def confirm_bank_relationship_proposal(service, user_id, body, query, proposal_id):
+    return 200, service.confirm_bank_relationship_proposal(
+        user_id, proposal_id, expected_version=body.get("expected_version"),
+        proposed_status=body.get("status"))
+
+
+@route("POST", r"/v1/bank-relationship-proposals/(?P<proposal_id>[\w-]+)/dismiss")
+def dismiss_bank_relationship_proposal(service, user_id, body, query, proposal_id):
+    return 200, service.dismiss_bank_relationship_proposal(user_id, proposal_id)
+
+
 @route("POST", r"/v1/conversations")  # compatibility alias
 @route("POST", r"/v1/sessions")
 def create_conversation(service, user_id, body, query):
@@ -111,6 +140,7 @@ def post_message(service, user_id, body, query, conversation_id):
     return 200, service.post_message(
         user_id, conversation_id, body.get("text"), body.get("client_message_id"),
         confirmed_fields=body.get("confirmed_fields") or {},
+        session_fields=body.get("session_fields") or {},
         expected_profile_version=body.get("expected_profile_version"),
         cleared_fields=body.get("cleared_fields") or [])
 
@@ -132,7 +162,9 @@ def snapshot(service, user_id, body, query, revision_id):
 
 @route("GET", r"/v1/fields", auth=False)
 def fields(service, user_id, body, query):
-    return 200, {"fields": clarify.field_catalog()}
+    # Return the persistence policy together with the input schema so the UI
+    # can distinguish durable Profile facts from turn/session-only choices.
+    return 200, {"fields": clarify.field_definitions()}
 
 
 @route("GET", r"/v1/schools", auth=False)

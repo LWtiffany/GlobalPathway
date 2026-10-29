@@ -4,7 +4,7 @@ from .contracts import (AdviceUpdate, LifecycleActions, OrchestrationInput, Plan
                         ProfileChangeCandidate, TaskPlan, UnifiedAnswer)
 
 PROFILE_FIELDS_BY_DOMAIN = {
-    "credit_card": {"want_credit_card", "application_region", "applicant_age", "applicant_age_band",
+    "credit_card": {"applicant_age", "applicant_age_band",
                     "annual_income_hkd", "annual_income_band_hkd", "asset_band",
                     "repayment_mode", "spending_scenarios", "study_card_focus",
                     "reward_preference",
@@ -15,8 +15,11 @@ PROFILE_FIELDS_BY_DOMAIN = {
                     "hk_resident"},
     "fx": {"destination_country", "remittance_purpose", "payment_deadline", "amount",
            "currency", "payer", "school"},
-    "bank_account": {"account_region", "account_product", "applicant_identity",
-                     "destination_country"},
+    "bank_account": {"applicant_identity",
+                     "account_applicant_relation", "applicant_age", "uk_residency_years",
+                     "application_location", "identity_document_type", "has_hk_identity_card",
+                     "qualifying_course_offer", "tax_certificate_or_ssn", "guardian_present",
+                     },
 }
 
 
@@ -27,7 +30,14 @@ class DefaultLifecyclePlanner:
         profile: list[ProfileChangeCandidate] = []
         plan_items: list[PlanItemCandidate] = []
         for task, result in zip(plan.tasks, answer.domain_results):
-            if result.status == "answered":
+            # Bank-account answers remain useful while a decisive condition is
+            # being collected: persist the focused product/materials/rules so
+            # the plan card is populated next to the choice question.
+            persist_partial_account = (
+                task.domain == "bank_account" and result.status == "needs_input"
+                and bool(result.payload.get("candidate_results"))
+            )
+            if result.status == "answered" or persist_partial_account:
                 advice.append(AdviceUpdate(
                     domain=task.domain,
                     topic=task.intent,

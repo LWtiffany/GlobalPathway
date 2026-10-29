@@ -2,7 +2,8 @@
 
 import re
 
-from agent2.models import AnswerBody, Notice
+from agent2.intent import is_investment_account
+from agent2.models import AnswerBody, FollowUpQuestion, Notice
 from agent2.runner import SCOPE_BOUNDARY
 
 from .contracts import QualityReport, TaskPlan, UnifiedAnswer
@@ -14,9 +15,18 @@ MAX_FOLLOWUPS_MULTI = 2
 
 REFUSAL_OTHER = (
     "暂时无法识别为签证、外汇汇款、银行开户或信用卡问题。"
-    "可以换一种说法，例如「英国学费怎么汇」「汇丰怎么开户」或「推荐信用卡」。"
+    "如果想办理日常收付款账户，可以说「英国留学怎么开户」或「香港储蓄卡要什么材料」；"
+    "如果想比较信用卡，可以说「推荐信用卡」。"
+)
+CLARIFY_BANK_CARD = (
+    "当然可以。为了不把银行账户／借记卡和信用卡混在一起，请您先选一下"
+    "想了解的方向，我会接着为您整理。"
 )
 PARTIAL_OOS = "部分内容超出服务范围（选校/代办/租房合同/投资理财等），未纳入本轮建议。"
+INVESTMENT_ACCOUNT_SCOPE = (
+    "您问的是股票／证券交易账户，不是日常收付款使用的银行往来或储蓄账户。"
+    "目前这里的开户资料只覆盖汇丰银行账户和借记卡，不能用 HSBC Bank Account 的条件代替证券账户条件。"
+)
 # Routing audit stays on TaskPlan.routing_audit / answer snapshot — never in user notices.
 
 # 「需不需要 / 要不要 / …吗」先给结论，再展开产品建议。避开「需要什么材料」。
@@ -29,8 +39,8 @@ _NEED_QUESTION = re.compile(
 
 _NECESSITY_VERDICT = {
     "bank_account": (
-        "需要（强烈建议）。当地银行账户方便收付款、交房租和生活费，"
-        "也常是申请当地信用卡的前提。"
+        "通常很实用。当地银行账户方便收付款、交房租和生活费；"
+        "部分当地信用卡也会要求先有合资格的银行关系。"
     ),
     "credit_card": (
         "不是硬性必需，但很实用。订票、酒店和日常消费更方便；"
@@ -38,10 +48,10 @@ _NECESSITY_VERDICT = {
     ),
     "fx": (
         "若学费或生活费要从境内汇出，一般需要按购汇/汇款要求办理；"
-        "具体看你的付款方式。"
+        "具体要看您的付款方式。"
     ),
     "visa": (
-        "留学通常需要办理相应学生签证；是否已持有有效签证以你的行程和官方要求为准。"
+        "留学通常需要办理相应学生签证；是否已持有有效签证以您的行程和官方要求为准。"
     ),
 }
 
@@ -53,12 +63,12 @@ def is_necessity_question(text: str) -> bool:
 def necessity_summary(domains: list[str]) -> str:
     labels = [DOMAIN_LABEL[d] for d in domains if d in DOMAIN_LABEL]
     if domains == ["bank_account", "credit_card"] or set(domains) == {"bank_account", "credit_card"}:
-        return ("开户一般需要；信用卡不是硬性必需，但建议准备。"
-                "下面先说结论；若你想办卡，再确认后给你具体方案。")
+        return ("当地账户通常很实用；信用卡不是硬性必需。"
+                "下面先说结论；如果您想办卡，我再为您比较合适的方案。")
     if len(labels) == 1:
         short = {
-            "bank_account": "需要开。下面是具体怎么开、准备什么。",
-            "credit_card": "不是硬性必需，但建议办。若你想办，我再帮你比较卡片。",
+            "bank_account": "通常很实用。下面为您说明怎么开、需要准备什么。",
+            "credit_card": "不是硬性必需。若您想办，我可以继续帮您比较卡片。",
             "fx": "涉及跨境付学费/生活费时通常需要。下面是具体准备。",
             "visa": "通常需要。下面是材料与要点。",
         }.get(domains[0], "结论如下，随后是具体建议。")
@@ -88,8 +98,35 @@ class DefaultResponseComposer:
         if not report.results:
             reason = (plan.routing_audit.refusal_reason if plan.routing_audit
                       else (plan.unsupported_intents[0] if plan.unsupported_intents else "other"))
+            if reason == "ambiguous_card":
+                original = user_text.strip()
+                account_message = "我想了解银行账户或借记卡开户"
+                card_message = "我想了解信用卡申请和推荐"
+                if original:
+                    account_message += f"。接着刚才的问题：{original}"
+                    card_message += f"。接着刚才的问题：{original}"
+                return UnifiedAnswer(
+                    status="needs_input",
+                    answer=AnswerBody(summary=CLARIFY_BANK_CARD),
+                    missing_fields=["banking_help_type"],
+                    follow_up_questions=[FollowUpQuestion(
+                        question_code="choose_banking_help_type",
+                        field="banking_help_type",
+                        text="没问题，我先确认一下：您这次更想了解哪一类？",
+                        rule="ambiguous_bank_card_v2",
+                        profile_version=0,
+                        input_type="single_select",
+                        options=[
+                            {"value": "bank_account", "label": "开银行账户／办借记卡",
+                             "message": account_message},
+                            {"value": "credit_card", "label": "申请／挑选信用卡",
+                             "message": card_message},
+                        ],
+                        persist_mode="session_only",
+                    )],
+                )
             if reason == "out_of_scope" or "out_of_scope" in plan.unsupported_intents:
-                summary = SCOPE_BOUNDARY
+                summary = INVESTMENT_ACCOUNT_SCOPE if is_investment_account(user_text) else SCOPE_BOUNDARY
             else:
                 summary = REFUSAL_OTHER
             return UnifiedAnswer(
@@ -102,10 +139,11 @@ class DefaultResponseComposer:
 
         if len(report.results) == 1 and not plan.unsupported_intents:
             result = report.results[0]
+            effective_status = "needs_input" if result.follow_up_questions else result.status
             limitations = list(result.answer.limitations)
             if plan.tasks and plan.tasks[0].source == "llm":
                 limitations.append(
-                    f"若你问的不是{DOMAIN_LABEL[plan.tasks[0].domain]}，请换个更明确的说法。"
+                    f"若您问的不是{DOMAIN_LABEL[plan.tasks[0].domain]}，请换个更明确的说法。"
                 )
             answer = result.answer if not limitations else result.answer.model_copy(
                 update={"limitations": limitations})
@@ -122,12 +160,13 @@ class DefaultResponseComposer:
                     "steps": steps,
                 })
             return UnifiedAnswer(
-                status=result.status, answer=answer, domain_results=report.results,
+                status=effective_status, answer=answer, domain_results=report.results,
                 missing_fields=result.missing_fields, next_actions=result.next_actions,
                 notices=result.notices, follow_up_questions=result.follow_up_questions,
             )
 
-        statuses = [item.status for item in report.results]
+        statuses = ["needs_input" if item.follow_up_questions else item.status
+                    for item in report.results]
         if "needs_input" in statuses:
             status = "needs_input"
         elif all(item == "answered" for item in statuses):
@@ -192,7 +231,7 @@ class DefaultResponseComposer:
 
         if plan.tasks and all(task.source == "llm" for task in plan.tasks):
             joined = "、".join(DOMAIN_LABEL[task.domain] for task in plan.tasks)
-            limitations.append(f"若你问的不是{joined}，请换个更明确的说法。")
+            limitations.append(f"若您问的不是{joined}，请换个更明确的说法。")
 
         return UnifiedAnswer(
             status=status,
