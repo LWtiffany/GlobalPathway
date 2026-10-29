@@ -25,6 +25,10 @@ class FactCandidate(StrictModel):
 class UnderstandingResult(StrictModel):
     intents: list[SupportedIntent] = Field(default_factory=list)
     facts: list[FactCandidate] = Field(default_factory=list)
+    topic_switch: bool = Field(
+        default=False,
+        description="True only when the user clearly leaves the open SESSION_CONTEXT topic for a different one.",
+    )
 
 
 class WrittenAnswer(StrictModel):

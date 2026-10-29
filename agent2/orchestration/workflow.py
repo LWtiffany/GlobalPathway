@@ -73,7 +73,7 @@ async def understand_user(ctx: StepContext[WorkflowState, WorkflowDependencies, 
         try:
             catalog = clarify.field_catalog()
             raw = await port.understand(ctx.inputs, catalog)
-            facts, basis, intents = validate_understanding(
+            facts, basis, intents, topic_switch = validate_understanding(
                 raw, ctx.inputs, set(catalog), clarify.validate)
             ctx.state.request = ctx.inputs.model_copy(update={
                 "conversation_intents": list(dict.fromkeys([
@@ -82,6 +82,7 @@ async def understand_user(ctx: StepContext[WorkflowState, WorkflowDependencies, 
                     *ctx.inputs.llm_intents, *intents])),
                 "understood_facts": facts,
                 "understood_basis": basis,
+                "llm_topic_switch": topic_switch,
                 "understanding_applied": True,
             })
             ctx.state.llm_model_versions["understanding"] = port.model_version
@@ -207,7 +208,7 @@ class Agent2Workflow:
 
 def build_default_workflow(*, credit_card_repository=None, understanding=None, writer=None,
                            fx_model=None, fx_policy_loader=None,
-                           bank_model=None, bank_bundle_loader=None) -> Agent2Workflow:
+                           bank_model=None, bank_repository=None) -> Agent2Workflow:
     model = fx_model or bank_model
     if model is None and writer is not None:
         model = getattr(writer, "model", None)
@@ -220,7 +221,7 @@ def build_default_workflow(*, credit_card_repository=None, understanding=None, w
             fx_model=model,
             fx_policy_loader=fx_policy_loader,
             bank_model=model,
-            bank_bundle_loader=bank_bundle_loader,
+            bank_repository=bank_repository,
         ),
         gate=DefaultQualityGate(),
         composer=DefaultResponseComposer(),

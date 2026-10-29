@@ -3,6 +3,7 @@
 import re
 import uuid
 
+from agent2 import clarify
 from agent2.models import AnswerBody, AnswerResult
 from agent2.runner import RunOutput
 
@@ -43,9 +44,9 @@ def card_summaries_from_steps(steps, groups=()):
             cards.append({"product_name": value.strip(), "role": _CARD_ROLES[label]})
         elif network:
             cards.append({"product_name": network.group(1), "role": "candidate"})
-        elif cards and sep and label in {"为什么适合你", "推荐理由", "年费", "主要权益",
+        elif cards and sep and label in {"为什么适合你", "为什么适合您", "推荐理由", "年费", "主要权益",
                                            "申请前提", "申请限制"}:
-            field = {"为什么适合你": "reason_text", "推荐理由": "reason_text",
+            field = {"为什么适合你": "reason_text", "为什么适合您": "reason_text", "推荐理由": "reason_text",
                      "年费": "fee_text", "主要权益": "benefits_text",
                      "申请前提": "application_note", "申请限制": "application_note"}[label]
             cards[-1][field] = value.strip()
@@ -121,15 +122,23 @@ def intents_for_confirmed_fields(confirmed_fields: dict, active_intents: list[st
 def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message_id,
            structured_selection=False, conversation_intents=None,
            understood_facts=None, understood_basis=None, understanding_applied=False,
-           llm_intents=None):
+           llm_intents=None, domain_state=None, llm_topic_switch=False,
+           session_topic=None, session_last_user_text="", session_last_assistant_text="",
+           session_pending_questions=()):
     """Run Agent2 v2 for any migrated domain intents (card / fx / account)."""
     intents = [intent for intent in dict.fromkeys(conversation_intents or [])
                if intent in INTENT_DOMAIN or intent in V2_INTENTS]
     # Structured follow-ups must keep a domain; free-text may be empty for refusal turns.
     if not intents and structured_selection:
         intents = ["credit_card"]
-    profile_values = {code: field.value for code, field in profile.fields.items()
-                      if field.status == "confirmed" and field.value is not None}
+    # Legacy profiles may still contain fields that are now explicitly scoped
+    # to a conversation (for example application_region).  Do not let those
+    # stale values silently steer a new account/card question.
+    profile_values = {
+        code: field.value for code, field in profile.fields.items()
+        if field.status == "confirmed" and field.value is not None
+        and clarify.persistence_policy(code)["storage_class"] in {"core_profile", "preference"}
+    }
     profile_values.update(conversation_facts or {})
     request = OrchestrationInput(
         text=text,
@@ -143,6 +152,12 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         understood_basis=dict(understood_basis or {}),
         understanding_applied=understanding_applied,
         llm_intents=list(dict.fromkeys(llm_intents or [])),
+        llm_topic_switch=llm_topic_switch,
+        session_topic=session_topic,
+        session_last_user_text=session_last_user_text,
+        session_last_assistant_text=session_last_assistant_text,
+        session_pending_questions=list(session_pending_questions),
+        domain_state=dict(domain_state or {}),
     )
     orchestrated = workflow.run(request)
     unified = orchestrated.answer
@@ -155,11 +170,14 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         turn_basis[item.field_code] = item.basis
 
     planned_intents = [task.intent for task in orchestrated.snapshot.task_plan.tasks]
-    session_topic = session_topic_for_intents(planned_intents or intents) or "credit_card"
+    session_topic = session_topic_for_intents(planned_intents or intents)
     advice_items = []
     advice_updates = []
     for result in unified.domain_results:
-        if result.status not in {"answered", "needs_verification"}:
+        partial_account = (result.domain == "bank_account"
+                           and result.status == "needs_input"
+                           and bool(result.payload.get("candidate_results")))
+        if result.status not in {"answered", "needs_verification"} and not partial_account:
             continue
         topic = INTENT_SESSION_TOPIC.get(
             next((task.intent for task in orchestrated.snapshot.task_plan.tasks

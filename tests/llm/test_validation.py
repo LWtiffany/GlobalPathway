@@ -20,18 +20,72 @@ class ValidationTests(unittest.TestCase):
         ])
         validator = lambda code, value: None if (code, value) == ("full_time_student", True) else "bad"
 
-        facts, basis, intents = validate_understanding(
+        facts, basis, intents, topic_switch = validate_understanding(
             result, self.request(), {"full_time_student", "repayment_mode", "spending_scenarios"}, validator)
 
         self.assertEqual({"full_time_student": True}, facts)
         self.assertEqual({"full_time_student": "全日制学生"}, basis)
         self.assertEqual(["credit_card"], intents)
+        self.assertFalse(topic_switch)
+
+    def test_topic_switch_verdict_passes_through(self):
+        result = UnderstandingResult(intents=["remittance_living"], topic_switch=True)
+        _, _, intents, topic_switch = validate_understanding(
+            result, self.request(), set(), lambda code, value: "bad")
+        self.assertEqual(["remittance_living"], intents)
+        self.assertTrue(topic_switch)
 
     def test_writer_cannot_add_numeric_claim(self):
         source = AnswerBody(summary="主推荐 A 卡", steps=["APR 35.42%"], limitations=["需审批"])
         candidate = AnswerBody(summary="主推荐 A 卡，可获 10% 回赠", limitations=["需审批"])
         with self.assertRaisesRegex(ValueError, "unsupported numeric"):
             validate_written_answer(candidate, source)
+
+    def test_writer_cannot_add_numeric_claim_after_chinese_text(self):
+        source = AnswerBody(summary="儿童账户开户资料", steps=["申请人未满18岁"], limitations=["需审批"])
+        candidate = AnswerBody(summary="儿童账户开户资料", steps=["月费为0港元"], limitations=["需审批"])
+        with self.assertRaisesRegex(ValueError, "unsupported numeric"):
+            validate_written_answer(candidate, source)
+
+    def test_writer_may_restate_numbers_from_fed_data(self):
+        # Rule rows given to the writer carry age bands and thresholds the
+        # deterministic answer may spell differently; restating them is grounded.
+        source = AnswerBody(summary="儿童账户开户资料", steps=["已提供条件符合收录的公开要求"],
+                            limitations=["需审批"])
+        candidate = AnswerBody(summary="17岁子女符合年龄条件",
+                               steps=["11至17岁的申请人必须由家长陪同到场"], limitations=["需审批"])
+        validate_written_answer(
+            candidate, source,
+            supported_text='{"rules": [{"min_age": 11, "max_age": 17}, {"age": 18}]}')
+
+    def test_writer_may_translate_english_number_words_from_fed_data(self):
+        # "valid for at least six months" in rule text is the same fact as "至少6个月".
+        source = AnswerBody(summary="开户证件要求", steps=["请核对证件有效期要求"], limitations=["需审批"])
+        candidate = AnswerBody(summary="证件剩余有效期至少6个月",
+                               steps=["入境后90天内可到港激活账户"], limitations=["需审批"])
+        validate_written_answer(
+            candidate, source,
+            supported_text='{"rules": [{"note": "valid for at least six months"}, '
+                           '{"note": "activate within ninety days of arrival"}]}')
+
+    def test_writer_still_cannot_invent_numbers_with_english_words(self):
+        source = AnswerBody(summary="开户证件要求", steps=["请核对证件有效期要求"], limitations=["需审批"])
+        candidate = AnswerBody(summary="证件剩余有效期至少6个月",
+                               steps=["月费为300港元"], limitations=["需审批"])
+        with self.assertRaisesRegex(ValueError, "unsupported numeric"):
+            validate_written_answer(
+                candidate, source,
+                supported_text='{"rules": [{"note": "valid for at least six months"}]}')
+
+    def test_writer_still_cannot_invent_numbers_with_supported_text(self):
+        source = AnswerBody(summary="儿童账户开户资料", steps=["已提供条件符合收录的公开要求"],
+                            limitations=["需审批"])
+        candidate = AnswerBody(summary="17岁子女符合年龄条件",
+                               steps=["月费为300港元"], limitations=["需审批"])
+        with self.assertRaisesRegex(ValueError, "unsupported numeric"):
+            validate_written_answer(
+                candidate, source,
+                supported_text='{"rules": [{"min_age": 11, "max_age": 17}, {"age": 18}]}')
 
     def test_writer_cannot_change_locked_fields(self):
         source = AnswerBody(summary="A", limitations=["需审批"])

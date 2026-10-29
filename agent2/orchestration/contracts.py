@@ -38,6 +38,7 @@ class RoutingAudit(FrozenModel):
 
     rules_hits: list[IntentHit] = Field(default_factory=list)
     llm_intents: list[IntentHit] = Field(default_factory=list)
+    dropped_llm_intents: list[str] = Field(default_factory=list)
     session_intents: list[str] = Field(default_factory=list)
     selected_intents: list[str] = Field(default_factory=list)
     unsupported_intents: list[str] = Field(default_factory=list)
@@ -143,6 +144,16 @@ class OrchestrationInput(FrozenModel):
     understanding_applied: bool = False
     # Intents recovered by UserUnderstandingPort (distinct from session conversation_intents).
     llm_intents: list[str] = Field(default_factory=list)
+    # Dialogue gist so routing can tell continuations of the open topic from new topics.
+    session_topic: str | None = None
+    session_last_user_text: str = ""
+    session_last_assistant_text: str = ""
+    session_pending_questions: list[str] = Field(default_factory=list)
+    # Understanding's explicit verdict that the user left the open session topic.
+    llm_topic_switch: bool = False
+    # Ephemeral, conversation-scoped domain memory.  This is deliberately not
+    # merged into Profile because focus/selection/rejection are dialogue state.
+    domain_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class OrchestrationOutput(FrozenModel):

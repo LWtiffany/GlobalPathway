@@ -4,13 +4,15 @@
 """
 import asyncio
 import json
+import re
 import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from . import clarify
-from .models import AnswerResult, Profile, ProfileChangeProposal, ProfileField
+from .models import (AnswerResult, BankRelationship, BankRelationshipProposal, Profile,
+                     ProfileChangeProposal, ProfileField)
 from .intent import classify
 from .llm import build_llm_components
 from .llm.validation import validate_understanding
@@ -51,7 +53,7 @@ def utc_now():
 
 class Agent2Service:
     def __init__(self, store, knowledge, *, clock=utc_now, generator=None, demo_enabled=True, suggest=None,
-                 credit_card_repository=None, llm_components=None):
+                 credit_card_repository=None, bank_account_repository=None, llm_components=None):
         self.store = store
         self.knowledge = knowledge
         self.clock = clock
@@ -60,6 +62,7 @@ class Agent2Service:
         llm = llm_components if llm_components is not None else build_llm_components()
         self.v2_workflow = build_default_workflow(
             credit_card_repository=credit_card_repository,
+            bank_repository=bank_account_repository,
             understanding=llm.understanding,
             writer=llm.writer,
         )
@@ -71,18 +74,23 @@ class Agent2Service:
             for code, item in clarify.field_definitions().items():
                 db.execute("""INSERT INTO profile_field_definitions
                     (field_code,display_name,value_type,options_json,domains_json,sensitivity,freshness_days,
-                     ask_priority,ask_only_when_needed,question_template,schema_version,active,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?)
+                     ask_priority,ask_only_when_needed,storage_class,confirmation_mode,scope,
+                     question_template,schema_version,active,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,1,?)
                     ON CONFLICT(field_code) DO UPDATE SET display_name=excluded.display_name,
                     value_type=excluded.value_type, options_json=excluded.options_json,
                     domains_json=excluded.domains_json, sensitivity=excluded.sensitivity,
                     freshness_days=excluded.freshness_days, ask_priority=excluded.ask_priority,
                     ask_only_when_needed=excluded.ask_only_when_needed,
+                    storage_class=excluded.storage_class,
+                    confirmation_mode=excluded.confirmation_mode,scope=excluded.scope,
                     question_template=excluded.question_template, schema_version=excluded.schema_version,
                     active=excluded.active, updated_at=excluded.updated_at""",
                            (code, item["label"], item["kind"], dumps(item["options"]),
                             dumps(item["domains"]), item["sensitivity"], item["freshness_days"],
-                            item["ask_priority"], int(item["ask_only_when_needed"]), item["question"], now))
+                            item["ask_priority"], int(item["ask_only_when_needed"]),
+                            item["storage_class"], item["confirmation_mode"], item["scope"],
+                            item["question"], now))
 
     def _ts(self):
         return self.clock().isoformat()
@@ -158,6 +166,16 @@ class Agent2Service:
                 raise bad_request(f"{clarify.label(code)}：{error}")
 
     @staticmethod
+    def _check_profile_values(values):
+        Agent2Service._check_values(values)
+        transient = [code for code in values
+                     if clarify.persistence_policy(code)["storage_class"]
+                     not in {"core_profile", "preference"}]
+        if transient:
+            labels = "、".join(clarify.label(code) for code in transient)
+            raise bad_request(f"{labels}属于本次咨询或账户记录，不能写入长期资料")
+
+    @staticmethod
     def _value_type(value):
         if isinstance(value, bool):
             return "boolean"
@@ -201,7 +219,7 @@ class Agent2Service:
 
     def create_profile(self, user_id, fields=None, *, synthetic=False, display_name=None):
         values = fields or {}
-        self._check_values(values)
+        self._check_profile_values(values)
         if display_name is not None and (not isinstance(display_name, str) or not display_name.strip()):
             raise bad_request("display_name 必须是非空文本")
         profile_id = _new_id()
@@ -224,7 +242,7 @@ class Agent2Service:
 
     def patch_profile(self, user_id, profile_id, *, expected_version, set_fields=None, clear_fields=()):
         set_fields = set_fields or {}
-        self._check_values(set_fields)
+        self._check_profile_values(set_fields)
         unknown = [c for c in clear_fields if c not in clarify.FIELDS]
         if unknown:
             raise bad_request(f"未知字段：{', '.join(unknown)}")
@@ -300,11 +318,153 @@ class Agent2Service:
                        (self._ts(), proposal_id))
         return self.get_profile(user_id, row["profile_id"])
 
+    def confirm_proposals(self, user_id, proposal_ids, *, expected_version):
+        """Confirm one message's Profile changes atomically with one version bump."""
+        if not isinstance(proposal_ids, list) or not proposal_ids:
+            raise bad_request("需要至少一项资料更新提议")
+        proposal_ids = list(dict.fromkeys(proposal_ids))
+        placeholders = ",".join("?" for _ in proposal_ids)
+        rows = self.store.all(f"""SELECT p.* FROM profile_change_proposals p
+            JOIN profiles f USING(profile_id)
+            WHERE p.proposal_id IN ({placeholders}) AND f.user_id=?""",
+                              (*proposal_ids, user_id))
+        if len(rows) != len(proposal_ids):
+            raise not_found("档案变更提案")
+        if any(row["status"] != "open" for row in rows):
+            raise ServiceError("PROPOSAL_CLOSED", "其中一项提议已处理", 409)
+        profile_ids = {row["profile_id"] for row in rows}
+        if len(profile_ids) != 1:
+            raise bad_request("一次只能确认同一份资料的更新")
+        profile_id = next(iter(profile_ids))
+        # If the same field somehow appears twice, the latest proposal wins.
+        rows.sort(key=lambda row: row["created_at"])
+        values = {row["field_code"]: json.loads(row["new_value"]) for row in rows}
+        now = self._ts()
+        with self.store.transaction() as db:
+            current = db.execute("SELECT version FROM profiles WHERE profile_id=?",
+                                 (profile_id,)).fetchone()
+            self._bump(db, profile_id, current["version"], expected_version)
+            self._write_fields(db, profile_id, values, "user_message",
+                               source_message_id=rows[-1]["source_message_id"],
+                               profile_version=current["version"] + 1)
+            db.executemany("""UPDATE profile_change_proposals
+                SET status='confirmed', decided_at=? WHERE proposal_id=?""",
+                           [(now, row["proposal_id"]) for row in rows])
+            db.execute("UPDATE sessions SET profile_version=? WHERE profile_id=?",
+                       (current["version"] + 1, profile_id))
+        return self.get_profile(user_id, profile_id)
+
     def dismiss_proposal(self, user_id, proposal_id):
         self._owned_proposal(user_id, proposal_id)
         with self.store.transaction() as db:
             db.execute("UPDATE profile_change_proposals SET status='dismissed', decided_at=? "
                        "WHERE proposal_id=? AND status='open'", (self._ts(), proposal_id))
+        return {"proposal_id": proposal_id, "status": "dismissed"}
+
+    # ---------- Bank relationships (multi-market child records) ----------
+
+    @staticmethod
+    def _relationship(row):
+        return BankRelationship(
+            relationship_id=row["relationship_id"], profile_id=row["profile_id"],
+            institution=row["institution"], market=row["market"],
+            product_id=row["product_id"], product_name=row["product_name_snapshot"],
+            holder_relation=row["holder_relation"], status=row["status"],
+            opened_on=row["opened_on"], source_message_id=row["source_message_id"],
+            confirmed_at=row["confirmed_at"], last_confirmed_at=row["last_confirmed_at"],
+            version=row["version"],
+        )
+
+    @staticmethod
+    def _relationship_proposal(row):
+        return BankRelationshipProposal(
+            proposal_id=row["proposal_id"], profile_id=row["profile_id"],
+            market=row["market"], product_id=row["product_id"],
+            product_name=row["product_name_snapshot"],
+            holder_relation=row["holder_relation"], proposed_status=row["proposed_status"],
+            existing_relationship_id=row["existing_relationship_id"],
+            source_message_id=row["source_message_id"], basis=row["basis"], status=row["status"],
+        )
+
+    def list_bank_relationships(self, user_id, profile_id):
+        self._owned_profile_row(user_id, profile_id)
+        rows = self.store.all("""SELECT * FROM bank_relationships WHERE profile_id=?
+            ORDER BY CASE market WHEN 'CN-HK' THEN 1 WHEN 'UK' THEN 2 WHEN 'US' THEN 3 ELSE 4 END,
+                     created_at""", (profile_id,))
+        return {"profile_id": profile_id,
+                "relationships": [self._relationship(row) for row in rows]}
+
+    def list_bank_relationship_proposals(self, user_id, profile_id):
+        self._owned_profile_row(user_id, profile_id)
+        rows = self.store.all("""SELECT * FROM bank_relationship_proposals
+            WHERE profile_id=? AND status='open' ORDER BY created_at""", (profile_id,))
+        return {"profile_id": profile_id,
+                "proposals": [self._relationship_proposal(row) for row in rows]}
+
+    def confirm_bank_relationship_proposal(self, user_id, proposal_id, *, expected_version,
+                                           proposed_status=None):
+        row = self.store.one("""SELECT p.* FROM bank_relationship_proposals p
+            JOIN profiles f USING(profile_id) WHERE p.proposal_id=? AND f.user_id=?""",
+                             (proposal_id, user_id))
+        if not row:
+            raise not_found("银行账户更新提议")
+        if row["status"] != "open":
+            raise ServiceError("PROPOSAL_CLOSED", "该提议已处理", 409)
+        relationship_status = proposed_status or row["proposed_status"]
+        if relationship_status not in {"selected", "applying", "open", "blocked", "closed"}:
+            raise bad_request("账户状态无效")
+        now = self._ts()
+        with self.store.transaction() as db:
+            profile_row = db.execute("SELECT version FROM profiles WHERE profile_id=?",
+                                     (row["profile_id"],)).fetchone()
+            self._bump(db, row["profile_id"], profile_row["version"], expected_version)
+            relationship_id = row["existing_relationship_id"]
+            existing = db.execute("SELECT * FROM bank_relationships WHERE relationship_id=?",
+                                  (relationship_id,)).fetchone() if relationship_id else None
+            if not existing:
+                existing = db.execute("""SELECT * FROM bank_relationships
+                    WHERE profile_id=? AND market=? AND COALESCE(product_id,'')=COALESCE(?, '')
+                      AND holder_relation=? AND status!='closed' ORDER BY updated_at DESC LIMIT 1""",
+                    (row["profile_id"], row["market"], row["product_id"],
+                     row["holder_relation"])).fetchone()
+            old_status = existing["status"] if existing else None
+            if existing:
+                relationship_id = existing["relationship_id"]
+                db.execute("""UPDATE bank_relationships SET status=?, product_name_snapshot=?,
+                    source_message_id=?, last_confirmed_at=?, version=version+1, updated_at=?
+                    WHERE relationship_id=?""",
+                    (relationship_status, row["product_name_snapshot"],
+                     row["source_message_id"], now, now, relationship_id))
+            else:
+                relationship_id = _new_id()
+                db.execute("""INSERT INTO bank_relationships
+                    (relationship_id,profile_id,institution,market,product_id,product_name_snapshot,
+                     holder_relation,status,opened_on,source_message_id,confirmed_at,last_confirmed_at,
+                     version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)""",
+                    (relationship_id, row["profile_id"], "HSBC", row["market"], row["product_id"],
+                     row["product_name_snapshot"], row["holder_relation"], relationship_status,
+                     row["source_message_id"], now, now, 1, now, now))
+            db.execute("INSERT INTO bank_relationship_events VALUES (?,?,?,?,?,?,?)",
+                       (_new_id(), relationship_id, old_status, relationship_status,
+                        row["source_message_id"], "user", now))
+            db.execute("UPDATE bank_relationship_proposals SET status='confirmed', decided_at=? WHERE proposal_id=?",
+                       (now, proposal_id))
+            db.execute("UPDATE sessions SET profile_version=? WHERE profile_id=?",
+                       (profile_row["version"] + 1, row["profile_id"]))
+        relationship = self.store.one("SELECT * FROM bank_relationships WHERE relationship_id=?",
+                                      (relationship_id,))
+        return {"relationship": self._relationship(relationship),
+                "profile_version": profile_row["version"] + 1}
+
+    def dismiss_bank_relationship_proposal(self, user_id, proposal_id):
+        row = self.store.one("""SELECT p.proposal_id FROM bank_relationship_proposals p
+            JOIN profiles f USING(profile_id) WHERE p.proposal_id=? AND f.user_id=?""",
+                             (proposal_id, user_id))
+        if not row:
+            raise not_found("银行账户更新提议")
+        with self.store.transaction() as db:
+            db.execute("""UPDATE bank_relationship_proposals SET status='dismissed', decided_at=?
+                WHERE proposal_id=? AND status='open'""", (self._ts(), proposal_id))
         return {"proposal_id": proposal_id, "status": "dismissed"}
 
     # ---------- M04 ----------
@@ -361,6 +521,7 @@ class Agent2Service:
     def _conversation_context(self, conversation_id):
         facts, topic, asked, last_version = {}, None, (), None
         active_intents: list[str] = []
+        last_user_text, last_assistant_text = "", ""
         for row in self.store.all("SELECT role, body_json FROM message_index WHERE session_id=? ORDER BY seq",
                                   (conversation_id,)):
             body = json.loads(row["body_json"])
@@ -369,10 +530,14 @@ class Agent2Service:
                 topic = body.get("topic") or topic
                 if body.get("active_intents"):
                     active_intents = list(body["active_intents"])
+                last_user_text = (body.get("text") or "")[:120]
             else:
                 asked = tuple(q["field"] for q in body.get("follow_up_questions", []))
                 last_version = body.get("profile_version", last_version)
-        return facts, topic, asked, last_version, active_intents
+                summary = (body.get("answer") or {}).get("summary") or ""
+                if summary:
+                    last_assistant_text = summary[:300]
+        return facts, topic, asked, last_version, active_intents, last_user_text, last_assistant_text
 
     def _stored_reply(self, conversation_id, client_message_id):
         # Multi-intent turns store several assistant bubbles on the same user
@@ -385,6 +550,13 @@ class Agent2Service:
                              (conversation_id, client_message_id))
         return AnswerResult.model_validate_json(row["body_json"]) if row else None
 
+    def _domain_state(self, conversation_id, domain):
+        row = self.store.one(
+            "SELECT state_json FROM domain_conversation_state WHERE session_id=? AND domain=?",
+            (conversation_id, domain),
+        )
+        return json.loads(row["state_json"]) if row else {}
+
     def _apply_understanding(self, request: OrchestrationInput):
         """Merge LLM intents/facts into the routing request (rules ∪ model). Fail soft."""
         port = self.v2_workflow.dependencies.understanding
@@ -394,7 +566,7 @@ class Agent2Service:
         try:
             catalog = clarify.field_catalog()
             raw = asyncio.run(port.understand(request, catalog))
-            facts, basis, intents = validate_understanding(
+            facts, basis, intents, topic_switch = validate_understanding(
                 raw, request, set(catalog), clarify.validate)
             enriched = request.model_copy(update={
                 "conversation_intents": list(dict.fromkeys([
@@ -402,6 +574,7 @@ class Agent2Service:
                 "llm_intents": list(dict.fromkeys(intents)),
                 "understood_facts": facts,
                 "understood_basis": basis,
+                "llm_topic_switch": topic_switch,
                 "understanding_applied": True,
             })
             return enriched, True
@@ -409,21 +582,37 @@ class Agent2Service:
             return request, False
 
     def post_message(self, user_id, conversation_id, text, client_message_id, *, confirmed_fields=None,
-                     expected_profile_version=None, cleared_fields=None):
+                     session_fields=None, expected_profile_version=None, cleared_fields=None):
         conversation = self._owned_conversation(user_id, conversation_id)
         if not isinstance(client_message_id, str) or not client_message_id.strip():
             raise bad_request("需要 client_message_id（幂等键）")
         stored = self._stored_reply(conversation_id, client_message_id)
         if stored:
             return stored
-        facts, topic, asked, last_version, active_intents = self._conversation_context(conversation_id)
+        facts, topic, asked, last_version, active_intents, last_user_text, last_assistant_text = \
+            self._conversation_context(conversation_id)
         user_message_id, answer_id = _new_id(), _new_id()
         confirmed_fields = confirmed_fields or {}
+        session_fields = session_fields or {}
         cleared_fields = list(dict.fromkeys(cleared_fields or []))
         if confirmed_fields:
             if not isinstance(confirmed_fields, dict) or not set(confirmed_fields) <= set(asked):
                 raise bad_request("只能保存当前追问要求的画像字段")
             self._check_values(confirmed_fields)
+            # Backward-compatible safety: older clients submitted every chip as
+            # confirmed_fields.  Query scope fields are never durable Profile
+            # facts, even when sent by such a client.
+            transient = {code: value for code, value in confirmed_fields.items()
+                         if clarify.persistence_policy(code)["storage_class"] == "session_only"}
+            if transient:
+                session_fields = {**session_fields, **transient}
+                confirmed_fields = {code: value for code, value in confirmed_fields.items()
+                                    if code not in transient}
+        if session_fields:
+            if not isinstance(session_fields, dict) or not set(session_fields) <= set(asked):
+                raise bad_request("只能提交当前追问要求的临时字段")
+            self._check_values(session_fields)
+            facts.update(session_fields)
         unknown_clear = [code for code in cleared_fields if code not in clarify.FIELDS]
         if unknown_clear:
             raise bad_request(f"未知字段：{', '.join(unknown_clear)}")
@@ -455,16 +644,30 @@ class Agent2Service:
         understood_facts, understood_basis = {}, {}
         understanding_applied = False
         llm_intents: list[str] = []
+        llm_topic_switch = False
         # Structured follow-ups continue the open multi-domain turn, but a chip
         # answer is scoped to the domain(s) that own the confirmed field(s) so
         # confirming want_credit_card does not re-emit bank-account advice.
-        if asked and topic:
+        followup_intents = (list(active_intents) if active_intents
+                            else intents_for_session_topic(topic, facts))
+        # A pending follow-up must not swallow a clearly new question: when the
+        # free text matches another domain's intent (e.g. asking about account
+        # recommendations while a credit-card follow-up is open), route to the
+        # new question instead of treating it as a follow-up answer.
+        topic_intents = set(intents_for_session_topic(topic, facts)) if topic else set()
+        field_answers = {**session_fields, **confirmed_fields}
+        switches_domain = (
+            asked and topic and not field_answers
+            and classified.intent not in ("follow_up", "other")
+            and classified.intent not in followup_intents
+            and classified.intent not in topic_intents
+        )
+        if asked and topic and not switches_domain:
             resolved_topic = topic
-            planned_intents = list(active_intents) if active_intents else intents_for_session_topic(
-                topic, facts)
-            if confirmed_fields:
+            planned_intents = list(followup_intents)
+            if field_answers:
                 planned_intents = intents_for_confirmed_fields(
-                    confirmed_fields, planned_intents)
+                    field_answers, planned_intents)
         else:
             route_request = OrchestrationInput(
                 text=text,
@@ -474,15 +677,22 @@ class Agent2Service:
                 conversation_intents=(
                     list(active_intents) if active_intents
                     else intents_for_session_topic(topic, facts) if topic else []),
+                session_topic=topic,
+                session_last_user_text=last_user_text,
+                session_last_assistant_text=last_assistant_text,
+                session_pending_questions=list(asked),
             )
             route_request, understanding_applied = self._apply_understanding(route_request)
             understood_facts = dict(route_request.understood_facts)
             understood_basis = dict(route_request.understood_basis)
             llm_intents = list(route_request.llm_intents)
+            llm_topic_switch = route_request.llm_topic_switch
             plan = asyncio.run(RuleTaskPlanner().plan(route_request))
             planned_intents = [task.intent for task in plan.tasks]
             session_topic = session_topic_for_intents(planned_intents)
-            if session_topic:
+            if plan.routing_audit and plan.routing_audit.refusal_reason == "ambiguous_card":
+                resolved_topic = "other"
+            elif session_topic:
                 resolved_topic = session_topic
             elif classified.intent in ("follow_up", "other") and topic:
                 resolved_topic = topic
@@ -494,43 +704,70 @@ class Agent2Service:
         )
         if use_v2:
             v2_intents = planned_intents or intents_for_session_topic(resolved_topic, facts)
+            domain_state = {}
+            if "hsbc_account" in v2_intents:
+                domain_state["bank_account"] = self._domain_state(
+                    conversation_id, "bank_account")
             output = run_v2(self.v2_workflow, profile=profile, text=text,
                             conversation_facts=facts, asked_fields=asked,
                             message_id=answer_id,
-                            structured_selection=bool(asked),
+                            structured_selection=bool(field_answers),
                             conversation_intents=v2_intents,
                             understood_facts=understood_facts,
                             understood_basis=understood_basis,
                             understanding_applied=understanding_applied,
-                            llm_intents=llm_intents)
+                            llm_intents=llm_intents,
+                            llm_topic_switch=llm_topic_switch,
+                            session_topic=topic,
+                            session_last_user_text=last_user_text,
+                            session_last_assistant_text=last_assistant_text,
+                            session_pending_questions=list(asked),
+                            domain_state=domain_state)
         else:
             output = self.runner.run(profile=profile, text=text, conversation_facts=facts, conversation_topic=topic,
                                      asked_fields=asked,
                                      expected_profile_version=last_version or conversation["profile_version"],
                                      message_id=answer_id)
         answer = output.result
-        if confirmed_fields:
+        if field_answers:
             equivalent = {"applicant_age_band": "applicant_age",
                           "annual_income_band_hkd": "annual_income_hkd"}
-            for code in confirmed_fields:
+            for code in field_answers:
                 output.turn_facts.pop(code, None)
                 output.turn_basis.pop(code, None)
                 alternate = equivalent.get(code)
                 if alternate:
                     output.turn_facts.pop(alternate, None)
                     output.turn_basis.pop(alternate, None)
+        output.turn_facts.update(session_fields)
+        output.turn_basis.update({code: "用户回答本轮追问" for code in session_fields})
+        # A market mention in an account-only question describes where the
+        # account is being discussed, not automatically where the student will
+        # study.  The shared parser may emit both keys, so remove the study fact
+        # unless the user actually used study-context language.
+        active_output_intents = set(output.active_intents or [])
+        account_only = bool(active_output_intents) and active_output_intents <= {"hsbc_account"}
+        study_context = bool(re.search(r"留学|上学|读书|就读|学校|去.{0,6}(?:读|念)", text))
+        if account_only and not study_context:
+            output.turn_facts.pop("destination_country", None)
+            output.turn_basis.pop("destination_country", None)
         proposals = self._proposals_for(profile, output, user_message_id)
+        relationship_proposals = self._bank_relationship_proposals_for(
+            profile, output, user_message_id, text)
         answer.profile_change_proposals = proposals
+        answer.bank_relationship_proposals = relationship_proposals
         parts = list(output.message_parts or [answer])
         if parts:
             parts[-1].profile_change_proposals = proposals
+            parts[-1].bank_relationship_proposals = relationship_proposals
             output.message_parts = parts
             output.result = parts[-1]
             answer = parts[-1]
         try:
             with self.store.transaction() as db:
                 self._persist(db, conversation_id, profile, text, client_message_id, user_message_id, output,
-                              confirmed_fields=confirmed_fields, cleared_fields=cleared_fields)
+                              confirmed_fields=confirmed_fields, session_fields=session_fields,
+                              cleared_fields=cleared_fields)
         except sqlite3.IntegrityError:
             stored = self._stored_reply(conversation_id, client_message_id)
             if stored:
@@ -548,6 +785,10 @@ class Agent2Service:
         # Only registered profile fields become user-facing proposals (skip session keys like fx_mode).
         for code, value in output.turn_facts.items():
             if code not in clarify.FIELDS:
+                continue
+            policy = clarify.persistence_policy(code)
+            if policy["storage_class"] not in {"core_profile", "preference"} or \
+                    policy["confirmation_mode"] == "never":
                 continue
             # A free-text request such as “想办信用卡” is a turn-routing intent,
             # not a durable profile change. Persist this field only when the user
@@ -567,8 +808,61 @@ class Agent2Service:
                 basis=f"用户消息：「{output.turn_basis.get(code, '')}」"))
         return proposals
 
+    def _bank_relationship_proposals_for(self, profile, output, user_message_id, text):
+        """Turn an explicit account decision/status statement into a confirmable child-record update."""
+        proposals = []
+        for item in output.advice_items or []:
+            if item.get("topic") != "account":
+                continue
+            domain = item.get("payload", {}).get("domain_payload") or {}
+            state = domain.get("conversation_state") or {}
+            act = domain.get("dialogue_act")
+            product_id = state.get("selected_product_id") or state.get("focused_product_id")
+            status = None
+            if re.search(r"已经开好|已经开了|开户成功|已开立|已经有(?:这个|该)?账户", text):
+                status = "open"
+            elif re.search(r"正在申请|已经申请|已经提交|申请中|等审批|等批核", text):
+                status = "applying"
+            elif re.search(r"申请失败|开户失败|被拒|补件|补材料", text):
+                status = "blocked"
+            elif re.search(r"已经关户|已经注销|注销了|关闭了?账户", text):
+                status = "closed"
+            elif act == "confirm_selection":
+                status = "selected"
+            if not status:
+                continue
+            candidates = domain.get("candidate_results") or []
+            if not product_id and len(candidates) == 1:
+                product_id = candidates[0].get("product", {}).get("account_id")
+            product = next((row.get("product", {}) for row in candidates
+                            if row.get("product", {}).get("account_id") == product_id), {})
+            product_name = product.get("product_name") or product.get("name_zh")
+            market = domain.get("account_region") or state.get("market")
+            if not market or not product_id or not product_name:
+                continue
+            holder = output.turn_facts.get("account_applicant_relation") or "profile_subject"
+            existing = self.store.one("""SELECT relationship_id FROM bank_relationships
+                WHERE profile_id=? AND market=? AND COALESCE(product_id,'')=COALESCE(?, '')
+                  AND holder_relation=? AND status!='closed' ORDER BY updated_at DESC LIMIT 1""",
+                                      (profile.profile_id, market, product_id, holder))
+            duplicate = self.store.one("""SELECT proposal_id FROM bank_relationship_proposals
+                WHERE profile_id=? AND market=? AND COALESCE(product_id,'')=COALESCE(?, '')
+                  AND holder_relation=? AND proposed_status=? AND status='open' LIMIT 1""",
+                                       (profile.profile_id, market, product_id, holder, status))
+            if duplicate:
+                continue
+            proposals.append(BankRelationshipProposal(
+                proposal_id=_new_id(), profile_id=profile.profile_id, market=market,
+                product_id=product_id, product_name=product_name, holder_relation=holder,
+                proposed_status=status,
+                existing_relationship_id=existing["relationship_id"] if existing else None,
+                source_message_id=user_message_id,
+                basis=f"用户消息：「{text.strip()}」",
+            ))
+        return proposals
+
     def _persist(self, db, conversation_id, profile, text, client_message_id, user_message_id, output,
-                 *, confirmed_fields=None, cleared_fields=None):
+                 *, confirmed_fields=None, session_fields=None, cleared_fields=None):
         answer = output.result
         now = self._ts()
         confirmed_fields = confirmed_fields or {}
@@ -640,6 +934,14 @@ class Agent2Service:
             db.execute("INSERT INTO profile_change_proposals VALUES (?,?,?,?,?,?,?, 'open', ?, NULL)",
                        (p.proposal_id, p.profile_id, p.field_code, dumps(p.old_value) if p.old_value is not None
                         else None, dumps(p.new_value), user_message_id, p.basis, now))
+        for p in parts[-1].bank_relationship_proposals:
+            db.execute("""INSERT INTO bank_relationship_proposals
+                (proposal_id,profile_id,market,product_id,product_name_snapshot,holder_relation,
+                 proposed_status,existing_relationship_id,source_message_id,basis,status,created_at,decided_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,'open',?,NULL)""",
+                       (p.proposal_id, p.profile_id, p.market, p.product_id, p.product_name,
+                        p.holder_relation, p.proposed_status, p.existing_relationship_id,
+                        user_message_id, p.basis, now))
         advice_items = list(output.advice_items or [])
         if not advice_items and output.advice:
             advice_items = [output.advice]
@@ -656,6 +958,29 @@ class Agent2Service:
                        (profile.profile_id, topic, version, answer.message_id, payload, now))
             db.execute("INSERT INTO advice_history VALUES (?,?,?,?,?,?)",
                        (profile.profile_id, topic, version, payload, answer.message_id, now))
+            domain_payload = item.get("payload", {}).get("domain_payload") or {}
+            if topic == "account" and domain_payload.get("account_region"):
+                scope_key = domain_payload["account_region"]
+                scoped = db.execute("""SELECT version FROM advice_scoped_current
+                    WHERE profile_id=? AND topic='account' AND scope_key=?""",
+                                    (profile.profile_id, scope_key)).fetchone()
+                scoped_version = (scoped["version"] if scoped else 0) + 1
+                db.execute("""INSERT INTO advice_scoped_current
+                    (profile_id,topic,scope_key,version,source_message_id,payload_json,status,updated_at)
+                    VALUES (?,'account',?,?,?,?, 'current', ?)
+                    ON CONFLICT(profile_id,topic,scope_key) DO UPDATE SET
+                      version=excluded.version,source_message_id=excluded.source_message_id,
+                      payload_json=excluded.payload_json,status='current',updated_at=excluded.updated_at""",
+                           (profile.profile_id, scope_key, scoped_version,
+                            answer.message_id, payload, now))
+            conversation_state = domain_payload.get("conversation_state")
+            if topic == "account" and isinstance(conversation_state, dict):
+                state_version = int(conversation_state.get("version") or 0)
+                db.execute("""INSERT INTO domain_conversation_state
+                    (session_id,domain,version,state_json,updated_at) VALUES (?, 'bank_account', ?, ?, ?)
+                    ON CONFLICT(session_id, domain) DO UPDATE SET version=excluded.version,
+                    state_json=excluded.state_json, updated_at=excluded.updated_at""",
+                           (conversation_id, state_version, dumps(conversation_state), now))
 
     # ---------- reactions / M11 / snapshots ----------
 
@@ -687,7 +1012,15 @@ class Agent2Service:
         for row in rows:
             row["payload"] = json.loads(row.pop("payload_json"))
             self._enrich_legacy_card_advice(row)
-        return {"profile_id": profile_id, "advice": {r["topic"]: r for r in rows}}
+        scoped_rows = self.store.all("""SELECT * FROM advice_scoped_current
+            WHERE profile_id=? ORDER BY topic, scope_key""", (profile_id,))
+        for row in scoped_rows:
+            row["payload"] = json.loads(row.pop("payload_json"))
+        scoped = {}
+        for row in scoped_rows:
+            scoped.setdefault(row["topic"], {})[row["scope_key"]] = row
+        return {"profile_id": profile_id, "advice": {r["topic"]: r for r in rows},
+                "scoped_advice": scoped}
 
     def _enrich_legacy_card_advice(self, row):
         """Render older saved card advice without rewriting the user's database."""

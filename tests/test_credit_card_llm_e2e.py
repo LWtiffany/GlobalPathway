@@ -52,7 +52,7 @@ class CreditCardLlmEndToEndTests(unittest.TestCase):
             "SELECT model_version, prompt_version FROM answer_runs WHERE message_id=?",
             (first.message_id,))
         self.assertIn("qwen", run["model_version"])
-        self.assertIn("understand-user-v1", run["prompt_version"])
+        self.assertIn("understand-user-v3", run["prompt_version"])
 
     def test_full_chain_follow_up_then_llm_written_recommendation(self):
         """追问 → 纯规则推荐 → LLM 改写，整条链路跑通。"""
