@@ -14,3 +14,11 @@ __pycache__/
 .env
 local_secrets.py
 scripts/_watch_deploy.py
+# One-off eval / ops / debug scratch, removed 2026-10-30. Keep local copies ignored.
+scripts/eval_intents_100.py
+scripts/eval_account_subintents.py
+scripts/diagnose_writer_failure.py
+scripts/smoke_bank_account_answers.py
+scripts/oss_read_bridge.py
+scripts/*_oss_tunnel.ps1
+tests/fixtures/
