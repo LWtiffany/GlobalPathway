@@ -21,38 +21,9 @@ const TOPICS = [
 const AVAIL = { available: "有效", stale: "待复核（超过核验时效）", withdrawn: "已撤回", superseded: "已被新版本取代",
   missing_evidence: "证据缺失" };
 const TAG = { required: "必需", conditional: "视情况", unverified: "待核实" };
-const PRESETS = [
-  { user: "王女士", tag: "家长 · 英国 + 香港",
-    desc: "两个孩子：王小明（英国 UCL 硕士，签证类别未填）、王小悦（香港 HKU 本科）。",
-    profiles: [
-      { fields: { role: "parent", beneficiary: "王小明", destination_country: "UK",
-        school: "f545e6b8-2118-5951-8f44-6f8e1f15110c", // University College London
-        offer_status: "conditional", planned_start_date: "2026-09-21", payer: "parent" },
-        todos: ["与学校确认 CAS 发放时间", "预约签证中心递交时间"] },
-      { fields: { role: "parent", beneficiary: "王小悦", destination_country: "CN-HK",
-        school: "6ee509ee-2598-5cdc-8b73-01de1d34015f", // The University of Hong Kong (HKU)
-        offer_status: "none" } },
-    ] },
-  { user: "李同学", tag: "学生 · 美国",
-    desc: "本人申请：李华，美国 NYU 数据科学硕士，无条件录取，学生签证。",
-    profiles: [
-      { fields: { role: "student", beneficiary: "李华", destination_country: "US",
-        school: "fdda5cc2-8be6-5f9b-a148-e93c1972cc8c", // New York University
-        offer_status: "unconditional", planned_start_date: "2026-09-02",
-        visa_category: "student_visa", payer: "self" } },
-    ] },
-  { user: "陈同学", tag: "学生 · 香港",
-    desc: "本人申请：陈思，香港中文大学 MPhil，内地居民，学生签证。",
-    profiles: [
-      { fields: { role: "student", beneficiary: "陈思", destination_country: "CN-HK",
-        school: "f8b7d239-425b-5234-8277-a81abf4fc163", // The Chinese University of Hong Kong
-        offer_status: "unconditional", planned_start_date: "2026-09-01",
-        visa_category: "student_visa", applicant_residence: "CN" } },
-    ] },
-];
 
 const S = {
-  token: localStorage.getItem("gp_token"), user: null, fields: null, profiles: [], pid: localStorage.getItem("gp_pid"),
+  token: null, csrf: null, user: null, fields: null, profiles: [], pid: localStorage.getItem("gp_pid"),
   profile: null, conv: null, messages: [], advice: {}, adviceScopes: {}, plan: [], proposals: [],
   relationships: [], relationshipProposals: [], missing: new Set(),
   highlight: new Set(), flash: [], busy: false, pending: null, sheetH: null, collapsed: false, fb: {}, el: {},
@@ -245,10 +216,12 @@ async function api(method, path, body, { timeout = 20000 } = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
   let res;
+  const headers = { "Content-Type": "application/json" };
+  if (S.csrf && method !== "GET") headers["X-CSRF-Token"] = S.csrf;
   try {
     res = await fetch("/v1" + path, {
-      method, signal: ctl.signal,
-      headers: { "Content-Type": "application/json", ...(S.token ? { Authorization: "Bearer " + S.token } : {}) },
+      method, signal: ctl.signal, credentials: "same-origin",
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (e) {
@@ -258,8 +231,11 @@ async function api(method, path, body, { timeout = 20000 } = {}) {
     clearTimeout(timer);
   }
   const data = await res.json().catch(() => ({}));
+  if (data.csrf_token) S.csrf = data.csrf_token;
   if (!res.ok) {
-    if (res.status === 401 && path !== "/demo/login") logout("登录已失效，请重新选择身份");
+    if (res.status === 401 && path !== "/login" && path !== "/demo/login" && path !== "/logout") {
+      logout("登录已失效，请重新登录");
+    }
     throw new ApiError(data.code || `HTTP_${res.status}`, data.message || "请求失败", data.trace_id);
   }
   return data;
@@ -286,7 +262,7 @@ function topBar(cur) {
       h("a", { class: "nav" + (cur === "chat" ? " cur" : ""), href: "#/chat" }, "我的方案"),
       h("a", { class: "nav" + (cur === "feedback" ? " cur" : ""), href: "#/feedback" }, "纠错记录"),
       h("div", { class: "rm" }, h("div", { class: "av sf" }, S.user.display_name.slice(0, 1)), S.user.display_name),
-      h("button", { class: "linkbtn", onclick: () => logout() }, "切换身份"));
+      h("button", { class: "linkbtn", onclick: () => logout() }, "退出"));
   }
   return h("div", { class: "top" },
     h("div", { class: "logo", onclick: () => go(S.user ? "#/chat" : "#/login") },
@@ -299,10 +275,10 @@ function shell(content, cur) {
   $app.replaceChildren(topBar(cur), h("div", { class: "gold" }), content);
 }
 
-function logout(message) {
-  S.token = null; S.user = null; S.pid = null; S.profiles = []; S.fb = {}; S.pending = null;
+async function logout(message) {
+  try { await api("POST", "/logout", {}); } catch (_) { /* session may already be gone */ }
+  S.token = null; S.csrf = null; S.user = null; S.pid = null; S.profiles = []; S.fb = {}; S.pending = null;
   S.followSeed = null; S.followTrail = []; S.suppressFields = [];
-  localStorage.removeItem("gp_token");
   localStorage.removeItem("gp_pid");
   if (message) toast(message, true);
   go("#/login");
@@ -313,14 +289,20 @@ async function route() {
   const [page, arg] = location.hash.replace(/^#\/?/, "").split("/");
   try {
     if (!S.fields) S.fields = (await api("GET", "/fields")).fields;
-    if (!S.token || page === "login") return renderLogin();
-    if (!S.user) S.user = await api("GET", "/me");
+    if (page === "login") return renderLogin();
+    if (!S.user) {
+      try {
+        S.user = await api("GET", "/me");
+      } catch (e) {
+        return renderLogin();
+      }
+    }
     if (page === "onboarding") return await renderOnboarding();
     if (page === "report") return await renderReport(arg);
     if (page === "feedback") return await renderFeedback();
     return await renderChat(page === "chat" ? arg : null);
   } catch (e) {
-    if (!S.token) return;
+    if (!S.user) return;
     shell(h("div", { class: "page" }, h("div", { class: "empty-state" },
       h("p", null, `页面加载失败：${e.message}`),
       e.trace ? h("p", { class: "mono" }, `trace_id: ${e.trace}`) : null,
@@ -331,35 +313,34 @@ async function route() {
 // ---------- /login ----------
 
 function renderLogin() {
-  const name = h("input", { name: "n", placeholder: "或输入其他用户名（进入后手动建档）", maxlength: "20" });
+  const username = h("input", { name: "u", placeholder: "用户名", autocomplete: "username", maxlength: "64" });
+  const password = h("input", { name: "p", type: "password", placeholder: "密码（8–16 位）",
+    autocomplete: "current-password", minlength: "8", maxlength: "16" });
   shell(h("div", { class: "page" },
-    h("h1", { class: "sf" }, "选择身份"),
-    h("p", { class: "lead" }, "选择一位预设客户进入，体验「上方案表 · 下对话」的留学准备顾问。"),
-    h("div", { class: "presets" }, PRESETS.map((p) => h("button", { class: "preset", onclick: () => login(p) },
-      h("span", { class: "who" }, p.tag), h("b", { class: "sf" }, p.user), h("span", { class: "kids" }, p.desc)))),
+    h("h1", { class: "sf" }, "登录"),
+    h("p", { class: "lead" }, "使用已有账号登录留学准备顾问。密码 8–16 位。"),
     h("form", { class: "custom", onsubmit: (e) => {
       e.preventDefault();
-      if (name.value.trim()) login({ user: name.value.trim(), profiles: [] });
-    } }, name, h("button", { class: "btn" }, "进入"))), "login");
+      passwordLogin(username.value.trim(), password.value);
+    } }, username, password, h("button", { class: "btn" }, "登录"))), "login");
 }
 
-async function login(preset) {
+async function afterAuth(res) {
+  if (res.csrf_token) S.csrf = res.csrf_token;
+  S.token = true;
+  S.user = await api("GET", "/me");
+  const { profiles } = await api("GET", "/profiles");
+  S.pid = null;
+  localStorage.removeItem("gp_pid");
+  go(profiles.length ? "#/chat" : "#/onboarding");
+}
+
+async function passwordLogin(username, password) {
+  if (!username || !password) return toast("请输入用户名和密码", true);
+  if (password.length < 8 || password.length > 16) return toast("密码长度须为 8–16 位", true);
   try {
-    const res = await api("POST", "/demo/login", { user: preset.user });
-    S.token = res.token;
-    localStorage.setItem("gp_token", res.token);
-    S.user = await api("GET", "/me");
-    let { profiles } = await api("GET", "/profiles");
-    if (!profiles.length && preset.profiles.length) {
-      for (const p of preset.profiles) {
-        const created = await api("POST", "/profiles", { fields: p.fields, synthetic: true });
-        for (const text of p.todos || []) await api("POST", `/profiles/${created.profile_id}/plan`, { text });
-      }
-      profiles = (await api("GET", "/profiles")).profiles;
-    }
-    S.pid = null;
-    localStorage.removeItem("gp_pid");
-    go(profiles.length ? "#/chat" : "#/onboarding");
+    const res = await api("POST", "/login", { username, password });
+    await afterAuth(res);
   } catch (e) {
     toast(e.message, true);
   }

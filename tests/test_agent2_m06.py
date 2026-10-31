@@ -92,7 +92,7 @@ class ConditionTableTests(unittest.TestCase):
         self.assertIn("UK", result.explanation)
         self.assertEqual(result.missing_fields, [])
         self.assertEqual([q.rule for q in result.questions], ["conflict.destination_country"])
-        self.assertIn("profile_version_changed", [n.code for n in result.notices])
+        self.assertNotIn("profile_version_changed", [n.code for n in result.notices])
 
     def test_unsupported_topic_has_no_conclusion(self):
         self.assertEqual(clarify.assess("invest", profile()).state, "unsupported_topic")

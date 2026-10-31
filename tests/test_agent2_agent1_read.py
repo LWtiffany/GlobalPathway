@@ -12,6 +12,12 @@ from agent2.service import Agent2Service
 from agent2.store import Store
 
 UK_STUDENT = {"destination_country": "UK", "visa_category": "student_visa"}
+UK_STUDENT_READY = {
+    **UK_STUDENT,
+    "applicant_age": 20,
+    "stay_over_6_months": True,
+    "tb_listed_country_resident": True,
+}
 PARENT = "If you're under 18 you'll need written consent from your parents or legal guardian."
 ENGLISH = "You must prove your knowledge of English unless you have a degree from a UK university."
 TB_ITEMS = ("you're coming to the UK for 6 months or more",
@@ -116,20 +122,21 @@ class PublishedRegion(unittest.TestCase):
 
 class Agent1PublishedKnowledgeTests(PublishedRegion):
     def test_answer_cites_published_official_page_and_asks_for_condition_fields(self):
-        answer = self.ask(UK_STUDENT)
+        pending = self.ask(UK_STUDENT)
+        self.assertEqual(pending.status, "needs_input")
+        self.assertTrue({"applicant_age", "stay_over_6_months", "tb_listed_country_resident"}
+                        & {q.field for q in pending.follow_up_questions})
+        self.assertEqual(pending.answer.materials, [])
+
+        answer = self.ask(UK_STUDENT_READY)
         self.assertEqual(answer.status, "answered")
         self.assertFalse(answer.synthetic)
         self.assertFalse(any("模拟资料" in limit for limit in answer.answer.limitations))
         by_code = {m.document_code: m for m in answer.answer.materials}
         self.assertEqual(by_code["cas"].applicability, "required")
         self.assertEqual(by_code["english_test_result"].applicability, "unverified")
-        self.assertEqual(by_code["parental_consent"].pending_fields, ["applicant_age"])
-        self.assertEqual(by_code["tuberculosis_test_certificate"].pending_fields,
-                         ["stay_over_6_months", "tb_listed_country_resident"])
-        claim = next(c for c in answer.claims if c.requirement_key.startswith("parental_consent"))
-        self.assertIn("申请人 16 或 17 岁，或申请人未满 18 岁", claim.text)
-        self.assertTrue({"applicant_age", "stay_over_6_months", "tb_listed_country_resident"}
-                        & {q.field for q in answer.follow_up_questions})
+        self.assertNotIn("parental_consent", by_code)
+        self.assertEqual(by_code["tuberculosis_test_certificate"].applicability, "required")
         for citation in answer.citations:
             self.assertEqual(citation.source_url, "https://example.org/visa")
             self.assertFalse(citation.synthetic)
@@ -137,20 +144,20 @@ class Agent1PublishedKnowledgeTests(PublishedRegion):
             self.assertIn(citation.quote, [e["quote"] for e in snapshot["evidence"]])
 
     def test_profile_facts_resolve_conditions(self):
-        adult = self.ask({**UK_STUDENT, "applicant_age": 20, "stay_over_6_months": True,
-                          "tb_listed_country_resident": True})
+        adult = self.ask(UK_STUDENT_READY)
         by_code = {m.document_code: m for m in adult.answer.materials}
         self.assertNotIn("parental_consent", by_code)
         self.assertEqual(by_code["tuberculosis_test_certificate"].applicability, "required")
 
-        minor = self.ask({**UK_STUDENT, "applicant_age": 17, "stay_over_6_months": False})
+        minor = self.ask({**UK_STUDENT, "applicant_age": 17, "stay_over_6_months": False,
+                          "tb_listed_country_resident": False})
         by_code = {m.document_code: m for m in minor.answer.materials}
         self.assertEqual(by_code["parental_consent"].applicability, "required")
         self.assertNotIn("tuberculosis_test_certificate", by_code)
 
     def test_stale_published_rows_still_answer_withdrawn_does_not(self):
         # Past Agent1 source SLA is not an Agent2 answer gate.
-        stale = self.ask(UK_STUDENT, clock=datetime.now(timezone.utc) + timedelta(hours=169))
+        stale = self.ask(UK_STUDENT_READY, clock=datetime.now(timezone.utc) + timedelta(hours=169))
         self.assertEqual(stale.status, "answered")
         self.assertTrue(stale.answer.materials)
 
@@ -163,11 +170,11 @@ class Agent1PublishedKnowledgeTests(PublishedRegion):
                                      paths=paths)
                 return records
 
-        midway = self.ask(UK_STUDENT, knowledge=WithdrawnMidAnswer(self.paths))
+        midway = self.ask(UK_STUDENT_READY, knowledge=WithdrawnMidAnswer(self.paths))
         self.assertEqual(midway.status, "cannot_answer")
         self.assertEqual(midway.answer.materials, [])
 
-        gone = self.ask(UK_STUDENT)
+        gone = self.ask(UK_STUDENT_READY)
         self.assertEqual(gone.status, "cannot_answer")
 
 
@@ -212,16 +219,19 @@ class HongKongPublishedKnowledgeTests(PublishedRegion):
              "condition_quote": HK_FOOTNOTE, "evidence_quote": HK_SPONSOR_ID}]})
 
     def test_unknown_sponsor_is_asked_and_both_branches_stay_conditional(self):
-        answer = self.ask({"destination_country": "CN-HK", "visa_category": "student_visa"})
+        pending = self.ask({"destination_country": "CN-HK", "visa_category": "student_visa"})
+        self.assertEqual(pending.status, "needs_input")
+        self.assertFalse(pending.synthetic)
+        self.assertIn("hk_sponsor", {q.field for q in pending.follow_up_questions})
+        self.assertEqual(pending.answer.materials, [])
+        self.assertTrue(any("immd.gov.hk" in a for a in pending.next_actions))
+
+        answer = self.ask({"destination_country": "CN-HK", "visa_category": "student_visa",
+                           "hk_sponsor": "institution", "applicant_residence": "CN"})
         self.assertEqual(answer.status, "answered")
-        self.assertFalse(answer.synthetic)
         by_code = self.materials(answer)
         self.assertEqual(by_code["passport"].applicability, "required")
-        self.assertEqual(by_code["proof_of_funds"].pending_fields, ["hk_sponsor"])
-        self.assertIn("hk_sponsor", {q.field for q in answer.follow_up_questions})
-        claim = next(c for c in answer.claims if c.requirement_key.startswith("proof_of_funds"))
-        self.assertIn("如果香港本地保证人是录取院校", claim.text)
-        self.assertTrue(any("immd.gov.hk" in a for a in answer.next_actions))
+        self.assertEqual(by_code["proof_of_funds"].applicability, "required")
         self.assertEqual({c.source_url for c in answer.citations}, {"https://example.org/visa"})
 
     def test_institution_sponsor_needs_applicant_funds_not_sponsor_id(self):

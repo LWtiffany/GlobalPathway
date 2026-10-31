@@ -6,7 +6,7 @@ import subprocess
 import unittest
 
 from agent2 import api
-from tests.test_agent2_s1 import UK_STUDENT, S1Base
+from tests.test_agent2_s1 import UK_STUDENT, UK_STUDENT_READY, S1Base
 
 
 class WebApiCases(S1Base):
@@ -17,7 +17,9 @@ class WebApiCases(S1Base):
 
     def call(self, method, path, body=None, token=None):
         raw = json.dumps(body).encode() if body is not None else b""
-        return api.dispatch(self.service, method, path, {"Authorization": f"Bearer {token or self.token}"}, raw)
+        status, payload, _headers = api.dispatch(
+            self.service, method, path, {"Authorization": f"Bearer {token or self.token}"}, raw)
+        return status, payload
 
     def test_profile_list_is_serialized_and_scoped_to_owner(self):
         mine = self.service.create_profile(self.user, {"beneficiary": "王小明", **UK_STUDENT}, synthetic=True)
@@ -37,7 +39,7 @@ class WebApiCases(S1Base):
         self.assertEqual(self.call("POST", path, token=self.bob)[0], 404)
 
     def test_advice_listing_carries_citations_for_chips(self):
-        profile, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        profile, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         status, payload = self.call("GET", f"/v1/profiles/{profile.profile_id}/advice")
         self.assertEqual(status, 200)
         self.assertEqual(list(payload["advice"]), ["visa"])
@@ -46,7 +48,7 @@ class WebApiCases(S1Base):
         self.assertEqual(self.call("GET", f"/v1/profiles/{profile.profile_id}/advice", token=self.bob)[0], 404)
 
     def test_wrong_feedback_opens_numbered_ticket_without_touching_profile(self):
-        profile, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        profile, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         path = f"/v1/messages/{answer.message_id}/feedback"
         self.assertEqual(self.call("POST", path, {"kind": "helpful"})[0], 400)
         status, wrong = self.call("POST", path, {"kind": "wrong", "note": "缺少 ATAS 说明"})
@@ -78,7 +80,7 @@ class WebApiCases(S1Base):
         self.assertEqual(self.call("GET", base)[1]["items"], [])
 
     def test_field_catalog_gives_labels_and_options_without_login(self):
-        status, payload = api.dispatch(self.service, "GET", "/v1/fields", {}, b"")
+        status, payload, _ = api.dispatch(self.service, "GET", "/v1/fields", {}, b"")
         self.assertEqual(status, 200)
         visa = payload["fields"]["visa_category"]
         self.assertEqual(visa["kind"], "enum")

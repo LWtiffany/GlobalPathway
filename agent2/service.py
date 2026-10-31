@@ -23,10 +23,15 @@ from .orchestration.legacy_adapter import (V2_INTENTS, card_summaries_from_steps
                                             intents_for_session_topic, run_v2,
                                             session_topic_for_intents)
 from .orchestration.planner import RuleTaskPlanner
+from .passwords import (dummy_hash, hash_password, needs_rehash, password_length_error,
+                        password_length_ok, verify_password)
 from .runner import Agent2Runner
 from .store import dumps
 
 DEFAULT_PROFILE_FIELDS = ("role", "destination_country", "visa_category", "school", "planned_start_date")
+SESSION_TTL = timedelta(days=7)
+SESSION_COOKIE = "gp_session"
+_DUMMY_PASSWORD_HASH = None
 
 
 class ServiceError(Exception):
@@ -53,11 +58,13 @@ def utc_now():
 
 class Agent2Service:
     def __init__(self, store, knowledge, *, clock=utc_now, generator=None, demo_enabled=True, suggest=None,
-                 credit_card_repository=None, bank_account_repository=None, llm_components=None):
+                 credit_card_repository=None, bank_account_repository=None, llm_components=None,
+                 accounts=None):
         self.store = store
         self.knowledge = knowledge
         self.clock = clock
         self.demo_enabled = demo_enabled
+        self.accounts = accounts
         self.runner = Agent2Runner(knowledge, clock, generator=generator, suggest=suggest)
         llm = llm_components if llm_components is not None else build_llm_components()
         self.v2_workflow = build_default_workflow(
@@ -95,6 +102,36 @@ class Agent2Service:
     def _ts(self):
         return self.clock().isoformat()
 
+    @staticmethod
+    def _token_hash(token):
+        import hashlib
+        return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+    def _create_session(self, db, user_id):
+        raw = secrets.token_urlsafe(32)
+        csrf = secrets.token_urlsafe(24)
+        now = self.clock()
+        expires = now + SESSION_TTL
+        db.execute(
+            "INSERT INTO auth_sessions (token_hash, user_id, csrf_token, created_at, expires_at) VALUES (?,?,?,?,?)",
+            (self._token_hash(raw), user_id, csrf, now.isoformat(), expires.isoformat()))
+        return {"token": raw, "csrf_token": csrf, "expires_at": expires.isoformat()}
+
+    def _ensure_local_user(self, db, *, user_id, subject, display_name, synthetic):
+        row = db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            db.execute("UPDATE users SET display_name=?, external_subject=?, synthetic=? WHERE user_id=?",
+                       (display_name, subject, int(synthetic), user_id))
+            return user_id
+        by_subject = db.execute("SELECT user_id FROM users WHERE external_subject=?", (subject,)).fetchone()
+        if by_subject:
+            # Keep existing local row if subject already mapped (demo collisions).
+            return by_subject["user_id"]
+        db.execute(
+            "INSERT INTO users (user_id, external_subject, display_name, synthetic) VALUES (?,?,?,?)",
+            (user_id, subject, display_name, int(synthetic)))
+        return user_id
+
     # ---------- M01 ----------
 
     def demo_login(self, name):
@@ -109,19 +146,86 @@ class Agent2Service:
             if not row:
                 db.execute("INSERT INTO users (user_id, external_subject, display_name, synthetic) VALUES (?,?,?,1)",
                            (user_id, subject, name.strip()))
-            token = secrets.token_urlsafe(24)
-            db.execute("INSERT INTO auth_sessions VALUES (?,?,?)", (token, user_id, self._ts()))
-        return {"token": token, "user_id": user_id, "synthetic": True,
-                "notice": "模拟身份，仅用于 Demo，不是真实银行账户登录。"}
+            session = self._create_session(db, user_id)
+        return {"token": session["token"], "csrf_token": session["csrf_token"],
+                "user_id": user_id, "synthetic": True,
+                "notice": "模拟身份，仅用于 Demo，不是真实银行账户登录。",
+                "_set_session": session["token"]}
 
-    def user_for_token(self, token):
-        row = self.store.one("SELECT user_id FROM auth_sessions WHERE token=?", (token or "",))
+    def login(self, username, password):
+        global _DUMMY_PASSWORD_HASH
+        if self.accounts is None:
+            raise ServiceError("LOGIN_UNAVAILABLE", "账号登录未配置", 503)
+        if not isinstance(username, str) or not username.strip():
+            raise bad_request("需要用户名")
+        if not isinstance(password, str) or not password:
+            raise bad_request("需要密码")
+        if not password_length_ok(password):
+            raise bad_request(password_length_error())
+        username = username.strip()
+        row = self.accounts.get_by_username(username)
+        if _DUMMY_PASSWORD_HASH is None:
+            _DUMMY_PASSWORD_HASH = dummy_hash()
+        if not row:
+            verify_password(password, _DUMMY_PASSWORD_HASH)
+            raise ServiceError("INVALID_CREDENTIALS", "用户名或密码错误", 401)
+        locked_until = row.get("locked_until")
+        if locked_until is not None:
+            if isinstance(locked_until, (int, float)):
+                locked_dt = datetime.fromtimestamp(locked_until, tz=timezone.utc)
+            else:
+                locked_dt = locked_until if locked_until.tzinfo else locked_until.replace(tzinfo=timezone.utc)
+            if locked_dt > self.clock():
+                raise ServiceError("ACCOUNT_LOCKED", "登录失败次数过多，请稍后再试", 423)
+        if row.get("status") != "active":
+            raise ServiceError("ACCOUNT_DISABLED", "账号不可用", 403)
+        if not verify_password(password, row["password_hash"]):
+            self.accounts.record_failure(row["user_id"])
+            raise ServiceError("INVALID_CREDENTIALS", "用户名或密码错误", 401)
+        self.accounts.clear_failures(row["user_id"])
+        if needs_rehash(row["password_hash"]):
+            self.accounts.update_password_hash(row["user_id"], hash_password(password))
+        subject = row.get("external_subject") or f"rds:{row['user_id']}"
+        display = row["username"]
+        with self.store.transaction() as db:
+            local_id = self._ensure_local_user(
+                db, user_id=row["user_id"], subject=subject, display_name=display, synthetic=False)
+            user_id = local_id or row["user_id"]
+            session = self._create_session(db, user_id)
+        return {"user_id": user_id, "csrf_token": session["csrf_token"], "synthetic": False,
+                "_set_session": session["token"]}
+
+    def logout(self, token):
+        if not token:
+            return {"ok": True, "_clear_session": True}
+        with self.store.transaction() as db:
+            db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (self._token_hash(token),))
+        return {"ok": True, "_clear_session": True}
+
+    def session_for_token(self, token):
+        if not token:
+            raise ServiceError("UNAUTHENTICATED", "需要登录", 401)
+        row = self.store.one(
+            "SELECT user_id, csrf_token, expires_at FROM auth_sessions WHERE token_hash=?",
+            (self._token_hash(token),))
         if not row:
             raise ServiceError("UNAUTHENTICATED", "需要登录", 401)
-        return row["user_id"]
+        expires = datetime.fromisoformat(row["expires_at"])
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= self.clock():
+            with self.store.transaction() as db:
+                db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (self._token_hash(token),))
+            raise ServiceError("UNAUTHENTICATED", "登录已过期", 401)
+        return row
+
+    def user_for_token(self, token):
+        return self.session_for_token(token)["user_id"]
 
     def me(self, user_id):
         user = self.store.one("SELECT user_id, display_name, synthetic FROM users WHERE user_id=?", (user_id,))
+        if not user:
+            raise ServiceError("UNAUTHENTICATED", "需要登录", 401)
         user["synthetic"] = bool(user["synthetic"])
         return user
 
@@ -518,6 +622,14 @@ class Agent2Service:
             row["body"] = json.loads(row.pop("body_json"))
         return {"messages": rows, "next_after_seq": rows[-1]["seq"] if rows else after_seq}
 
+    @staticmethod
+    def _asked_from_assistant_body(body):
+        """Fields the client may confirm: follow-ups plus material 待确认 pending_fields."""
+        fields = [q["field"] for q in body.get("follow_up_questions") or [] if q.get("field")]
+        for material in ((body.get("answer") or {}).get("materials") or []):
+            fields.extend(material.get("pending_fields") or [])
+        return tuple(dict.fromkeys(code for code in fields if code))
+
     def _conversation_context(self, conversation_id):
         facts, topic, asked, last_version = {}, None, (), None
         active_intents: list[str] = []
@@ -532,7 +644,7 @@ class Agent2Service:
                     active_intents = list(body["active_intents"])
                 last_user_text = (body.get("text") or "")[:120]
             else:
-                asked = tuple(q["field"] for q in body.get("follow_up_questions", []))
+                asked = self._asked_from_assistant_body(body)
                 last_version = body.get("profile_version", last_version)
                 summary = (body.get("answer") or {}).get("summary") or ""
                 if summary:

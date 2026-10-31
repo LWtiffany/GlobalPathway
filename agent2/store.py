@@ -17,9 +17,11 @@ CREATE TABLE IF NOT EXISTS users (
     status           TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS auth_sessions (
-    token      TEXT PRIMARY KEY,
+    token_hash TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(user_id),
-    created_at TEXT NOT NULL
+    csrf_token TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS profiles (
     profile_id TEXT PRIMARY KEY,
@@ -281,6 +283,10 @@ class Store:
                 self._connection.execute("DROP TABLE sessions")
             tables.discard("sessions")
             tables.add("auth_sessions")
+        if "auth_sessions" in tables and "token" in self._table_columns("auth_sessions"):
+            # Plaintext-token sessions cannot be upgraded; drop and recreate hashed schema.
+            self._connection.execute("DROP TABLE auth_sessions")
+            tables.discard("auth_sessions")
         if "conversations" in tables and "sessions" not in tables:
             self._connection.execute("ALTER TABLE conversations RENAME TO sessions")
             if "conversation_id" in self._table_columns("sessions"):
