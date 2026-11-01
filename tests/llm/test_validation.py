@@ -35,6 +35,47 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(["remittance_living"], intents)
         self.assertTrue(topic_switch)
 
+    def test_multi_value_add_is_merged_against_server_profile(self):
+        request = OrchestrationInput(
+            text="以后也会在内地刷",
+            profile_id="p1",
+            profile_version=1,
+            profile_values={"spending_scenarios": ["online"]},
+        )
+        result = UnderstandingResult(facts=[FactCandidate(
+            field_code="spending_scenarios",
+            value=["mainland_china"],
+            confidence=.95,
+            evidence="也会在内地刷",
+            update_mode="add",
+        )])
+
+        facts, _, _, _ = validate_understanding(
+            result, request, {"spending_scenarios"},
+            lambda _code, value: None if value == ["online", "mainland_china"] else "bad",
+        )
+
+        self.assertEqual(["online", "mainland_china"], facts["spending_scenarios"])
+
+    def test_multi_value_replace_does_not_carry_old_values(self):
+        request = OrchestrationInput(
+            text="以后主要在内地刷",
+            profile_id="p1",
+            profile_version=1,
+            profile_values={"spending_scenarios": ["online"]},
+        )
+        result = UnderstandingResult(facts=[FactCandidate(
+            field_code="spending_scenarios",
+            value=["mainland_china"],
+            confidence=.95,
+            evidence="主要在内地刷",
+        )])
+
+        facts, _, _, _ = validate_understanding(
+            result, request, {"spending_scenarios"}, lambda _code, _value: None)
+
+        self.assertEqual(["mainland_china"], facts["spending_scenarios"])
+
     def test_writer_cannot_add_numeric_claim(self):
         source = AnswerBody(summary="主推荐 A 卡", steps=["APR 35.42%"], limitations=["需审批"])
         candidate = AnswerBody(summary="主推荐 A 卡，可获 10% 回赠", limitations=["需审批"])

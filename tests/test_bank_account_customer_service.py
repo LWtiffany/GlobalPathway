@@ -7,7 +7,7 @@ from agent2.llm.account_subintent import AccountFact, AccountSubintentResult
 from agent2.llm.schemas import WrittenAnswer
 from agent2.orchestration.contracts import DomainTask, OrchestrationInput
 from agent2.orchestration.domains.bank_account import BankAccountWorkflow
-from agent2.orchestration.domains.bank_account_repository import SeedBankAccountRepository
+from agent2.orchestration.domains.bank_account_repository import RdsBankAccountRepository
 from agent2.orchestration.workflow import build_default_workflow
 from tests.llm.fakes import ScriptedStructuredModel
 
@@ -18,14 +18,14 @@ def ask(text, *, profile=None, workflow=None):
     request = OrchestrationInput(text=text, profile_id="p1", profile_version=1,
                                  profile_values=profile or {})
     return asyncio.run((workflow or BankAccountWorkflow(
-        repository=SeedBankAccountRepository())).run(TASK, request))
+        repository=RdsBankAccountRepository())).run(TASK, request))
 
 
 class EnglishUsRepository:
     """Mimic the shared RDS rows whose descriptive fields are stored in English."""
 
     async def read(self, market):
-        catalog = await SeedBankAccountRepository().read(market)
+        catalog = await RdsBankAccountRepository().read(market)
         if market == "US":
             catalog["products"][0]["summary"] = (
                 "HSBC USA's principal personal checking relationship with qualification routes.")
@@ -95,7 +95,7 @@ class BankAccountCustomerServiceTests(unittest.TestCase):
         )
         result = ask("我要开什么户", profile={"destination_country": "US", "role": "student"},
                      workflow=BankAccountWorkflow(
-                         model=model, repository=SeedBankAccountRepository()))
+                         model=model, repository=RdsBankAccountRepository()))
         blob = " ".join([result.answer.summary, *result.answer.steps])
         self.assertEqual("ValueError", result.payload["model_failure"])
         self.assertIn("不足", blob)
@@ -172,7 +172,7 @@ class BankAccountCustomerServiceTests(unittest.TestCase):
                           steps=["请按官网核对低结余费与豁免条件。"]),
         )
         result = ask("香港 HSBC One 有月费吗", workflow=BankAccountWorkflow(
-            model=model, repository=SeedBankAccountRepository()))
+            model=model, repository=RdsBankAccountRepository()))
         self.assertEqual(["account_subintent", "write_bank_answer"],
                          [call["operation"] for call in model.calls])
         self.assertEqual(["fees_balance"], result.payload["subintents"])
@@ -190,7 +190,7 @@ class BankAccountCustomerServiceTests(unittest.TestCase):
                           steps=["可前往网点办理。"]),
         )
         result = ask("孩子17岁在香港能开户吗", workflow=BankAccountWorkflow(
-            model=model, repository=SeedBankAccountRepository()))
+            model=model, repository=RdsBankAccountRepository()))
         self.assertIn("无月费", result.answer.summary)
         self.assertIsNone(result.payload["model_failure"])
 
@@ -202,13 +202,13 @@ class BankAccountCustomerServiceTests(unittest.TestCase):
                           steps=["可前往网点办理。"]),
         )
         result = ask("孩子17岁在香港能开户吗", workflow=BankAccountWorkflow(
-            model=model, repository=SeedBankAccountRepository()))
+            model=model, repository=RdsBankAccountRepository()))
         self.assertNotIn("低结余费", result.answer.summary)
         self.assertEqual("ValueError", result.payload["model_failure"])
         self.assertIn("bank_llm_fallback", [notice.code for notice in result.notices])
 
     def test_top_level_customer_service_routes_to_grounded_account_answer(self):
-        workflow = build_default_workflow(bank_repository=SeedBankAccountRepository())
+        workflow = build_default_workflow(bank_repository=RdsBankAccountRepository())
         output = workflow.run(OrchestrationInput(
             text="汇丰香港 HSBC One 每月有管理费吗", profile_id="p1", profile_version=1))
         self.assertEqual("answered", output.answer.status)

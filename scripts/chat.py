@@ -13,7 +13,7 @@
 
 数据安全:
     - 产品数据来自 RDS，只读，零写入。
-    - 会话/档案使用内存 SQLite，进程结束即销毁，不留任何本地文件。
+    - 会话/档案使用远程 PostgreSQL；演示数据与正式数据使用相同存储协议。
 
 交互:
     - 开场随便说，例如:
@@ -126,7 +126,7 @@ def main():
     llm_note = ("LLM 增强已启用（qwen）" if llm.understanding is not None
                 else "纯规则模式（确定性）")
 
-    store = Store()  # 内存 SQLite，退出即销毁
+    store = Store()  # 远程 PostgreSQL（不再回退到 SQLite）
     try:
         service = Agent2Service(
             store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,

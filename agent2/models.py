@@ -47,6 +47,7 @@ class ProfileChangeProposal(BaseModel):
     source_message_id: str | None = None
     basis: str
     status: Literal["open", "confirmed", "dismissed"] = "open"
+    affected_advice_topics: list[str] = Field(default_factory=list)
 
 
 class BankRelationship(BaseModel):

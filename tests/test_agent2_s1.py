@@ -21,7 +21,7 @@ class S1Base(unittest.TestCase):
     def make(self, records=None, clock=NOW, generator=None):
         knowledge = FixtureKnowledgeRead(records or fixture_records(), "test")
         self.knowledge = knowledge
-        store = Store()
+        store = Store.temporary()
         self.addCleanup(store.close)
         self.service = Agent2Service(store, knowledge, clock=lambda: clock, generator=generator)
         self.user = self.service.demo_login("alice")["user_id"]

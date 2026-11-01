@@ -19,7 +19,7 @@ SCENARIO_WORDS = {
     "dining": ("餐饮", "吃饭", "餐厅", "dining"),
     "travel": ("旅行", "旅游", "机票", "酒店", "travel"),
     "overseas": ("境外", "海外", "外币", "overseas"),
-    "mainland_china": ("内地", "大陆", "mainland"),
+    "mainland_china": ("内地", "大陆", "国内消费", "国内刷", "回国用卡", "回国刷卡", "mainland"),
     "tuition": ("学费", "tuition"),
     "retail": ("超市", "购物", "零售", "retail"),
 }
@@ -174,7 +174,29 @@ def extract_credit_card_facts(text: str):
                  if any(word.casefold() in lower for word in words)]
     if scenarios:
         facts["spending_scenarios"] = scenarios
-        basis["spending_scenarios"] = "、".join(scenarios)
+        basis["spending_scenarios"] = "、".join(
+            clarify.OPTION_LABELS["spending_scenarios"].get(code, code) for code in scenarios)
+    mainland_context = r"(?:内地|大陆|国内|回国)"
+    mobile_payment = r"(?:微信|支付宝|云闪付|二维码|扫码|手机支付)"
+    physical_payment = r"(?:实体卡|实卡|插卡|拍卡|刷卡)"
+    if (re.search(fr"{mainland_context}.{{0,12}}{mobile_payment}", text)
+            or re.search(fr"{mobile_payment}.{{0,12}}{mainland_context}", text)):
+        facts["spending_scenarios"] = list(dict.fromkeys([
+            *(facts.get("spending_scenarios") or []), "mainland_china"]))
+        basis["spending_scenarios"] = "内地消费"
+        facts["mainland_payment_method"] = "mobile_or_qr"
+        basis["mainland_payment_method"] = next(
+            match.group(0) for pattern in (
+                fr"{mainland_context}.{{0,12}}{mobile_payment}",
+                fr"{mobile_payment}.{{0,12}}{mainland_context}",
+            ) if (match := re.search(pattern, text)))
+    elif (re.search(fr"{mainland_context}.{{0,12}}{physical_payment}", text)
+          or re.search(fr"{physical_payment}.{{0,12}}{mainland_context}", text)):
+        facts["spending_scenarios"] = list(dict.fromkeys([
+            *(facts.get("spending_scenarios") or []), "mainland_china"]))
+        basis["spending_scenarios"] = "内地消费"
+        facts["mainland_payment_method"] = "physical_card"
+        basis["mainland_payment_method"] = "内地刷实体卡"
     if re.search(r"全日制.{0,4}学生|学生卡", text):
         facts["full_time_student"], basis["full_time_student"] = True, "全日制学生"
     premier_denied = re.search(
@@ -348,6 +370,36 @@ PREREQUISITES = {
 
 _STATUS_ORDER = {"eligible": 0, "needs_bank_assessment": 1, "unknown": 2, "ineligible": 3}
 
+_CARD_NAME_STOP_WORDS = {
+    "hsbc", "credit", "card", "visa", "mastercard", "world", "hong", "kong",
+    "dual", "currency",
+}
+
+
+def _named_card_products(text, products):
+    """Resolve explicit catalog product names without requiring database codes."""
+    folded = text.casefold()
+    matches = []
+    for product in products:
+        name = product.product_name.casefold()
+        aliases = [name]
+        aliases += [token for token in re.findall(r"[a-z0-9]+", name)
+                    if len(token) >= 3 and token not in _CARD_NAME_STOP_WORDS]
+        hit = max((alias for alias in aliases
+                   if (alias in folded if " " in alias else
+                       re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", folded))),
+                  key=len, default=None)
+        if hit:
+            matches.append((folded.find(hit), product))
+    return [product for _, product in sorted(matches, key=lambda item: item[0])]
+
+
+def _looks_like_card_product_question(text):
+    return bool(re.search(
+        r"怎么样|好不好|值得|适合我|适合谁|介绍|讲讲|评价|优缺点|"
+        r"年费|费用|权益|回赠|返现|积分|里程|申请条件|能不能申请|区别|对比|哪个好",
+        text, re.I))
+
 
 class CreditCardWorkflow:
     def __init__(self, repository: CreditCardRepository | None = None, clock=None):
@@ -359,14 +411,30 @@ class CreditCardWorkflow:
             rule_facts, rule_basis = extract_credit_card_facts(request.text)
         else:
             rule_facts, rule_basis = {}, {}
-        extracted = {**rule_facts, **request.understood_facts}
-        basis = {**rule_basis, **request.understood_basis}
+        # The rule extractor binds an explicit region to the phrase "信用卡".
+        # A model may recover fields the rules missed, but it must never turn
+        # “香港信用卡” into a US card merely because the Profile says US study.
+        extracted = {**request.understood_facts, **rule_facts}
+        basis = {**request.understood_basis, **rule_basis}
         facts = {**request.profile_values, **task.facts, **extracted}
         destination = facts.get("destination_country")
         if facts.get("application_region") is None and destination in DESTINATION_AS_REGION:
+            # Rendering default for this turn only.  It must stay out of the
+            # observed facts, otherwise the study destination leaks into a
+            # persisted card-application region and the two fields couple.
             facts["application_region"] = destination
-            extracted["application_region"] = destination
-            basis["application_region"] = "留学目的地"
+
+        # Product Q&A is a chat capability, not another recommendation run.
+        # It must answer “Red 卡怎么样 / 年费多少 / 和 Pulse 有什么区别”
+        # without collecting every preference used by the ranking engine.
+        capability_qa = any(
+            action.operation in {"explain", "compare", "assess", "how_to", "troubleshoot"}
+            for action in task.actions
+        )
+        if capability_qa or _looks_like_card_product_question(request.text):
+            overview = await self._product_question(task, request, facts, extracted, basis)
+            if overview is not None:
+                return overview
 
         # 「要不要办信用卡」：先确认意愿，再进入普通选卡流程。
         if facts.get("want_credit_card") is None and is_necessity_question(request.text):
@@ -653,6 +721,90 @@ class CreditCardWorkflow:
             payload={"recommendations": result.model_dump(mode="json"), "market": catalog.market,
                      "catalog": self._catalog_summary(catalog)},
             knowledge_read_id=catalog.read_id, observed_facts=extracted, observed_basis=basis,
+        )
+
+    async def _product_question(self, task, request, facts, extracted, basis):
+        region = facts.get("application_region")
+        markets = list(STUDY_MARKETS.get(region, (region,))) if region else ["CN-HK", "UK", "US"]
+        catalogs = []
+        for market in dict.fromkeys(market for market in markets if market):
+            try:
+                catalogs.append(await self.repository.active_products(market, self.clock()))
+            except CreditCardRepositoryError:
+                continue
+        products = [product for catalog in catalogs for product in catalog.products]
+        named = _named_card_products(request.text, products)
+        if not named:
+            return None
+
+        lines = []
+        evidence = []
+        product_payload = []
+        scenario_label = {
+            "online": "网购", "dining": "餐饮", "travel": "旅行",
+            "travel_and_transport": "旅行与交通", "overseas": "境外消费",
+            "mainland_china": "内地消费", "mainland_china_and_macau": "内地及澳门消费",
+            "retail": "零售消费", "general": "日常消费",
+        }
+        for product in named:
+            assessment = assess_eligibility(product, facts)
+            categories = list(dict.fromkeys(
+                scenario_label.get(rule.spend_category, rule.spend_category)
+                for rule in product.reward_rules if rule.spend_category))
+            fee = self._fee_text_from_product(product)
+            perks = self._perks_from_product(product)
+            if len(named) > 1:
+                lines.append(f"## {product.product_name}")
+            lines.extend([
+                f"产品特点：{'、'.join(categories[:4]) if categories else '日常消费'}相关奖赏；{perks}。",
+                f"年费及费用：{fee}。",
+            ])
+            restriction = self._restriction_text(assessment)
+            if restriction:
+                lines.append(f"申请条件：{restriction}。")
+            profile_scenarios = facts.get("spending_scenarios") or []
+            if isinstance(profile_scenarios, str):
+                profile_scenarios = [profile_scenarios]
+            raw_categories = {rule.spend_category for rule in product.reward_rules}
+            matched = [scenario_label.get(item, item) for item in profile_scenarios
+                       if item in raw_categories
+                       or (item == "mainland_china" and "mainland_china_and_macau" in raw_categories)]
+            if matched:
+                lines.append(f"结合您的情况：它与您关注的{'、'.join(matched)}比较匹配。")
+            elif categories:
+                lines.append(f"我的看法：如果您主要用于{'、'.join(categories[:2])}，这张卡值得比较；"
+                             "若消费重点不同，不应只看宣传回赠率。")
+            sources = list(dict.fromkeys(
+                [product.official_url] +
+                [item.source_url for item in [*product.reward_rules, *product.fees,
+                                              *product.benefits, *product.eligibility_rules]
+                 if item.source_url]))
+            evidence.extend(source for source in sources if source)
+            product_payload.append({
+                "card_id": product.card_id, "product_name": product.product_name,
+                "market": product.market, "annual_fee_text": fee,
+                "benefits_text": perks, "eligibility": assessment.model_dump(mode="json"),
+            })
+
+        summary = (f"{named[0].product_name} 的费用、权益和适用场景如下。"
+                   if len(named) == 1 else
+                   f"我按费用、权益和申请条件比较 {named[0].product_name} 与 {named[1].product_name}。")
+        return DomainResult(
+            task_id=task.task_id,
+            domain="credit_card",
+            status="answered" if evidence else "needs_verification",
+            answer=AnswerBody(
+                summary=summary,
+                steps=lines,
+                limitations=["产品条款和推广可能变化，申请前请再核对发卡机构官网。"],
+            ),
+            evidence_refs=list(dict.fromkeys(evidence)),
+            payload={"capability": "product_qa",
+                     "products": product_payload},
+            projection="chat_only",
+            knowledge_read_id="+".join(catalog.read_id for catalog in catalogs),
+            observed_facts=extracted,
+            observed_basis=basis,
         )
 
     async def _run_study(self, task, request, facts, extracted, basis):

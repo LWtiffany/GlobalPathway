@@ -52,6 +52,10 @@ class RunOutput:
     message_parts: list = field(default_factory=list)
     stage_ms: dict = field(default_factory=dict)
     assessments: list = field(default_factory=list)
+    # V2 has already applied domain-specific persistence policy.  Keep these
+    # candidates separate from conversational facts so inferred query context
+    # cannot be mistaken for a proposed Profile edit by the service layer.
+    profile_change_candidates: list = field(default_factory=list)
 
 
 class _Timer:

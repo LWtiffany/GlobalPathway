@@ -100,7 +100,7 @@ class PublishedRegion(unittest.TestCase):
         self.knowledge = Agent1KnowledgeRead(self.paths)
 
     def ask(self, fields, clock=None, knowledge=None):
-        store = Store()
+        store = Store.temporary()
         self.addCleanup(store.close)
         now = clock or datetime.now(timezone.utc)
         self.service = Agent2Service(store, knowledge or self.knowledge, clock=lambda: now)

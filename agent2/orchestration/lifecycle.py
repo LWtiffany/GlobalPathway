@@ -4,6 +4,10 @@ from .contracts import (AdviceUpdate, LifecycleActions, OrchestrationInput, Plan
                         ProfileChangeCandidate, TaskPlan, UnifiedAnswer)
 
 PROFILE_FIELDS_BY_DOMAIN = {
+    # Visa category inferred from a materials question is a query-scoped
+    # assumption.  A user must explicitly edit their profile to make it a
+    # durable field, so the visa domain emits no automatic Profile candidates.
+    "visa": set(),
     "credit_card": {"applicant_age", "applicant_age_band",
                     "annual_income_hkd", "annual_income_band_hkd", "asset_band",
                     "repayment_mode", "spending_scenarios", "study_card_focus",
@@ -29,7 +33,13 @@ class DefaultLifecyclePlanner:
         advice: list[AdviceUpdate] = []
         profile: list[ProfileChangeCandidate] = []
         plan_items: list[PlanItemCandidate] = []
-        for task, result in zip(plan.tasks, answer.domain_results):
+        suppressed: list[str] = []
+        tasks = {task.task_id: task for task in plan.tasks}
+        for result in answer.domain_results:
+            task = tasks.get(result.task_id)
+            if task is None:
+                suppressed.append(f"unknown_task:{result.task_id}")
+                continue
             # Bank-account answers remain useful while a decisive condition is
             # being collected: persist the focused product/materials/rules so
             # the plan card is populated next to the choice question.
@@ -37,7 +47,8 @@ class DefaultLifecyclePlanner:
                 task.domain == "bank_account" and result.status == "needs_input"
                 and bool(result.payload.get("candidate_results"))
             )
-            if result.status == "answered" or persist_partial_account:
+            if ((result.status == "answered" or persist_partial_account)
+                    and result.projection == "advice"):
                 advice.append(AdviceUpdate(
                     domain=task.domain,
                     topic=task.intent,
@@ -47,6 +58,13 @@ class DefaultLifecyclePlanner:
                              "evidence_refs": result.evidence_refs,
                              "domain_payload": result.payload},
                 ))
+            if result.projection == "chat_only":
+                suppressed.extend([
+                    f"{result.task_id}:advice_update",
+                    f"{result.task_id}:profile_change",
+                    f"{result.task_id}:plan_item",
+                ])
+                continue
             observed = {**task.facts, **result.observed_facts}
             basis = {**task.basis, **result.observed_basis}
             allowed = PROFILE_FIELDS_BY_DOMAIN.get(task.domain)
@@ -63,4 +81,5 @@ class DefaultLifecyclePlanner:
             for action in result.next_actions:
                 plan_items.append(PlanItemCandidate(text=action, source_task_id=task.task_id))
         return LifecycleActions(advice_updates=advice, profile_change_candidates=profile,
-                                plan_item_candidates=plan_items)
+                                plan_item_candidates=plan_items,
+                                suppressed_effects=suppressed)

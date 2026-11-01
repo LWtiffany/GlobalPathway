@@ -15,7 +15,7 @@ from agent2.models import AnswerBody, FollowUpQuestion, Notice
 
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
 from .bank_account_answer import MARKET_LABEL, build_answer, evidence
-from .bank_account_dialogue import (answer_mode_for, classify_dialogue_act,
+from .bank_account_dialogue import (answer_mode_for, dialogue_act_from_capabilities,
                                     exclusion_ids, infer_goal, load_account_state,
                                     pack_account_state, product_relationships, reduce_account_state,
                                     relationship_messages)
@@ -42,6 +42,40 @@ QUESTION_TEXT = {
     "qualifying_course_offer": "申请人有符合该账户条件的课程录取证明吗？",
     "guardian_present": "未成年开户人到网点时会有家长或监护人陪同吗？",
 }
+
+INCOME_MENTION = re.compile(r"年收入|年薪|税前收入|月收入|\bincome\b", re.I)
+
+# HSBC deposit accounts qualify Premier by relationship balance / assets, never
+# by annual income (see 016_hsbc_deposit_accounts_seed.sql: hk_premier_trb,
+# us_fee_balance). A user who volunteers income expecting it to unlock Premier
+# gets a grounded correction instead of a fabricated income threshold.
+PREMIER_INCOME_CLARIFICATION = {
+    "CN-HK": "补充一点：香港汇丰 Premier 的资格是按「总关系结余」判定的——最近三个月平均约 100 万港元，"
+             "或您已在其他国家/地区持有合资格的汇丰 Premier（International Premier）；"
+             "年收入本身不是官网列出的开户门槛。方便的话可以告诉我您大致能维持的存款/投资结余，我再据此判断。",
+    "US": "补充一点：美国汇丰 Premier 是按关系条件豁免月费的——合格存款及投资总关系余额达 10 万美元、"
+          "每月合资格直接入账达 5,000 美元、持有汇丰美国按揭，或为汇丰私人银行客户，满足其一即可；"
+          "年收入本身不是官网列出的门槛。",
+    "UK": "补充一点：已收录的英国汇丰账户公开条件里没有年收入门槛；是否需要 Premier 级服务，"
+          "以汇丰官网公布的关系条件为准。",
+}
+
+
+def _premier_income_note(region: str, assessments: list[dict], text: str,
+                         facts: dict) -> str | None:
+    """Correct an income-based Premier assumption, grounded in published criteria."""
+    income_stated = bool(INCOME_MENTION.search(text)) \
+        or facts.get("annual_income_hkd") is not None \
+        or facts.get("annual_income_band_hkd") is not None
+    if not income_stated:
+        return None
+    premier_in_focus = any(
+        item["product"].get("customer_segment") == "premier"
+        or "premier" in item["product"]["account_id"]
+        for item in assessments)
+    if not premier_in_focus:
+        return None
+    return PREMIER_INCOME_CLARIFICATION.get(region)
 
 
 def _writer_assessments(assessments: list[dict], labels: list[str]) -> list[dict]:
@@ -511,10 +545,11 @@ class BankAccountWorkflow:
         if not facts.get("account_region") and state.market in MARKET_LABEL:
             facts["account_region"] = state.market
             basis["account_region"] = "沿用本次开户咨询地区"
-        if not facts.get("account_region") and facts.get("destination_country") in MARKET_LABEL:
-            facts["account_region"] = facts["destination_country"]
-            basis["account_region"] = "按留学目的地暂定"
         region = facts.get("account_region")
+        if region is None and facts.get("destination_country") in MARKET_LABEL:
+            # Rendering default for this turn only.  Kept out of facts/basis so
+            # the study destination never becomes a persisted account region.
+            region = facts["destination_country"]
         region_assumed = False
         if region not in MARKET_LABEL:
             if "account_region" in request.asked_fields:
@@ -555,7 +590,8 @@ class BankAccountWorkflow:
         explicit_named = explicit_named_ids[0] if explicit_named_ids else None
         model_named = normalize_product(facts.get("account_product"), catalog["products"])
         named_product = explicit_named or model_named
-        act = classify_dialogue_act(request.text, named_product=named_product, state=state)
+        act = dialogue_act_from_capabilities(
+            task.actions, request.text, named_product=named_product, state=state)
         if act == "ask_necessity":
             # A direct necessity question must not be expanded into the catalog
             # just because it contains the phrase “开户”.
@@ -624,7 +660,7 @@ class BankAccountWorkflow:
             account_id = item["product"]["account_id"]
             stored_relationships = [row for row in catalog.get("relations", [])
                                     if row["source_account_id"] == account_id]
-            item["relationships"] = stored_relationships or product_relationships(account_id)
+            item["relationships"] = [*stored_relationships, *product_relationships(account_id)]
         broad_selection = "product_selection" in labels and referent is None
         selection_limited = broad_selection and len(catalog["products"]) < 2
         if act == "ask_necessity":
@@ -652,6 +688,12 @@ class BankAccountWorkflow:
             verified = AnswerBody(
                 summary=f"（先按香港回答）{verified.summary}",
                 steps=[assumed_note, *verified.steps],
+                materials=verified.materials, limitations=verified.limitations)
+        income_note = _premier_income_note(region, assessments, request.text, facts)
+        if income_note and income_note not in verified.steps:
+            verified = AnswerBody(
+                summary=verified.summary,
+                steps=[*verified.steps, income_note],
                 materials=verified.materials, limitations=verified.limitations)
         body = verified
         model_version = "account-seed-rules-1"

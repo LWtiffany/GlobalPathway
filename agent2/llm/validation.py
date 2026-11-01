@@ -47,10 +47,29 @@ def validate_understanding(result: UnderstandingResult, request: OrchestrationIn
         evidence = item.evidence.strip()
         if not evidence or evidence.casefold() not in text_folded:
             continue
-        if value_validator(item.field_code, item.value):
+        value = item.value
+        if item.update_mode != "replace":
+            # Incremental edits are meaningful only for multi-value fields.
+            # Merge against server-side state; profile values are deliberately
+            # not sent to the model.
+            if not isinstance(value, list):
+                continue
+            current = request.profile_values.get(item.field_code) or []
+            if not isinstance(current, list):
+                continue
+            if item.update_mode == "add":
+                value = list(dict.fromkeys([*current, *value]))
+            else:
+                removed = set(value)
+                value = [entry for entry in current if entry not in removed]
+                if not value:
+                    # Clearing a durable field requires an explicit clear flow;
+                    # do not smuggle an invalid empty multi-select through facts.
+                    continue
+        if value_validator(item.field_code, value):
             continue
         if item.field_code not in facts or item.confidence > facts[item.field_code][1]:
-            facts[item.field_code] = (item.value, item.confidence)
+            facts[item.field_code] = (value, item.confidence)
             basis[item.field_code] = evidence
     return UnderstandingValidation(
         {code: value for code, (value, _) in facts.items()}, basis,

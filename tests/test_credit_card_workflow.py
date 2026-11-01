@@ -1,14 +1,12 @@
 import asyncio
 import json
 import re
-import sqlite3
-import tempfile
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 
 from agent2 import clarify
+from agent2.orchestration import build_default_workflow
 from agent2.orchestration.contracts import DomainTask, OrchestrationInput
 from agent2.orchestration.domains.credit_card import CreditCardWorkflow, extract_credit_card_facts
 from agent2.orchestration.domains.credit_card_engine import (
@@ -121,6 +119,36 @@ TASK = DomainTask(task_id="task-1", domain="credit_card", intent="credit_card")
 
 
 class CreditCardWorkflowTests(unittest.TestCase):
+    def test_named_product_question_answers_without_running_recommendation_intake(self):
+        red = product("red", "online", "0.04").model_copy(update={
+            "product_name": "HSBC Red Credit Card",
+            "benefits": [CardBenefit(
+                benefit_id="red-online", benefit_type="rewards",
+                benefit_name="Online merchant offers",
+                source_url="https://example.com/red", last_verified_at=NOW,
+            )],
+        })
+        result = asyncio.run(CreditCardWorkflow(
+            FakeRepository([red]), clock=lambda: NOW).run(
+            TASK, OrchestrationInput(
+                text="你觉得 Red 信用卡怎么样？", profile_id="p1", profile_version=1)))
+
+        self.assertEqual("answered", result.status)
+        self.assertEqual([], result.follow_up_questions)
+        self.assertEqual("chat_only", result.projection)
+        self.assertEqual("product_qa", result.payload["capability"])
+        blob = "\n".join([result.answer.summary, *result.answer.steps])
+        self.assertIn("HSBC Red Credit Card", blob)
+        self.assertIn("网购", blob)
+        self.assertIn("年费", blob)
+
+        output = build_default_workflow(credit_card_repository=FakeRepository([red])).run(
+            OrchestrationInput(
+                text="你觉得 Red 信用卡怎么样？", profile_id="p1", profile_version=1,
+                conversation_intents=["credit_card"],
+            ))
+        self.assertEqual([], output.lifecycle.advice_updates)
+
     def test_card_explanations_are_chinese_while_official_name_is_unchanged(self):
         card = product("us_card", "travel", "0.02").model_copy(update={
             "market": "US",
@@ -830,6 +858,13 @@ class CreditCardFactExtractionTests(unittest.TestCase):
         self.assertEqual("usually_carry", facts["repayment_mode"])
         self.assertEqual(["overseas", "mainland_china"], facts["spending_scenarios"])
 
+    def test_natural_mainland_mobile_spend_maps_to_profile_ontology(self):
+        facts, basis = extract_credit_card_facts("以后主要回国用卡，在国内都用微信和支付宝")
+
+        self.assertEqual(["mainland_china"], facts["spending_scenarios"])
+        self.assertEqual("内地消费", basis["spending_scenarios"])
+        self.assertEqual("mobile_or_qr", facts["mainland_payment_method"])
+
     def test_region_requires_credit_card_intent_nearby(self):
         facts, _ = extract_credit_card_facts("我在香港工作生活，收入稳定")
 
@@ -1208,7 +1243,7 @@ class CreditCardEngineEdgeCaseTests(unittest.TestCase):
 
 class CreditCardServiceIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         self.repository = FakeRepository([product("online_card", "online", "0.04")])
         self.service = Agent2Service(self.store, FixtureKnowledgeRead.from_file(),
@@ -1257,13 +1292,17 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
                  "主要权益：机场贵宾室礼遇", "其他选择：HSBC Premier World Mastercard",
                  "推荐理由：更希望控制年费时可比较。", "年费：95 美元"]
         with self.store.transaction() as db:
-            db.execute("INSERT INTO message_index VALUES (?,?,?,?,?,?,?,?,?)",
+            db.execute("""INSERT INTO message_index
+                (message_id, conversation_id, seq, role, client_message_id, reply_to, body_json, status, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
                        ("legacy-card-answer", self.conversation, 1, "assistant", None, None,
                         json.dumps({"status": "answered", "answer": {"steps": steps}}),
                         "delivered", NOW.isoformat()))
             old_payload = json.dumps({"summary": "已推荐两张美国信用卡", "recommendations": {},
                                       "market": "US"})
-            db.execute("INSERT INTO advice_current VALUES (?,?,?,?,?,'current',?)",
+            db.execute("""INSERT INTO advice_current
+                (profile_id,topic,version,source_message_id,payload_json,status,updated_at)
+                VALUES (?,?,?,?,?,'current',?)""",
                        (profile_id, "credit_card", 1, "legacy-card-answer", old_payload,
                         NOW.isoformat()))
 
@@ -1303,6 +1342,91 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
         proposal_fields = {item.field_code for item in self.service.list_proposals(self.user, profile_id)}
         self.assertEqual({"applicant_age", "annual_income_hkd"}, proposal_fields)
         self.assertEqual(1, self.service.get_profile(self.user, profile_id).version)
+
+    def test_natural_profile_update_proposes_change_and_recommends_again(self):
+        self.repository = FakeRepository([
+            product("online_card", "online", "0.04"),
+            product("mainland_card", "mainland_china", "0.05"),
+        ])
+        self.service.v2_workflow = Agent2Service(
+            self.store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,
+            credit_card_repository=self.repository,
+            llm_components=LlmComponents()).v2_workflow
+        profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
+        self.service.patch_profile(
+            self.user, profile_id, expected_version=1, set_fields={
+                "destination_country": "CN-HK",
+                "applicant_age": 30,
+                "annual_income_hkd": 300000,
+                "hk_resident": True,
+                "hsbc_premier_path": "not_applicable",
+                "repayment_mode": "full",
+                "spending_scenarios": ["online"],
+                "monthly_card_spend_band_hkd": "5k_10k",
+                "reward_preference": "no_preference",
+            })
+
+        first = self.ask("推荐信用卡", "profile-update-1")
+        self.assertEqual("answered", first.status)
+        self.assertIn("Online Card", "\n".join(first.answer.steps))
+
+        updated = self.ask(
+            "以后主要回国用卡，在国内都用微信和支付宝",
+            "profile-update-2",
+        )
+        self.assertEqual("answered", updated.status)
+        # When the turn generates proposals, only the proposal confirmation
+        # is shown — not the advice. The advice will be regenerated after
+        # the user confirms the proposal and clicks "regenerate".
+        self.assertEqual([], updated.answer.steps)
+        proposals = {item.field_code: item for item in updated.profile_change_proposals}
+        self.assertEqual(["mainland_china"], proposals["spending_scenarios"].new_value)
+        self.assertEqual("mobile_or_qr", proposals["mainland_payment_method"].new_value)
+
+        version_before = self.service.list_advice(
+            self.user, profile_id)["advice"]["credit_card"]["version"]
+        profile = self.service.confirm_proposals(
+            self.user,
+            [item.proposal_id for item in proposals.values()],
+            expected_version=self.service.get_profile(self.user, profile_id).version,
+        )
+        self.assertEqual(["mainland_china"], profile.confirmed("spending_scenarios"))
+        self.assertEqual("mobile_or_qr", profile.confirmed("mainland_payment_method"))
+        stale = self.service.list_advice(
+            self.user, profile_id)["advice"]["credit_card"]
+        self.assertEqual("stale", stale["status"])
+        self.assertEqual(version_before, stale["version"])
+        self.assertEqual("profile_changed", stale["stale_reason"]["reason"])
+        self.assertIn("spending_scenarios", stale["stale_reason"]["changed_fields"])
+        self.assertIn("spending_scenarios", stale["dependency_snapshot"]["fields"])
+        self.assertEqual(["credit_card"], stale["regeneration_recipe"]["intents"])
+
+        refreshed = self.service.refresh_advice(self.user, profile_id, "credit_card")
+        self.assertTrue(refreshed["refreshed"])
+        self.assertEqual("succeeded", refreshed["refresh_job"]["status"])
+        current = self.service.list_advice(
+            self.user, profile_id)["advice"]["credit_card"]
+        self.assertEqual("current", current["status"])
+        self.assertGreater(current["version"], version_before)
+        jobs = self.service.list_refresh_jobs(self.user, profile_id)["jobs"]
+        self.assertEqual("succeeded", jobs[0]["status"])
+
+        selected_now = self.ask("以后改成主要网上购物", "profile-update-3")
+        spending = next(item for item in selected_now.profile_change_proposals
+                        if item.field_code == "spending_scenarios")
+        before_selected_refresh = current["version"]
+        self.service.confirm_proposals(
+            self.user, [spending.proposal_id],
+            expected_version=self.service.get_profile(self.user, profile_id).version,
+            refresh_topics=["credit_card"],
+        )
+        selected_current = self.service.get_advice(self.user, profile_id, "credit_card")
+        self.assertEqual("current", selected_current["status"])
+        self.assertGreater(selected_current["version"], before_selected_refresh)
+        self.assertEqual(
+            "succeeded",
+            self.service.list_refresh_jobs(self.user, profile_id)["jobs"][0]["status"],
+        )
 
     def test_structured_follow_up_choices_are_saved_to_profile_atomically(self):
         first = self.ask("想申请信用卡", "choice-1")
@@ -1375,51 +1499,27 @@ class CreditCardServiceIntegrationTests(unittest.TestCase):
 
 class ProfileSchemaTests(unittest.TestCase):
     def test_schema_separates_auth_sessions_from_one_to_one_chat_sessions(self):
-        store = Store()
+        store = Store.temporary()
         self.addCleanup(store.close)
-        tables = {row["name"] for row in store.all(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {row["table_name"] for row in store.all(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema()")}
         self.assertTrue({"auth_sessions", "sessions", "profile_field_values",
                          "profile_field_definitions", "profile_field_events",
                          "bank_relationships", "bank_relationship_events",
                          "bank_relationship_proposals", "advice_scoped_current"} <= tables)
-        session_columns = {row["name"] for row in store.all("PRAGMA table_info(sessions)")}
+        session_columns = {row["column_name"] for row in store.all(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name='sessions'")}
         self.assertIn("session_id", session_columns)
         self.assertNotIn("token", session_columns)
-        policy_columns = {row["name"] for row in store.all(
-            "PRAGMA table_info(profile_field_definitions)")}
+        policy_columns = {row["column_name"] for row in store.all(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name='profile_field_definitions'")}
         self.assertTrue({"storage_class", "confirmation_mode", "scope"} <= policy_columns)
 
-    def test_legacy_profile_fields_are_migrated(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "legacy.sqlite3"
-            db = sqlite3.connect(path)
-            db.executescript("""
-                CREATE TABLE users (user_id TEXT PRIMARY KEY, external_subject TEXT NOT NULL UNIQUE,
-                    display_name TEXT NOT NULL, synthetic INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active');
-                CREATE TABLE sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL);
-                CREATE TABLE profiles (profile_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, version INTEGER NOT NULL,
-                    synthetic INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-                CREATE TABLE profile_fields (profile_id TEXT NOT NULL, field_code TEXT NOT NULL, value_json TEXT,
-                    status TEXT NOT NULL, source TEXT, confirmed_at TEXT, PRIMARY KEY(profile_id, field_code));
-                CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
-                    profile_id TEXT NOT NULL, profile_version INTEGER NOT NULL, created_at TEXT NOT NULL);
-                INSERT INTO users VALUES ('u1','demo:u1','U1',1,'active');
-                INSERT INTO profiles VALUES ('p1','u1',1,1,'2026-01-01','2026-01-01');
-                INSERT INTO profile_fields VALUES ('p1','repayment_mode','\"full\"','confirmed','user','2026-01-01');
-                INSERT INTO conversations VALUES ('c1','u1','p1',1,'2026-01-01');
-            """)
-            db.commit()
-            db.close()
-            store = Store(path)
-            try:
-                migrated = store.one("SELECT * FROM profile_field_values WHERE profile_id='p1' "
-                                     "AND field_code='repayment_mode'")
-                self.assertEqual((migrated["source_type"], migrated["field_version"]), ("user_edit", 1))
-                self.assertEqual("c1", store.one(
-                    "SELECT session_id FROM sessions WHERE profile_id='p1'")["session_id"])
-            finally:
-                store.close()
+    def test_runtime_store_has_no_local_path_constructor(self):
+        with self.assertRaises(TypeError):
+            Store("legacy.sqlite3")
 
 
 def student_card_product():
@@ -1443,7 +1543,7 @@ class CreditCardStudentServiceIntegrationTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         self.repository = FakeRepository([
             product("normal_card", "online", "0.04", income=60000),
@@ -1535,7 +1635,7 @@ class CreditCardNonResidentServiceIntegrationTests(unittest.TestCase):
     """非香港居民：不再整体拒答，继续推荐并披露获批几率很低（真实 post_message 链路）。"""
 
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         card = product("resident_card", "online", "0.04")
         card = card.model_copy(update={"eligibility_rules": list(card.eligibility_rules) + [

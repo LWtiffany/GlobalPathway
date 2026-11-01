@@ -20,6 +20,7 @@ class FactCandidate(StrictModel):
     value: FactValue
     confidence: float = Field(ge=0, le=1)
     evidence: str = Field(min_length=1)
+    update_mode: Literal["replace", "add", "remove"] = "replace"
 
 
 class UnderstandingResult(StrictModel):

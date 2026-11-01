@@ -55,6 +55,16 @@ class Agent2OrchestrationTests(unittest.TestCase):
         self.assertEqual(["credit_card"],
                          [item.domain for item in output.snapshot.task_plan.tasks])
 
+    def test_second_layer_emits_multiple_capabilities_for_one_domain(self):
+        output = build_default_workflow().run(
+            self.request("Red Card 和 Pulse Card 哪个好，年费和回赠分别怎么样？"))
+
+        tasks = output.snapshot.task_plan.tasks
+        self.assertEqual(["credit_card"], [task.domain for task in tasks])
+        operations = {action.operation for action in tasks[0].actions}
+        self.assertTrue({"compare", "explain"} <= operations)
+        self.assertTrue(any(action.entity_mentions for action in tasks[0].actions))
+
     def test_structured_credit_card_choices_cannot_create_fx_intent(self):
         request = OrchestrationInput(
             text="每月全额还款；网购；境外消费；内地消费",
@@ -192,6 +202,26 @@ class Agent2OrchestrationTests(unittest.TestCase):
         for line in card_steps:
             self.assertIn(line, steps)
         self.assertGreater(len(steps), 3 + len(card_steps))
+
+    def test_three_domain_answer_includes_non_blocking_journey(self):
+        from agent2.orchestration.contracts import DomainTask
+        plan = TaskPlan(tasks=[
+            DomainTask(task_id="card", domain="credit_card", intent="credit_card"),
+            DomainTask(task_id="fx", domain="fx", intent="remittance_tuition"),
+            DomainTask(task_id="visa", domain="visa", intent="visa_documents"),
+        ], planner_version="test")
+        results = [DomainResult(
+            task_id=task.task_id, domain=task.domain, status="answered",
+            answer=AnswerBody(summary=f"{task.domain} answer"), evidence_refs=[task.task_id],
+        ) for task in plan.tasks]
+        answer = asyncio.run(DefaultResponseComposer().compose(
+            plan, QualityReport(results=results, gate_version="test")))
+
+        self.assertEqual(["visa", "fx", "credit_card"],
+                         [step.domain for step in answer.journey])
+        self.assertIn("## 建议推进顺序", answer.answer.steps)
+        self.assertTrue(answer.journey[0].can_run_in_parallel)
+        self.assertFalse(answer.journey[-1].can_run_in_parallel)
 
     def test_necessity_question_answers_need_before_advice(self):
         from agent2.orchestration.composer import is_necessity_question

@@ -2,24 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import re
-import sqlite3
 import uuid
 from datetime import date, datetime
-from pathlib import Path
 
 import anyio
 
 from agent1 import storage
-
-ROOT = Path(__file__).resolve().parents[3]
-MIGRATIONS = ROOT / "agent1" / "migrations"
-SOURCES = MIGRATIONS / "sources"
-TABLES = (
-    "ACCOUNT_PRODUCT", "ACCOUNT_OPENING_ROUTE", "ACCOUNT_RULE",
-    "ACCOUNT_REQUIRED_DOCUMENT", "ACCOUNT_FEE",
-)
 
 def _query_tokens(text: str) -> set[str]:
     """Cheap lexical tokens for chunk ranking: CJK bigrams, latin words, numbers."""
@@ -238,62 +227,3 @@ class RdsBankAccountRepository:
                 "products": products, "routes": routes, "rules": rules,
                 "documents": documents, "fees": fees, "features": features,
                 "relations": relations}
-
-
-class SeedBankAccountRepository:
-    """Deterministic local adapter for tests; production/customer service uses RDS."""
-    read_id = "hsbc-account-seed-016"
-
-    def __init__(self, migration_dir: Path = MIGRATIONS):
-        try:
-            db = sqlite3.connect(":memory:")
-            db.row_factory = sqlite3.Row
-            db.execute("PRAGMA foreign_keys=ON")
-            db.executescript((migration_dir / "016_hsbc_deposit_accounts.sql").read_text(encoding="utf-8"))
-            db.executescript((migration_dir / "016_hsbc_deposit_accounts_seed.sql").read_text(encoding="utf-8"))
-            self._tables = {
-                table: [dict(row) for row in db.execute(f"SELECT * FROM {table}")]
-                for table in TABLES
-            }
-            db.close()
-            manifest = json.loads(
-                (SOURCES / "account_source_documents.json").read_text(encoding="utf-8"))
-            self._source_docs = manifest["documents"]
-        except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
-            raise BankAccountRepositoryError("HSBC account seed unavailable") from exc
-
-    async def read(self, market: str) -> dict:
-        products = [row for row in self._tables["ACCOUNT_PRODUCT"]
-                    if row["market"] == market and row["product_status"] == "ACTIVE"]
-        ids = {row["account_id"] for row in products}
-        return {
-            "read_id": self.read_id,
-            "market": market,
-            "products": products,
-            "routes": [row for row in self._tables["ACCOUNT_OPENING_ROUTE"]
-                       if row["account_id"] in ids],
-            "rules": [row for row in self._tables["ACCOUNT_RULE"]
-                      if row["account_id"] in ids],
-            "documents": [row for row in self._tables["ACCOUNT_REQUIRED_DOCUMENT"]
-                          if row["account_id"] in ids],
-            "fees": [row for row in self._tables["ACCOUNT_FEE"]
-                     if row["account_id"] in ids],
-            "relations": [],
-        }
-
-    async def read_source_chunks(self, account_ids: list[str], query: str,
-                                 limit: int = 4) -> list[dict]:
-        rows = []
-        for doc in self._source_docs:
-            if doc["account_key"] not in account_ids:
-                continue
-            for chunk in doc["chunks"]:
-                rows.append({
-                    "chunk_id": f"{doc['doc_id']}#{chunk['seq']:03d}",
-                    "doc_id": doc["doc_id"], "account_id": doc["account_key"],
-                    "seq": chunk["seq"], "heading": chunk["heading"],
-                    "content": chunk["content"], "title": doc["title"],
-                    "source_url": doc["source_url"], "oss_bucket": "ai-campaign-oss-team3",
-                    "oss_key": f"documents/hsbc/{doc['doc_id']}.md",
-                })
-        return rank_chunks(rows, query, limit)

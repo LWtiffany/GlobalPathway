@@ -56,6 +56,17 @@ class ConditionTableTests(unittest.TestCase):
         self.assertTrue(result.ready)
         self.assertEqual({f.source for f in result.facts.values()}, {"conversation"})
 
+    def test_workflow_only_conversation_fact_is_ignored(self):
+        result = clarify.assess(
+            "visa_documents",
+            profile(),
+            {"fx_mode": "overseas"},
+        )
+        self.assertEqual("needs_input", result.state)
+        self.assertNotIn("fx_mode", result.facts)
+        self.assertNotIn("fx_mode", result.missing_fields)
+        self.assertNotIn("fx_mode", [question.field for question in result.questions])
+
     def test_nice_to_have_is_an_assumption_gap_not_a_question(self):
         result = clarify.assess("visa_documents", profile(destination_country="UK", visa_category="student_visa"))
         self.assertEqual(result.questions, [])

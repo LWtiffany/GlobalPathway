@@ -257,7 +257,7 @@ class ServiceTaskPlanRoutingTests(unittest.TestCase):
     """Service 入口按 TaskPlan 进信用卡，不依赖 classify 单标签恰好是 credit_card。"""
 
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         self.service = Agent2Service(
             self.store, FixtureKnowledgeRead.from_file(),
@@ -322,7 +322,7 @@ class ServiceLlmUnionRoutingTests(unittest.TestCase):
         from agent2.llm.schemas import UnderstandingResult
         from tests.llm.test_workflow import FakeUnderstanding
 
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         self.understanding = FakeUnderstanding(UnderstandingResult(intents=["credit_card"]))
         self.service = Agent2Service(
@@ -442,7 +442,7 @@ class ServiceSessionStickinessTests(unittest.TestCase):
     """截图回归：开户建议后的省略续接轮必须留在 account 话题。"""
 
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
 
     def _start(self, results):

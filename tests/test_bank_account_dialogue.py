@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from agent2.knowledge import FixtureKnowledgeRead
 from agent2.llm.factory import LlmComponents
-from agent2.orchestration.domains.bank_account_repository import SeedBankAccountRepository
+from agent2.orchestration.domains.bank_account_repository import RdsBankAccountRepository
 from agent2.service import Agent2Service, ServiceError
 from agent2.store import Store
 
@@ -20,7 +20,7 @@ class FullUsCatalogRepository:
     """Self-contained six-product catalog mirroring the production US shape."""
 
     async def read(self, market):
-        catalog = await SeedBankAccountRepository().read(market)
+        catalog = await RdsBankAccountRepository().read(market)
         if market != "US":
             return catalog
         base = catalog["products"][0]
@@ -44,7 +44,7 @@ class FullUsCatalogRepository:
 
 class BankAccountDialogueServiceTests(unittest.TestCase):
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         self.service = Agent2Service(
             self.store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,

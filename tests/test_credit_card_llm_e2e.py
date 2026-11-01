@@ -28,7 +28,7 @@ def _llm_available():
 @unittest.skipUnless(_llm_available(), "LLM 未配置（缺 AGENT2_LLM_API_KEY/BASE_URL），跳过 LLM 端到端测试")
 class CreditCardLlmEndToEndTests(unittest.TestCase):
     def setUp(self):
-        self.store = Store()  # 内存，进程结束即销毁
+        self.store = Store.temporary()  # 隔离的临时 PostgreSQL schema，清理时销毁
         self.addCleanup(self.store.close)
         self.service = Agent2Service(
             self.store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,
@@ -52,7 +52,7 @@ class CreditCardLlmEndToEndTests(unittest.TestCase):
             "SELECT model_version, prompt_version FROM answer_runs WHERE message_id=?",
             (first.message_id,))
         self.assertIn("qwen", run["model_version"])
-        self.assertIn("understand-user-v3", run["prompt_version"])
+        self.assertIn("understand-user-v5", run["prompt_version"])
 
     def test_full_chain_follow_up_then_llm_written_recommendation(self):
         """追问 → 纯规则推荐 → LLM 改写，整条链路跑通。"""

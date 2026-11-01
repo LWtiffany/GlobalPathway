@@ -6,7 +6,7 @@ from agent2.intent import is_investment_account
 from agent2.models import AnswerBody, FollowUpQuestion, Notice
 from agent2.runner import SCOPE_BOUNDARY
 
-from .contracts import QualityReport, TaskPlan, UnifiedAnswer
+from .contracts import JourneyStep, QualityReport, TaskPlan, UnifiedAnswer
 
 DOMAIN_LABEL = {"visa": "签证", "fx": "外汇与汇款", "bank_account": "银行开户", "credit_card": "信用卡"}
 MATERIAL_TAG = {"required": "必需", "conditional": "视情况", "unverified": "待核实"}
@@ -54,6 +54,33 @@ _NECESSITY_VERDICT = {
         "留学通常需要办理相应学生签证；是否已持有有效签证以您的行程和官方要求为准。"
     ),
 }
+
+_JOURNEY_ORDER = {"visa": 10, "bank_account": 20, "fx": 30, "credit_card": 40}
+_JOURNEY_GUIDANCE = {
+    "visa": "先确认签证类别与材料；它会影响后续时间安排。",
+    "bank_account": "确认可开户地区与账户条件，为收付款和后续办卡做准备。",
+    "fx": "核对收款信息、购汇额度和材料；可与签证、开户准备并行。",
+    "credit_card": "在申请地区、收入与银行关系明确后再选卡，减少无效申请。",
+}
+
+
+def compose_journey(plan: TaskPlan, report: QualityReport) -> list[JourneyStep]:
+    """Build guidance without turning recommendations into hard dependencies."""
+    if len(plan.tasks) < 3:
+        return []
+    result_by_task = {item.task_id: item for item in report.results}
+    tasks = sorted(plan.tasks, key=lambda item: (_JOURNEY_ORDER[item.domain], item.task_id))
+    journey = []
+    for index, task in enumerate(tasks, 1):
+        result = result_by_task.get(task.task_id)
+        suffix = "" if result is None or result.status == "answered" else "（本轮仍需补充或核实）"
+        journey.append(JourneyStep(
+            order=index, task_id=task.task_id, domain=task.domain,
+            label=DOMAIN_LABEL[task.domain],
+            guidance=_JOURNEY_GUIDANCE[task.domain] + suffix,
+            can_run_in_parallel=task.domain in {"visa", "bank_account", "fx"},
+        ))
+    return journey
 
 
 def is_necessity_question(text: str) -> bool:
@@ -136,10 +163,14 @@ class DefaultResponseComposer:
 
         ask_need = is_necessity_question(user_text)
         domains = [item.domain for item in report.results]
+        journey = compose_journey(plan, report)
 
         if len(report.results) == 1 and not plan.unsupported_intents:
             result = report.results[0]
-            effective_status = "needs_input" if result.follow_up_questions else result.status
+            # A workflow may answer from currently known facts and offer optional
+            # questions that further narrow conditional items.  The presence of
+            # such questions alone must not turn an answered result into a block.
+            effective_status = result.status
             limitations = list(result.answer.limitations)
             if plan.tasks and plan.tasks[0].source == "llm":
                 limitations.append(
@@ -165,8 +196,7 @@ class DefaultResponseComposer:
                 notices=result.notices, follow_up_questions=result.follow_up_questions,
             )
 
-        statuses = ["needs_input" if item.follow_up_questions else item.status
-                    for item in report.results]
+        statuses = [item.status for item in report.results]
         if "needs_input" in statuses:
             status = "needs_input"
         elif all(item == "answered" for item in statuses):
@@ -182,6 +212,10 @@ class DefaultResponseComposer:
         labels = []
         if ask_need:
             sections.extend(necessity_preamble(domains))
+        if journey:
+            sections.append("## 建议推进顺序")
+            sections.extend(
+                f"{step.order}. {step.label}：{step.guidance}" for step in journey)
         for item in report.results:
             label = DOMAIN_LABEL[item.domain]
             labels.append(label)
@@ -242,4 +276,5 @@ class DefaultResponseComposer:
             next_actions=list(dict.fromkeys(a for item in report.results for a in item.next_actions)),
             notices=notices,
             follow_up_questions=follow_ups,
+            journey=journey,
         )

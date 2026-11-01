@@ -6,7 +6,7 @@
 
 数据安全:
     - 产品数据来自 RDS 的 CREDIT_CARD 系列表，只读，零写入。
-    - 会话/档案使用内存 SQLite，进程结束即销毁，不留任何本地文件。
+    - 会话/档案使用远程 PostgreSQL；演示数据与正式数据使用相同存储协议。
     - 依赖 SSH 隧道: 先跑 scripts/start_team03_pg_tunnel.ps1 打通 127.0.0.1:15432。
 
 设计说明:
@@ -162,7 +162,7 @@ def main():
     scenario_text = "、".join(scenarios)
     text_b = args.text or "我在香港想办信用卡，年薪30万，每月全额还款，主要网购和旅行"
 
-    store = Store()  # 内存 SQLite，进程结束即销毁
+    store = Store()  # 远程 PostgreSQL（不再回退到 SQLite）
     try:
         service = Agent2Service(
             store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,

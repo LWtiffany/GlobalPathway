@@ -8,7 +8,7 @@ from .contracts import StructuredModel
 from .prompts import PromptRenderer
 from .schemas import UnderstandingResult
 
-PROMPT_VERSION = "understand-user-v3"
+PROMPT_VERSION = "understand-user-v5"
 
 
 class LlmUserUnderstanding:

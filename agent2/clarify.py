@@ -268,6 +268,29 @@ OPTION_LABELS = {
     "hk_sponsor": {"institution": "录取院校", "individual": "个人"},
 }
 
+# Extra semantic guidance is consumed by the small understanding model only.
+# Customer-facing surfaces continue to use the labels/options above; internal
+# enum codes never need to appear in copy shown to the user.
+UNDERSTANDING_HINTS = {
+    "annual_income_hkd": "年薪、年收入、税前年收入；中文“万”按 10000 换算为港币金额",
+    "spending_scenarios": (
+        "信用卡主要用途；国内消费、回内地刷卡、回国用卡映射为 mainland_china，"
+        "网购映射为 online，吃饭映射为 dining，出游/机酒映射为 travel"
+    ),
+    "mainland_payment_method": (
+        "只描述中国内地消费的付款习惯；微信/支付宝/云闪付/二维码属于 mobile_or_qr，"
+        "刷实体卡属于 physical_card"
+    ),
+    "repayment_mode": "每月还清/不欠款属于 full；偶尔分期属于 sometimes_carry；常分期或最低还款属于 usually_carry",
+    "reward_preference": (
+        "现金回赠/返现属于 cashback；航空里数属于 miles；积分属于 points；"
+        "都可以、没有偏好、按价值比较属于 no_preference；这是单选字段"
+    ),
+    "application_region": "申请信用卡的地区，不等于留学目的地",
+    "account_region": "开银行账户的地区，不等于留学目的地",
+    "applicant_identity": "实际申请产品的人，不一定是当前提问者",
+}
+
 
 def field_catalog():
     """Field metadata for clients: label, input kind, options and the follow-up question."""
@@ -280,7 +303,8 @@ def field_catalog():
             [{"value": True, "label": "是"}, {"value": False, "label": "否"}] if check is _bool else []
         kind = "multi_enum" if getattr(check, "multi", False) else "enum" if values else kinds.get(check, "text")
         catalog[code] = {"label": label_zh, "kind": kind, "options": options, "question": question,
-                         "max_selections": getattr(check, "max_items", None)}
+                         "max_selections": getattr(check, "max_items", None),
+                         "understanding_hint": UNDERSTANDING_HINTS.get(code)}
     return catalog
 
 
@@ -370,6 +394,46 @@ def field_definitions():
                         "freshness_days": VOLATILE_FIELDS.get(code), "ask_priority": 0,
                         "ask_only_when_needed": True}
     return result
+
+
+# Exact-value and band variants of the same underlying condition route to the
+# same domains; field_definitions only tags the band form for some fields.
+_FIELD_DOMAIN_ALIASES = {
+    "annual_income_hkd": "annual_income_band_hkd",
+    "applicant_age": "applicant_age_band",
+}
+
+
+def domains_for_fields(codes) -> list[str]:
+    """Domains whose advice depends on any of the given field codes."""
+    definitions = field_definitions()
+    domains: set[str] = set()
+    for code in codes:
+        for lookup in (code, _FIELD_DOMAIN_ALIASES.get(code)):
+            if lookup and lookup in definitions:
+                domains.update(definitions[lookup].get("domains") or ())
+    return sorted(domains)
+
+
+_DOMAIN_ADVICE_TOPIC = {
+    "credit_card": "credit_card",
+    "bank_account": "account",
+    "hsbc_account": "account",
+    "visa": "visa",
+    "visa_documents": "visa",
+    "fx": "remittance",
+    "remittance_tuition": "remittance",
+    "remittance_living": "remittance",
+    "overseas_spending": "remittance",
+}
+
+
+def advice_topics_for_fields(codes) -> list[str]:
+    """Saved advice cards whose inputs include any changed Profile field."""
+    return sorted({
+        topic for domain in domains_for_fields(codes)
+        if (topic := _DOMAIN_ADVICE_TOPIC.get(domain))
+    })
 
 
 @dataclass(frozen=True)
@@ -474,6 +538,12 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
             facts[code] = Fact(item.value, "profile")
     for code, value in (stated or {}).items():
         if value is None:
+            continue
+        # Conversation state also carries workflow-owned facts (for example
+        # ``fx_mode``).  They are useful to their domain workflow but are not
+        # profile fields and therefore must not enter profile validation or
+        # follow-up question construction.
+        if code not in FIELDS:
             continue
         error = validate(code, value)
         if error:

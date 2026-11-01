@@ -13,12 +13,14 @@ from agent2.llm.validation import validate_understanding, validate_written_answe
 from agent2.models import Notice
 
 from .composer import DefaultResponseComposer
+from .capabilities import RuleCapabilityPlanner
 from .contracts import (AnswerSnapshot, Domain, DomainResult, LifecycleActions, OrchestrationInput,
                         OrchestrationOutput, QualityReport, TaskPlan, UnifiedAnswer)
 from .domains import default_domain_workflows
 from .lifecycle import DefaultLifecyclePlanner
 from .planner import RuleTaskPlanner
-from .ports import DomainWorkflow, LifecyclePlanner, QualityGate, ResponseComposer, TaskPlanner
+from .ports import (CapabilityPlanner, DomainWorkflow, LifecyclePlanner, QualityGate,
+                    ResponseComposer, TaskPlanner)
 from .quality import DefaultQualityGate
 
 
@@ -41,6 +43,7 @@ class WorkflowState:
 @dataclass
 class WorkflowDependencies:
     planner: TaskPlanner
+    capability_planner: CapabilityPlanner
     domains: dict[Domain, DomainWorkflow]
     gate: QualityGate
     composer: ResponseComposer
@@ -98,6 +101,15 @@ async def plan_tasks(ctx: StepContext[WorkflowState, WorkflowDependencies, None]
     assert ctx.state.request is not None
     ctx.state.plan = await ctx.deps.planner.plan(ctx.state.request)
     ctx.state.stage_ms["planned"] = round((time.perf_counter() - started) * 1000, 3)
+
+
+@builder.step(label="领域能力规划")
+async def plan_capabilities(ctx: StepContext[WorkflowState, WorkflowDependencies, None]) -> None:
+    started = time.perf_counter()
+    assert ctx.state.request is not None and ctx.state.plan is not None
+    ctx.state.plan = await ctx.deps.capability_planner.enrich(ctx.state.plan, ctx.state.request)
+    ctx.state.stage_ms["capabilities_planned"] = round(
+        (time.perf_counter() - started) * 1000, 3)
 
 
 @builder.step(label="执行领域流程")
@@ -185,7 +197,8 @@ async def finalize(ctx: StepContext[WorkflowState, WorkflowDependencies, None]) 
 builder.add(
     builder.edge_from(builder.start_node).to(understand_user),
     builder.edge_from(understand_user).to(plan_tasks),
-    builder.edge_from(plan_tasks).to(run_domains),
+    builder.edge_from(plan_tasks).to(plan_capabilities),
+    builder.edge_from(plan_capabilities).to(run_domains),
     builder.edge_from(run_domains).to(gate_results),
     builder.edge_from(gate_results).to(compose_answer),
     builder.edge_from(compose_answer).to(write_answer),
@@ -208,7 +221,8 @@ class Agent2Workflow:
 
 def build_default_workflow(*, credit_card_repository=None, understanding=None, writer=None,
                            fx_model=None, fx_policy_loader=None,
-                           bank_model=None, bank_repository=None) -> Agent2Workflow:
+                           bank_model=None, bank_repository=None,
+                           visa_knowledge=None, clock=None, visa_generator=None) -> Agent2Workflow:
     model = fx_model or bank_model
     if model is None and writer is not None:
         model = getattr(writer, "model", None)
@@ -216,12 +230,16 @@ def build_default_workflow(*, credit_card_repository=None, understanding=None, w
         model = getattr(understanding, "model", None)
     return Agent2Workflow(WorkflowDependencies(
         planner=RuleTaskPlanner(),
+        capability_planner=RuleCapabilityPlanner(),
         domains=default_domain_workflows(
             credit_card_repository=credit_card_repository,
             fx_model=model,
             fx_policy_loader=fx_policy_loader,
             bank_model=model,
             bank_repository=bank_repository,
+            visa_knowledge=visa_knowledge,
+            clock=clock,
+            visa_generator=visa_generator,
         ),
         gate=DefaultQualityGate(),
         composer=DefaultResponseComposer(),

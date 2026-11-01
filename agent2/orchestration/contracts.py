@@ -9,10 +9,30 @@ from agent2.models import (AnswerBody, AnswerStatus, Citation, Claim, Conflict,
                            FollowUpQuestion, Notice)
 
 Domain = Literal["visa", "fx", "bank_account", "credit_card"]
+CapabilityOperation = Literal[
+    "recommend", "explain", "compare", "assess", "how_to", "troubleshoot",
+    "list_options", "request_alternatives", "focus", "select", "reject", "correct",
+]
 
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True)
+
+
+class EntityMention(FrozenModel):
+    text: str
+    entity_type: str | None = None
+    resolved_id: str | None = None
+    confidence: float = Field(default=1.0, ge=0, le=1)
+
+
+class CapabilityAction(FrozenModel):
+    action_id: str
+    operation: CapabilityOperation
+    aspects: list[str] = Field(default_factory=list)
+    entity_mentions: list[EntityMention] = Field(default_factory=list)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    evidence: str | None = None
 
 
 class DomainTask(FrozenModel):
@@ -24,6 +44,7 @@ class DomainTask(FrozenModel):
     depends_on: list[str] = Field(default_factory=list)
     confidence: float = 1.0
     source: Literal["rules", "llm", "session"] = "rules"
+    actions: list[CapabilityAction] = Field(default_factory=list)
 
 
 class IntentHit(FrozenModel):
@@ -66,6 +87,9 @@ class DomainResult(FrozenModel):
     notices: list[Notice] = Field(default_factory=list)
     follow_up_questions: list[FollowUpQuestion] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
+    # recommendation results may update the durable plan card; chat-only Q&A
+    # answers a question without replacing the user's saved recommendation.
+    projection: Literal["advice", "chat_only"] = "advice"
     observed_facts: dict[str, Any] = Field(default_factory=dict)
     observed_basis: dict[str, str] = Field(default_factory=dict)
     knowledge_read_id: str | None = None
@@ -78,6 +102,15 @@ class QualityReport(FrozenModel):
     findings: list[str] = Field(default_factory=list)
 
 
+class JourneyStep(FrozenModel):
+    order: int
+    task_id: str
+    domain: Domain
+    label: str
+    guidance: str
+    can_run_in_parallel: bool = False
+
+
 class UnifiedAnswer(FrozenModel):
     status: AnswerStatus
     answer: AnswerBody
@@ -86,6 +119,7 @@ class UnifiedAnswer(FrozenModel):
     next_actions: list[str] = Field(default_factory=list)
     notices: list[Notice] = Field(default_factory=list)
     follow_up_questions: list[FollowUpQuestion] = Field(default_factory=list)
+    journey: list[JourneyStep] = Field(default_factory=list)
 
 
 class AnswerSnapshot(FrozenModel):
@@ -119,6 +153,16 @@ class ProfileChangeCandidate(FrozenModel):
     basis: str
 
 
+class ProfileDelta(FrozenModel):
+    field_code: str
+    operation: Literal["replace", "add", "remove", "clear"]
+    value: Any = None
+    subject: str = "profile_subject"
+    expected_field_version: int | None = None
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    evidence: str
+
+
 class PlanItemCandidate(FrozenModel):
     text: str
     source_task_id: str
@@ -128,6 +172,15 @@ class LifecycleActions(FrozenModel):
     advice_updates: list[AdviceUpdate] = Field(default_factory=list)
     profile_change_candidates: list[ProfileChangeCandidate] = Field(default_factory=list)
     plan_item_candidates: list[PlanItemCandidate] = Field(default_factory=list)
+    suppressed_effects: list[str] = Field(default_factory=list)
+
+
+class TurnUnderstanding(FrozenModel):
+    """Stable boundary between language understanding and code-owned effects."""
+    actions: list[CapabilityAction] = Field(default_factory=list)
+    profile_deltas: list[ProfileDelta] = Field(default_factory=list)
+    topic_switch: bool = False
+    schema_version: str = "turn-understanding-1"
 
 
 class OrchestrationInput(FrozenModel):
@@ -151,6 +204,9 @@ class OrchestrationInput(FrozenModel):
     session_pending_questions: list[str] = Field(default_factory=list)
     # Understanding's explicit verdict that the user left the open session topic.
     llm_topic_switch: bool = False
+    # Profile version the conversation last saw; a mismatch means the profile
+    # was edited outside the chat and domains must explain the re-judgement.
+    expected_profile_version: int | None = None
     # Ephemeral, conversation-scoped domain memory.  This is deliberately not
     # merged into Profile because focus/selection/rejection are dialogue state.
     domain_state: dict[str, Any] = Field(default_factory=dict)

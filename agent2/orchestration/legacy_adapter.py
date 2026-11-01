@@ -26,9 +26,10 @@ INTENT_SESSION_TOPIC = {
     "remittance_living": "remittance",
     "overseas_spending": "remittance",
     "hsbc_account": "account",
+    "visa_documents": "visa",
 }
 V2_INTENTS = frozenset(INTENT_SESSION_TOPIC)
-TOPIC_PRIORITY = ("credit_card", "remittance", "account")
+TOPIC_PRIORITY = ("credit_card", "remittance", "account", "visa")
 
 
 def card_summaries_from_steps(steps, groups=()):
@@ -94,6 +95,8 @@ def intents_for_session_topic(topic: str | None, conversation_facts: dict | None
         if purpose == "living":
             return ["remittance_living"]
         return ["overseas_spending"]
+    if topic == "visa":
+        return ["visa_documents"]
     return []
 
 
@@ -124,7 +127,7 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
            understood_facts=None, understood_basis=None, understanding_applied=False,
            llm_intents=None, domain_state=None, llm_topic_switch=False,
            session_topic=None, session_last_user_text="", session_last_assistant_text="",
-           session_pending_questions=()):
+           session_pending_questions=(), expected_profile_version=None):
     """Run Agent2 v2 for any migrated domain intents (card / fx / account)."""
     intents = [intent for intent in dict.fromkeys(conversation_intents or [])
                if intent in INTENT_DOMAIN or intent in V2_INTENTS]
@@ -158,6 +161,7 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         session_last_assistant_text=session_last_assistant_text,
         session_pending_questions=list(session_pending_questions),
         domain_state=dict(domain_state or {}),
+        expected_profile_version=expected_profile_version,
     )
     orchestrated = workflow.run(request)
     unified = orchestrated.answer
@@ -174,6 +178,11 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
     advice_items = []
     advice_updates = []
     for result in unified.domain_results:
+        # Generic explanations, comparisons and troubleshooting are normal chat
+        # answers, not a new recommendation snapshot.  Never let them replace a
+        # saved plan card merely because their status is answered.
+        if result.projection == "chat_only":
+            continue
         partial_account = (result.domain == "bank_account"
                            and result.status == "needs_input"
                            and bool(result.payload.get("candidate_results")))
@@ -210,7 +219,16 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
                 "preview": any(group.get("role") == "preview" for group in groups)
                            or any(step.startswith("提前了解：") for step in result.answer.steps),
             })
-        advice_items.append({"topic": topic, "payload": payload})
+        task = next((task for task in orchestrated.snapshot.task_plan.tasks
+                     if task.task_id == result.task_id), None)
+        advice_items.append({
+            "topic": topic,
+            "payload": payload,
+            "source_task_id": result.task_id,
+            "intent": task.intent if task else None,
+            "knowledge_read_id": result.knowledge_read_id,
+            "model_version": result.model_version,
+        })
         if topic not in advice_updates:
             advice_updates.append(topic)
 
@@ -242,6 +260,7 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         active_intents=planned_intents,
         message_parts=message_parts,
         stage_ms=orchestrated.stage_ms,
+        profile_change_candidates=list(orchestrated.lifecycle.profile_change_candidates),
     )
 
 
@@ -257,7 +276,7 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
     ask_need = is_necessity_question(text)
     split = ask_need or len(results) > 1
     if not split or not results:
-        citations, claims = [], []
+        citations, claims, conflicts = [], [], []
         seen = set()
         for domain_result in results:
             for citation in domain_result.citations:
@@ -266,6 +285,10 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
                 seen.add(citation.citation_id)
                 citations.append(citation)
             claims.extend(domain_result.claims)
+            for conflict in domain_result.conflicts:
+                if not any(existing.document_code == conflict.document_code
+                           for existing in conflicts):
+                    conflicts.append(conflict)
         return [AnswerResult(
             message_id=message_id,
             status=unified.status,
@@ -274,12 +297,13 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
             answer=unified.answer,
             claims=claims,
             citations=citations,
+            conflicts=conflicts,
             missing_fields=unified.missing_fields,
             follow_up_questions=unified.follow_up_questions,
             next_actions=unified.next_actions,
             notices=unified.notices,
             advice_updates=advice_updates,
-            synthetic=False,
+            synthetic=any(c.synthetic for c in citations),
             trace_id=trace_id,
             stage_ms=stage_ms,
         )]
@@ -294,6 +318,24 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
             answer=AnswerBody(
                 summary=necessity_summary(domains),
                 steps=necessity_preamble(domains),
+            ),
+            synthetic=False,
+            trace_id=trace_id,
+            stage_ms={},
+        ))
+
+    if unified.journey:
+        parts.append(AnswerResult(
+            message_id=_new_message_id(),
+            status="answered",
+            profile_id=profile.profile_id,
+            profile_version=profile.version,
+            answer=AnswerBody(
+                summary="这些事项可以按下面的顺序推进；标注可并行的事项不必互相等待。",
+                steps=[
+                    f"{step.order}. {step.label}：{step.guidance}"
+                    for step in unified.journey
+                ],
             ),
             synthetic=False,
             trace_id=trace_id,
@@ -321,12 +363,13 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
             ),
             claims=list(domain_result.claims),
             citations=list(domain_result.citations),
+            conflicts=list(domain_result.conflicts),
             missing_fields=list(domain_result.missing_fields) if last else [],
             follow_up_questions=list(unified.follow_up_questions) if last else [],
             next_actions=list(domain_result.next_actions),
             notices=list(unified.notices) if last else list(domain_result.notices),
             advice_updates=list(advice_updates) if last else [],
-            synthetic=False,
+            synthetic=any(c.synthetic for c in domain_result.citations),
             trace_id=trace_id,
             stage_ms=stage_ms if last else {},
         ))

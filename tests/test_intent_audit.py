@@ -112,7 +112,7 @@ class _ContextUnderstanding:
 
 class ServiceAuditRoutingTests(unittest.TestCase):
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         self.understanding = _ContextUnderstanding()
         self.service = Agent2Service(

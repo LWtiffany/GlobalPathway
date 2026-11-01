@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..contracts import CapabilityAction
+
 
 DialogueAct = Literal[
     "discover_options", "focus_product", "request_alternatives",
@@ -120,6 +122,58 @@ def classify_dialogue_act(text: str, *, named_product: str | None,
                  r"定期存款|支票账户|往来账户", compact):
         return "discover_options"
     return "other"
+
+
+def dialogue_act_from_capabilities(actions: list[CapabilityAction], text: str, *,
+                                   named_product: str | None,
+                                   state: AccountConversationState) -> DialogueAct:
+    """Reduce the shared capability contract into the account state machine.
+
+    Stateful control moves are still checked against conversation state, but
+    ordinary question types no longer depend on a second independent intent
+    taxonomy inside the account handler.
+    """
+    fallback = classify_dialogue_act(text, named_product=named_product, state=state)
+    control_acts = {
+        "correct_fact", "ask_catalog_scope", "request_alternatives",
+        "confirm_selection", "reject_product",
+    }
+    if fallback in control_acts:
+        return fallback
+
+    explicit = [action for action in actions
+                if action.evidence or action.aspects or action.entity_mentions]
+    for action in explicit:
+        aspects = set(action.aspects)
+        if action.operation == "troubleshoot":
+            return "troubleshoot"
+        if action.operation == "compare":
+            return "compare_products"
+        if action.operation == "reject":
+            return "reject_product"
+        if action.operation == "select":
+            return "confirm_selection"
+        if action.operation == "request_alternatives":
+            return "request_alternatives"
+        if action.operation == "correct":
+            return "correct_fact"
+        if action.operation == "list_options":
+            return "ask_catalog_scope" if re.search(r"全部|完整|一共|只有这", text) \
+                else "discover_options"
+        if action.operation == "assess":
+            return "ask_necessity" if "necessity" in aspects else "ask_eligibility"
+        if action.operation in {"how_to", "explain"}:
+            if "fees" in aspects:
+                return "ask_fees"
+            if "documents" in aspects:
+                return "ask_documents"
+            if "eligibility" in aspects:
+                return "ask_eligibility"
+            if "process" in aspects or action.operation == "how_to":
+                return "ask_process"
+        if action.operation == "focus" and named_product:
+            return "focus_product"
+    return fallback
 
 
 def answer_mode_for(act: DialogueAct) -> AnswerMode:
@@ -249,8 +303,9 @@ def relationship_messages(relationships: list[dict[str, str]]) -> list[str]:
         messages.append("它需要先有合资格的汇丰账户关系；当前资料列出的可用关系包括："
                         + "、".join(dict.fromkeys(required)) + "。")
     for row in relationships:
-        if len(required) > 1 and (row.get("relation_type") == "requires_relationship"
-                                  or row.get("type") == "requires_relationship"):
+        if len(required) > 1 and not row.get("message") and (
+                row.get("relation_type") == "requires_relationship"
+                or row.get("type") == "requires_relationship"):
             continue
         message = row.get("message")
         if message and message not in messages:

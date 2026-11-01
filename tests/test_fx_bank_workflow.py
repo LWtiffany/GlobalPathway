@@ -9,9 +9,9 @@ from agent2.fx_knowledge import (FxDocumentRow, FxEvidenceRow, FxPolicyBundle,
 from agent2.knowledge import FixtureKnowledgeRead
 from agent2.llm.factory import LlmComponents
 from agent2.orchestration import OrchestrationInput, build_default_workflow
-from agent2.orchestration.contracts import DomainTask
+from agent2.orchestration.contracts import CapabilityAction, DomainTask
 from agent2.orchestration.domains.bank_account import BankAccountWorkflow
-from agent2.orchestration.domains.bank_account_repository import SeedBankAccountRepository
+from agent2.orchestration.domains.bank_account_repository import RdsBankAccountRepository
 from agent2.orchestration.domains.fx import FxWorkflow
 from agent2.service import Agent2Service
 from agent2.store import Store
@@ -126,20 +126,48 @@ class FxWorkflowTests(unittest.TestCase):
         self.assertEqual("overseas", result.observed_facts.get("fx_mode"))
         self.assertTrue(result.citations)
 
+    def test_fee_question_answers_boundary_without_overwriting_advice(self):
+        task = DomainTask(
+            task_id="t-fee", domain="fx", intent="remittance_tuition",
+            actions=[CapabilityAction(action_id="a1", operation="explain", aspects=["fees"])],
+        )
+        result = asyncio.run(self.workflow.run(
+            task, OrchestrationInput(text="汇款手续费多少", profile_id="p1", profile_version=1)))
+
+        self.assertEqual("needs_verification", result.status)
+        self.assertEqual("chat_only", result.projection)
+        self.assertIn("实时汇率", result.answer.summary)
+        self.assertFalse(result.answer.materials)
+
+    def test_limit_question_is_focused_and_chat_only(self):
+        task = DomainTask(
+            task_id="t-limit", domain="fx", intent="remittance_tuition",
+            actions=[CapabilityAction(action_id="a1", operation="explain", aspects=["limits"])],
+        )
+        result = asyncio.run(self.workflow.run(task, OrchestrationInput(
+            text="留学购汇额度是多少", profile_id="p1", profile_version=1,
+            profile_values={"destination_country": "UK"})))
+
+        self.assertEqual("answered", result.status)
+        self.assertEqual("chat_only", result.projection)
+        self.assertTrue(result.answer.steps)
+        self.assertTrue(all("额度" in step or "超额" in step for step in result.answer.steps))
+        self.assertEqual([], result.answer.materials)
+
 
 class BankAccountWorkflowTests(unittest.TestCase):
     def test_open_account_asks_identity_when_region_known(self):
         task = DomainTask(task_id="t1", domain="bank_account", intent="hsbc_account",
                           facts={"destination_country": "UK"},
                           basis={"destination_country": "英国"})
-        first = asyncio.run(BankAccountWorkflow(repository=SeedBankAccountRepository()).run(
+        first = asyncio.run(BankAccountWorkflow(repository=RdsBankAccountRepository()).run(
             task, OrchestrationInput(text="英国开户", profile_id="p1", profile_version=1)))
         self.assertEqual("needs_input", first.status)
         self.assertEqual(["applicant_identity"],
                          [q.field for q in first.follow_up_questions])
         self.assertEqual("UK", first.observed_facts.get("account_region"))
 
-        second = asyncio.run(BankAccountWorkflow(repository=SeedBankAccountRepository()).run(
+        second = asyncio.run(BankAccountWorkflow(repository=RdsBankAccountRepository()).run(
             task, OrchestrationInput(
                 text="学生本人", profile_id="p1", profile_version=2,
                 profile_values={"account_region": "UK", "applicant_identity": "student",
@@ -159,7 +187,7 @@ class BankAccountWorkflowTests(unittest.TestCase):
         task = DomainTask(task_id="t1", domain="bank_account", intent="hsbc_account",
                           facts={"account_region": "US", "applicant_identity": "student"},
                           basis={})
-        result = asyncio.run(BankAccountWorkflow(repository=SeedBankAccountRepository()).run(
+        result = asyncio.run(BankAccountWorkflow(repository=RdsBankAccountRepository()).run(
             task, OrchestrationInput(
                 text="去美国读书怎么开户", profile_id="p1", profile_version=1,
                 profile_values={"account_region": "US", "applicant_identity": "student"},
@@ -170,15 +198,39 @@ class BankAccountWorkflowTests(unittest.TestCase):
         self.assertIn("美国", blob)
         self.assertTrue(result.citations)
 
+    def test_hk_premier_income_claim_corrected_to_trb(self):
+        """Volunteered income must not be treated as a Premier threshold; the
+        reply corrects it to the published total-relationship-balance basis."""
+        task = DomainTask(task_id="t1", domain="bank_account", intent="hsbc_account",
+                          facts={"account_region": "CN-HK"}, basis={})
+        result = asyncio.run(BankAccountWorkflow(repository=RdsBankAccountRepository()).run(
+            task, OrchestrationInput(
+                text="汇丰Premier，我年收入600万以上能开吗", profile_id="p1", profile_version=1,
+                profile_values={"account_region": "CN-HK"},
+            )))
+        blob = " ".join(result.answer.steps)
+        self.assertIn("总关系结余", blob)
+        self.assertNotIn("年收入门槛", blob.replace("年收入本身不是官网列出的开户门槛", ""))
+
+    def test_hk_premier_without_income_claim_has_no_trb_note(self):
+        task = DomainTask(task_id="t1", domain="bank_account", intent="hsbc_account",
+                          facts={"account_region": "CN-HK"}, basis={})
+        result = asyncio.run(BankAccountWorkflow(repository=RdsBankAccountRepository()).run(
+            task, OrchestrationInput(
+                text="汇丰Premier怎么开户", profile_id="p1", profile_version=1,
+                profile_values={"account_region": "CN-HK"},
+            )))
+        self.assertNotIn("年收入本身不是官网列出的开户门槛", " ".join(result.answer.steps))
+
 
 class ServiceFxAccountRoutingTests(unittest.TestCase):
     def setUp(self):
-        self.store = Store()
+        self.store = Store.temporary()
         self.addCleanup(self.store.close)
         self.service = Agent2Service(
             self.store, FixtureKnowledgeRead.from_file(), clock=lambda: NOW,
             credit_card_repository=FakeRepository([product("online_card", "online", "0.04")]),
-            bank_account_repository=SeedBankAccountRepository(),
+            bank_account_repository=RdsBankAccountRepository(),
             llm_components=LlmComponents(),
         )
         # Inject FX fixture so service tests do not depend on live Agent1 SQLite.
@@ -198,6 +250,22 @@ class ServiceFxAccountRoutingTests(unittest.TestCase):
         self.assertIn("学费", answer.answer.summary)
         self.assertTrue(answer.citations)
         self.assertTrue(any("5万" in c.quote for c in answer.citations))
+
+    def test_generic_fee_answer_does_not_replace_saved_remittance_advice(self):
+        first = self.service.post_message(
+            self.user, self.conversation, "英国学费怎么汇", "fx-save-1")
+        self.assertEqual("answered", first.status)
+        profile_id = self.service._owned_conversation(
+            self.user, self.conversation)["profile_id"]
+        saved = self.service.list_advice(self.user, profile_id)["advice"]["remittance"]
+
+        reply = self.service.post_message(
+            self.user, self.conversation, "汇款手续费多少", "fx-save-2")
+        current = self.service.list_advice(self.user, profile_id)["advice"]["remittance"]
+
+        self.assertEqual("needs_verification", reply.status)
+        self.assertEqual(saved["version"], current["version"])
+        self.assertEqual(saved["payload"], current["payload"])
 
     def test_account_follow_up_stays_on_account_topic(self):
         first = self.service.post_message(
@@ -227,6 +295,67 @@ class ServiceFxAccountRoutingTests(unittest.TestCase):
         blob = "\n".join(m["body"]["answer"]["summary"] for m in assistants)
         self.assertTrue(any(label in blob for label in ("外汇", "汇款", "开户", "信用卡")))
         self.assertEqual(answer.message_id, assistants[-1]["message_id"])
+
+    def test_confirm_income_proposal_recomputes_card_advice(self):
+        """A confirmed self-stated income must refresh the credit-card advice panel."""
+        profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
+        self.service.patch_profile(
+            self.user, profile_id,
+            expected_version=self.service.get_profile(self.user, profile_id).version,
+            set_fields={"applicant_age": 30})
+        reply = self.service.post_message(
+            self.user, self.conversation,
+            "我在香港想办信用卡，年收入30万，每月全额还款，主要网购", "cc-1")
+        income_proposal = next(p for p in reply.profile_change_proposals
+                               if p.field_code == "annual_income_hkd")
+        # Drive the follow-ups to a concrete recommendation so advice exists.
+        for turn in range(2, 6):
+            if reply.status != "needs_input":
+                break
+            confirmed = {q.field: q.options[0]["value"] for q in reply.follow_up_questions
+                         if q.options}
+            reply = self.service.post_message(
+                self.user, self.conversation, "选项确认", f"cc-{turn}",
+                confirmed_fields=confirmed, expected_profile_version=reply.profile_version)
+        self.assertEqual("answered", reply.status)
+        before = self.service.list_advice(self.user, profile_id)["advice"]["credit_card"]["version"]
+        version = self.service.get_profile(self.user, profile_id).version
+        self.service.confirm_proposal(self.user, income_proposal.proposal_id,
+                                      expected_version=version,
+                                      refresh_topics=["credit_card"])
+        after = self.service.list_advice(self.user, profile_id)["advice"]["credit_card"]["version"]
+        self.assertGreater(after, before)
+        self.assertEqual(
+            self.service.get_profile(self.user, profile_id).confirmed("annual_income_hkd"), 300000)
+
+    def test_card_only_country_mention_does_not_rewrite_destination(self):
+        """A country in a card-only question sets the card region, not the study plan."""
+        profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
+        self.service.patch_profile(
+            self.user, profile_id,
+            expected_version=self.service.get_profile(self.user, profile_id).version,
+            set_fields={"destination_country": "CN-HK"})
+        reply = self.service.post_message(
+            self.user, self.conversation, "英国信用卡推荐", "cc-uk")
+        self.assertFalse(any(p.field_code == "destination_country"
+                             for p in reply.profile_change_proposals))
+        self.assertEqual(
+            self.service.get_profile(self.user, profile_id).confirmed("destination_country"), "CN-HK")
+        facts = self.service.list_messages(self.user, self.conversation)["messages"][0]["body"]["facts"]
+        self.assertEqual(facts.get("application_region"), "UK")
+        self.assertNotIn("destination_country", facts)
+
+    def test_destination_fallback_does_not_persist_card_region(self):
+        """Deriving the card region from the study destination must stay turn-local."""
+        profile_id = self.service._owned_conversation(self.user, self.conversation)["profile_id"]
+        self.service.patch_profile(
+            self.user, profile_id,
+            expected_version=self.service.get_profile(self.user, profile_id).version,
+            set_fields={"destination_country": "CN-HK", "applicant_age": 30})
+        self.service.post_message(
+            self.user, self.conversation, "我想办信用卡，年收入30万，每月全额还款", "cc-hk")
+        facts = self.service.list_messages(self.user, self.conversation)["messages"][0]["body"]["facts"]
+        self.assertNotIn("application_region", facts)
 
     def test_account_and_card_follow_up_scopes_to_answered_domain(self):
         """Confirming a credit-card chip must not re-emit bank-account advice."""
