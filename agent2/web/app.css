@@ -208,6 +208,11 @@ a{color:#8b7140}
 .prop .btns{margin-top:6px;display:flex;gap:8px}
 .proposal-list{margin:8px 0 0;padding-left:20px}
 .proposal-list li{margin:4px 0}
+.proposal-advice-choices{margin-top:9px;padding-top:8px;border-top:1px solid #e3d3ad}
+.proposal-advice-choices label{display:inline-flex;align-items:center;gap:4px;margin:7px 14px 0 0}
+.proposal-advice-choices .note{margin-top:6px}
+.advice-stale{border-color:#d7aa58!important;background:#fffaf0!important}
+.advice-refresh{margin-top:10px;padding:9px 10px;background:#f8f1e1;border-top:1px solid #e3d3ad;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px}
 .acts{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:10px;border-top:1px solid #f1ece3;gap:12px}
 .fb{font-size:11px;color:#9a917f;letter-spacing:.5px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .fb button{background:none;border:none;color:#9a917f;font-size:11px;padding:0 4px}

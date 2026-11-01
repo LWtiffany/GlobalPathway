@@ -55,7 +55,7 @@ const S = {
   token: localStorage.getItem("gp_token"), user: null, fields: null, profiles: [], pid: localStorage.getItem("gp_pid"),
   profile: null, conv: null, messages: [], advice: {}, adviceScopes: {}, plan: [], proposals: [],
   relationships: [], relationshipProposals: [], missing: new Set(),
-  highlight: new Set(), flash: [], busy: false, pending: null, sheetH: null, collapsed: false, fb: {}, el: {},
+  highlight: new Set(), flash: [], busy: false, refreshingTopics: new Set(), pending: null, sheetH: null, collapsed: false, fb: {}, el: {},
   // One-question-at-a-time follow-ups; trail lets the user undo a wrong tap.
   followSeed: null, followTrail: [], suppressFields: [],
   schools: [], programs: [], schoolById: {}, programById: {}, catalogReady: false,
@@ -123,6 +123,7 @@ const label = (code) => (S.fields && S.fields[code] ? S.fields[code].label : cod
 
 function valueLabel(code, v) {
   if (v === undefined || v === null) return "—";
+  if (Array.isArray(v)) return v.map((item) => valueLabel(code, item)).join("、");
   if (code === "school") {
     if (S.schoolById[v]) return S.schoolById[v].name;
     // Prefer a readable placeholder over raw UUIDs when catalog miss/orphan.
@@ -763,12 +764,55 @@ function accountCard(t) {
 }
 
 function planCard(t) {
-  if (t.key === "visa") return visaCard(t);
-  if (t.key === "credit_card") return creditCardCard(t);
-  if (t.key === "remittance") return remittanceCard(t);
-  if (t.key === "account") return accountCard(t);
-  return h("div", { class: "p", id: "card-" + t.key }, cardHead(t, h("span", { class: "st" }, "待补充")),
+  let card;
+  if (t.key === "visa") card = visaCard(t);
+  else if (t.key === "credit_card") card = creditCardCard(t);
+  else if (t.key === "remittance") card = remittanceCard(t);
+  else if (t.key === "account") card = accountCard(t);
+  else card = h("div", { class: "p", id: "card-" + t.key },
+    cardHead(t, h("span", { class: "st" }, "待补充")),
     t.rows.map((r) => row(r, empty())));
+  return withAdviceLifecycle(card, t.key);
+}
+
+const ADVICE_TOPIC_LABEL = { credit_card: "信用卡建议", account: "开户建议",
+  remittance: "汇款建议", visa: "签证建议" };
+
+function withAdviceLifecycle(card, topic) {
+  const advice = S.advice[topic];
+  if (!advice || advice.status !== "stale") return card;
+  const refreshing = S.refreshingTopics.has(topic);
+  card.classList.add("advice-stale");
+  card.append(h("div", { class: "advice-refresh" },
+    h("b", null, refreshing ? "已开始重新生成建议，请稍候。" : "资料已变化，这份建议可能不再适用。"),
+    h("button", { class: "btn sm", disabled: refreshing, onclick: () => refreshAdvice(topic) },
+      refreshing ? "生成中…" : "重新生成建议")));
+  return card;
+}
+
+async function refreshAdvice(topic) {
+  if (S.busy) { toast("上一项操作还在处理中，请稍候"); return; }
+  S.busy = true;
+  S.refreshingTopics.add(topic);
+  drawSheet();
+  toast(`已开始重新生成${ADVICE_TOPIC_LABEL[topic] || "建议"}，完成后会自动显示。`);
+  try {
+    const result = await api("POST", `/profiles/${S.pid}/advice/${topic}/refresh`, {});
+    await Promise.all([loadAdvice(), loadMessages()]);
+    if (result.refreshed) S.flash = [topic];
+    drawSheet();
+    // A refresh creates a new assistant reply.  Updating only the side-panel
+    // left that reply invisible until a browser reload rebuilt the chat.
+    drawChat({ keep: true });
+    toast(result.refreshed ? `${ADVICE_TOPIC_LABEL[topic] || "建议"}已重新生成`
+      : "还缺少必要信息，建议暂时保持待更新");
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    S.refreshingTopics.delete(topic);
+    S.busy = false;
+    drawSheet();
+  }
 }
 
 function cardsFromAnswerSteps(steps) {
@@ -1343,13 +1387,26 @@ function proposalValue(p, value) {
 }
 
 function proposalBundleCard(proposals) {
+  const affected = [...new Set(proposals.flatMap((p) => p.affected_advice_topics || []))]
+    .filter((topic) => S.advice[topic]);
+  const selected = new Set(affected);
+  const choices = affected.length ? h("div", { class: "proposal-advice-choices" },
+    h("div", null, "这些现有建议依赖本次修改。请选择现在要重新生成的内容："),
+    affected.map((topic) => {
+      const input = h("input", { type: "checkbox", checked: true });
+      input.addEventListener("change", () => input.checked ? selected.add(topic) : selected.delete(topic));
+      return h("label", null, input, ADVICE_TOPIC_LABEL[topic] || topic);
+    }),
+    h("div", { class: "note" }, "未选择的建议会保留，但会标记为“待更新”，以后可在建议卡上重新生成。")) : null;
   return h("div", { class: "prop" },
     h("div", null, "要把这些信息更新到学生资料吗？"),
     h("ul", { class: "proposal-list" }, proposals.map((p) => h("li", null,
       h("b", null, label(p.field_code)), "　", proposalValue(p, p.old_value), " → ",
       h("b", null, proposalValue(p, p.new_value))))),
+    choices,
     h("div", { class: "btns" },
-      h("button", { class: "btn sm", onclick: () => decideProposalBundle(proposals, true) }, "更新资料"),
+      h("button", { class: "btn sm", onclick: () => decideProposalBundle(
+        proposals, true, [...selected]) }, affected.length ? "更新资料并处理建议" : "更新资料"),
       h("button", { class: "btn sm ghost", onclick: () => decideProposalBundle(proposals, false) }, "仅本次使用")));
 }
 
@@ -1388,18 +1445,21 @@ async function decideRelationship(p, confirm, status) {
   }
 }
 
-async function decideProposalBundle(proposals, confirm) {
+async function decideProposalBundle(proposals, confirm, refreshTopics = []) {
   try {
     if (confirm) {
       S.profile = await api("POST", "/profile-proposals/confirm-batch", {
         proposal_ids: proposals.map((p) => p.proposal_id), expected_version: S.profile.version,
+        refresh_topics: refreshTopics,
       });
       syncProfile();
       S.highlight = new Set(proposals.map((p) => p.field_code));
     } else {
       await Promise.all(proposals.map((p) => api("POST", `/profile-proposals/${p.proposal_id}/dismiss`, {})));
     }
-    await loadProposals();
+    await Promise.all([loadProposals(), confirm ? loadAdvice() : Promise.resolve(),
+      confirm ? loadMessages() : Promise.resolve()]);
+    if (confirm) S.flash = refreshTopics.slice();
     deriveMissing();
     drawSheet();
     drawSide();
@@ -1561,6 +1621,7 @@ async function openEdit(focus) {
     if (!Object.keys(set).length && !clear.length) return closeOverlay();
     try {
       S.profile = await api("PATCH", `/profiles/${S.pid}`, { expected_version: p.version, fields: set, clear_fields: clear });
+      await loadAdvice();
       syncProfile();
       S.highlight = new Set([...Object.keys(set), ...clear]);
       deriveMissing();
@@ -1568,7 +1629,7 @@ async function openEdit(focus) {
       drawSheet();
       drawSide();
       drawChat({ keep: true });
-      toast(`档案已保存（v${S.profile.version}）。`);
+      toast(`档案已保存（v${S.profile.version}）；受影响的建议已标记待更新。`);
     } catch (e) {
       err.textContent = e.message;
       if (e.code === "VERSION_CONFLICT") refreshProfile();

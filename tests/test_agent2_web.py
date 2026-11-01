@@ -4,6 +4,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import unittest
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from uuid import UUID
 
 from agent2 import api
 from tests.test_agent2_s1 import UK_STUDENT, S1Base
@@ -18,6 +21,19 @@ class WebApiCases(S1Base):
     def call(self, method, path, body=None, token=None):
         raw = json.dumps(body).encode() if body is not None else b""
         return api.dispatch(self.service, method, path, {"Authorization": f"Bearer {token or self.token}"}, raw)
+
+    def test_http_dump_normalizes_native_postgres_scalars(self):
+        payload = api._dump({
+            "created_at": datetime(2026, 10, 31, 9, 30, tzinfo=timezone.utc),
+            "effective_on": date(2026, 11, 1),
+            "amount": Decimal("12.50"),
+            "id": UUID("00000000-0000-0000-0000-000000000001"),
+        })
+        encoded = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("2026-10-31T09:30:00Z", encoded)
+        self.assertIn("2026-11-01", encoded)
+        self.assertIn("12.5", encoded)
+        self.assertIn("00000000-0000-0000-0000-000000000001", encoded)
 
     def test_profile_list_is_serialized_and_scoped_to_owner(self):
         mine = self.service.create_profile(self.user, {"beneficiary": "王小明", **UK_STUDENT}, synthetic=True)
@@ -109,11 +125,22 @@ class StaticFileCases(unittest.TestCase):
 
     def test_credit_card_plan_reads_saved_advice(self):
         source = api.static_file("/app.js")[0].decode("utf-8")
-        self.assertIn('if (t.key === "credit_card") return creditCardCard(t);', source)
+        self.assertIn('else if (t.key === "credit_card") card = creditCardCard(t);', source)
         card = source.split("function creditCardCard(t)", 1)[1].split("function sourceChips", 1)[0]
         self.assertIn("S.advice.credit_card", card)
         self.assertIn("savedCardDisplay(a)", card)
         self.assertIn("application_note", card)
+
+    def test_profile_change_ui_localizes_multi_values_and_refreshes_advice(self):
+        source = api.static_file("/app.js")[0].decode("utf-8")
+        value_label = source.split("function valueLabel", 1)[1].split("async function ensureSchools", 1)[0]
+        self.assertIn("Array.isArray(v)", value_label)
+        self.assertIn("valueLabel(code, item)", value_label)
+        decision = source.split("async function decideProposalBundle", 1)[1].split("function actsRow", 1)[0]
+        self.assertIn("loadAdvice()", decision)
+        self.assertIn("refresh_topics", decision)
+        self.assertIn("affected_advice_topics", source)
+        self.assertIn("重新生成建议", source)
 
     @unittest.skipUnless(shutil.which("node"), "需要 Node.js 验证前端历史建议兼容逻辑")
     def test_credit_card_plan_recovers_names_and_fees_from_matching_answer(self):
