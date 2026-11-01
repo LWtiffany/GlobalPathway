@@ -272,8 +272,9 @@ a{color:#8b7140}
 .preset b{font-weight:400;font-size:17px}
 .preset .who{font-size:11px;color:#b89b6a;letter-spacing:2px}
 .preset .kids{font-size:12px;color:#6f675a;line-height:1.7}
-.custom{display:flex;gap:0;margin-top:22px;max-width:420px}
-.custom input{flex:1;border:1px solid #d9d1c2;border-right:0;padding:9px 12px;background:#fffdf9}
+.custom{display:flex;flex-direction:column;gap:10px;margin-top:22px;max-width:420px}
+.custom input{border:1px solid #d9d1c2;padding:9px 12px;background:#fffdf9;width:100%;box-sizing:border-box}
+.custom .btn{align-self:flex-start}
 .card{background:#fffdf9;border:1px solid #e6dfd2;padding:24px 28px;overflow:hidden;max-width:100%;box-sizing:border-box}
 .tickets{width:100%;border-collapse:collapse;background:#fffdf9;border:1px solid #e6dfd2}
 .tickets th,.tickets td{text-align:left;padding:10px 12px;border-bottom:1px solid #ece6db;font-size:12px;vertical-align:top}

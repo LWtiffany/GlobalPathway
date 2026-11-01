@@ -37,9 +37,11 @@ CREATE TABLE IF NOT EXISTS users (
     status           TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS auth_sessions (
-    token      TEXT PRIMARY KEY,
+    token_hash TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(user_id),
-    created_at TEXT NOT NULL
+    csrf_token TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS profiles (
     profile_id TEXT PRIMARY KEY,

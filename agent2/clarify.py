@@ -95,7 +95,7 @@ FIELDS = {
     "offer_status": ("offer 状态", _enum("none", "conditional", "unconditional"), "ask_offer_status",
                      "您目前拿到的是无条件 offer、有条件 offer，还是还没有 offer？"),
     "planned_start_date": ("预计入学时间", _iso_date, "ask_planned_start_date", "课程预计哪天开学？"),
-    "applicant_age": ("申请人年龄", _age, "ask_applicant_age", "申请人现在多大？（年龄会影响可选产品和开户要求）"),
+    "applicant_age": ("申请人年龄", _age, "ask_applicant_age", "申请人现在多大？"),
     "applicant_age_band": ("年龄区间", _enum("under_18", "18_or_over"), "ask_applicant_age_band",
                            "您目前是否已满 18 岁？"),
     "funding_source": ("资金来源", _enum("own_or_parents", "student_loan", "sponsor", "scholarship"),
@@ -490,7 +490,25 @@ def validate(field_code, value):
     return FIELDS[field_code][1](value)
 
 
-def _question(field_code, rule, version, text=None):
+# Shared fields (e.g. applicant_age) need topic-specific copy so visa asks do not
+# sound like bank/card product questions.
+TOPIC_QUESTION_OVERRIDES = {
+    "visa_documents": {
+        "applicant_age": "申请人现在多大？（部分签证材料与是否未满 18 岁有关）",
+        "applicant_age_band": "申请人目前是否已满 18 岁？（部分签证材料与此有关）",
+    },
+    "credit_card": {
+        "applicant_age": "申请人现在多大？（年龄会影响可选产品和申请要求）",
+        "applicant_age_band": "您目前是否已满 18 岁？（年龄会影响可选信用卡）",
+    },
+    "bank_account": {
+        "applicant_age": "申请人现在多大？（年龄会影响开户要求）",
+        "applicant_age_band": "您目前是否已满 18 岁？（年龄会影响开户要求）",
+    },
+}
+
+
+def _question(field_code, rule, version, text=None, *, topic=None):
     _, _, code, default = FIELDS[field_code]
     item = field_catalog()[field_code]
     input_type = "multi_select" if item["kind"] == "multi_enum" else \
@@ -499,7 +517,8 @@ def _question(field_code, rule, version, text=None):
     persist = "session_only" if policy["confirmation_mode"] == "never" else \
         "proposal" if policy["confirmation_mode"] == "proposal" else \
         "save_on_select" if item["options"] or item["kind"] == "date" else "proposal"
-    return FollowUpQuestion(question_code=code, field=field_code, text=text or default,
+    prompt = text or TOPIC_QUESTION_OVERRIDES.get(topic or "", {}).get(field_code) or default
+    return FollowUpQuestion(question_code=code, field=field_code, text=prompt,
                             rule=rule, profile_version=version, input_type=input_type,
                             options=item["options"], max_selections=item["max_selections"],
                             persist_mode=persist)
@@ -522,10 +541,8 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
     if rule is None:
         return Assessment(topic, "unsupported_topic", f"主题 {topic} 没有条件表，不作确定结论",
                           version, rule_ms=(time.perf_counter() - started) * 1000)
-    if expected_profile_version is not None and expected_profile_version != version:
-        notices.append(Notice(code="profile_version_changed",
-                              message=f"档案已从 v{expected_profile_version} 更新为 v{version}，"
-                                      f"本轮按 v{version} 的已确认字段重新判断。"))
+    # expected_profile_version is still accepted for callers; a version bump no longer
+    # surfaces a customer-facing notice (re-assess silently on the current profile).
 
     facts, invalid, conflicts = {}, [], []
     for code, item in profile.fields.items():
@@ -597,7 +614,7 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
                                   message=f"模型建议追问的字段不在本轮条件表内，已忽略：{', '.join(rejected)}"))
         preferred = [eligible[f] for f in dict.fromkeys(suggested) if f in eligible]
         candidates = preferred + [c for c in candidates if c not in preferred]
-    questions = [_question(code, rule_id, version, text)
+    questions = [_question(code, rule_id, version, text, topic=topic)
                  for code, rule_id, text in candidates[:MAX_QUESTIONS_PER_ROUND]]
 
     if invalid:

@@ -11,6 +11,13 @@ from agent2.store import Store
 
 NOW = datetime(2026, 10, 14, tzinfo=timezone.utc)
 UK_STUDENT = {"destination_country": "UK", "visa_category": "student_visa"}
+# Condition fields resolved so the runner returns the materials list (ask-first UX).
+UK_STUDENT_READY = {
+    **UK_STUDENT,
+    "applicant_age": 20,
+    "funding_source": "own_or_parents",
+    "tb_listed_country_resident": False,
+}
 
 
 def fixture_records():
@@ -57,8 +64,10 @@ class S1Cases(S1Base):
         self.assertEqual((question.question_code, question.profile_version), ("ask_visa_category", 1))
 
         second = self.service.post_message(self.user, conversation["conversation_id"], "Student visa", "m2")
-        self.assertEqual(second.status, "answered")
-        self.assertTrue(second.citations)
+        # After the category is known, condition fields are still asked before the list.
+        self.assertEqual(second.status, "needs_input")
+        self.assertTrue(second.follow_up_questions)
+        self.assertEqual(second.answer.materials, [])
         history = self.service.list_messages(self.user, conversation["conversation_id"])["messages"]
         self.assertEqual([m["role"] for m in history], ["user", "assistant", "user", "assistant"])
         self.assertEqual(history[3]["body"]["message_id"], second.message_id)
@@ -66,7 +75,7 @@ class S1Cases(S1Base):
 
     def test_s1_02_answered_with_expandable_synthetic_citations(self):
         self.make()
-        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.assertEqual(answer.status, "answered")
         self.assertTrue(answer.synthetic)
         required = {m.document_code for m in answer.answer.materials if m.applicability == "required"}
@@ -86,15 +95,17 @@ class S1Cases(S1Base):
     def test_s1_03_unknown_or_unmet_condition_is_not_unconditional(self):
         self.make()
         _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
-        by_code = {m.document_code: m for m in answer.answer.materials}
-        self.assertEqual(by_code["atas"].applicability, "unverified")
-        self.assertEqual(by_code["parental_consent"].applicability, "conditional")
-        self.assertEqual(by_code["parental_consent"].pending_fields, ["applicant_age"])
-        claim = next(c for c in answer.claims if c.requirement_key == "uk-sv-parental-consent")
-        self.assertIn("如果申请人未满 18 岁", claim.text)
+        self.assertEqual(answer.status, "needs_input")
+        self.assertTrue(answer.follow_up_questions)
+        self.assertIn(answer.follow_up_questions[0].field,
+                      {"applicant_age", "funding_source", "tb_listed_country_resident"})
+        self.assertEqual(answer.answer.materials, [])
 
-        _, _, adult = self.ask("需要准备哪些签证材料", {**UK_STUDENT, "applicant_age": 20}, client_id="m9")
-        self.assertNotIn("parental_consent", {m.document_code for m in adult.answer.materials})
+        _, _, adult = self.ask("需要准备哪些签证材料", UK_STUDENT_READY, client_id="m9")
+        self.assertEqual(adult.status, "answered")
+        by_code = {m.document_code: m for m in adult.answer.materials}
+        self.assertEqual(by_code["atas"].applicability, "unverified")
+        self.assertNotIn("parental_consent", by_code)
 
     def test_s1_04_pending_or_withdrawn_is_never_a_definite_fact(self):
         for status in ("PENDING_REVIEW", "WITHDRAWN"):
@@ -111,7 +122,7 @@ class S1Cases(S1Base):
         # Freshness SLA is not an answer gate; ACTIVE published rows remain usable.
         records = fixture_records()
         self.make(records, clock=NOW + timedelta(days=30))
-        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.assertEqual(answer.status, "answered")
         self.assertTrue(answer.answer.materials)
 
@@ -125,7 +136,7 @@ class S1Cases(S1Base):
                    condition=[{"field": "applicant_age", "op": "gte", "value": 18, "text": "申请人年满 18 岁"}])
         other["requirements"] = [cas]
         self.make(records + [other])
-        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.assertEqual(answer.status, "needs_verification")
         self.assertEqual([c.document_code for c in answer.conflicts], ["cas"])
         variants = answer.conflicts[0].variants
@@ -147,13 +158,13 @@ class S1Cases(S1Base):
                 return draft
 
         self.make(generator=InventsCitation({"cas"}))
-        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.assertEqual(answer.status, "answered")
         self.assertNotIn("cas", {m.document_code for m in answer.answer.materials})
         self.assertTrue(any("未通过引用" in limit for limit in answer.answer.limitations))
 
         self.make(generator=InventsCitation({"passport", "cas", "proof_of_funds"}))
-        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.assertEqual(answer.status, "cannot_answer")
         self.assertEqual((answer.answer.materials, answer.claims, answer.citations), ([], [], []))
 
@@ -167,13 +178,13 @@ class S1Cases(S1Base):
                 return draft
 
         self.make(generator=WithdrawsMidway())
-        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        _, _, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.assertEqual(answer.status, "cannot_answer")
         self.assertEqual(answer.citations, [])
 
     def test_s1_07_chinese_question_keeps_english_terms_and_original_quote(self):
         self.make()
-        _, _, answer = self.ask("我去英国读书需要什么签证材料", UK_STUDENT)
+        _, _, answer = self.ask("我去英国读书需要什么签证材料", UK_STUDENT_READY)
         cas = next(m for m in answer.answer.materials if m.document_code == "cas")
         self.assertIn("Confirmation of Acceptance for Studies (CAS)", cas.name_en)
         claim = next(c for c in answer.claims if c.requirement_key == "uk-sv-cas")
@@ -183,13 +194,13 @@ class S1Cases(S1Base):
 
     def test_s1_08_other_users_resources_are_not_found_with_zero_body_leak(self):
         service = self.make()
-        _, conversation, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        _, conversation, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         alice_token = service.demo_login("alice")["token"]
         bob_token = service.demo_login("bob")["token"]
         profile_id = conversation["profile_id"]
         cid = conversation["conversation_id"]
-        status, payload = api.dispatch(service, "GET", f"/v1/conversations/{cid}/messages",
-                                       {"Authorization": f"Bearer {alice_token}"}, b"")
+        status, payload, _ = api.dispatch(service, "GET", f"/v1/conversations/{cid}/messages",
+                                          {"Authorization": f"Bearer {alice_token}"}, b"")
         self.assertEqual(status, 200)
         attempts = [("GET", f"/v1/conversations/{cid}/messages", b""),
                     ("POST", f"/v1/conversations/{cid}/messages", b'{"text": "hi", "client_message_id": "x"}'),
@@ -198,18 +209,19 @@ class S1Cases(S1Base):
                     ("POST", f"/v1/messages/{answer.message_id}/reaction", b'{"kind": "like"}')]
         for method, path, body in attempts:
             with self.subTest(path=path, method=method):
-                status, payload = api.dispatch(service, method, path, {"Authorization": f"Bearer {bob_token}"}, body)
+                status, payload, _ = api.dispatch(
+                    service, method, path, {"Authorization": f"Bearer {bob_token}"}, body)
                 self.assertEqual(status, 404)
                 self.assertEqual(set(payload), {"code", "message", "retryable", "trace_id"})
                 leaked = json.dumps(payload, ensure_ascii=False)
                 self.assertNotIn(answer.answer.summary, leaked)
                 self.assertNotIn(profile_id, leaked)
-        status, _ = api.dispatch(service, "GET", "/v1/me", {}, b"")
+        status, _, _ = api.dispatch(service, "GET", "/v1/me", {}, b"")
         self.assertEqual(status, 401)
 
     def test_s1_09_same_client_message_id_returns_same_result_once(self):
         self.make()
-        profile, conversation, first = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        profile, conversation, first = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         again = self.service.post_message(self.user, conversation["conversation_id"], "需要准备哪些签证材料", "m1")
         self.assertEqual(again.message_id, first.message_id)
         self.assertEqual(len(self.service.list_messages(self.user, conversation["conversation_id"])["messages"]), 2)
@@ -218,7 +230,7 @@ class S1Cases(S1Base):
 
     def test_s1_10_like_never_writes_profile_and_change_is_only_a_proposal(self):
         self.make()
-        profile, conversation, answer = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        profile, conversation, answer = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.service.react(self.user, answer.message_id, "like")
         self.assertEqual(self.service.get_profile(self.user, profile.profile_id), profile)
 
@@ -234,12 +246,12 @@ class S1Cases(S1Base):
         updated = self.service.confirm_proposal(self.user, proposal.proposal_id, expected_version=1)
         self.assertEqual((updated.version, updated.confirmed("school")), (2, "帝国理工"))
 
-    def test_profile_version_change_in_conversation_is_explained(self):
+    def test_profile_version_change_in_conversation_reassesses_quietly(self):
         self.make()
-        profile, conversation, _ = self.ask("需要准备哪些签证材料", UK_STUDENT)
+        profile, conversation, _ = self.ask("需要准备哪些签证材料", UK_STUDENT_READY)
         self.service.patch_profile(self.user, profile.profile_id, expected_version=1, set_fields={"applicant_age": 17})
         reply = self.service.post_message(self.user, conversation["conversation_id"], "那签证材料呢", "m2")
-        self.assertIn("profile_version_changed", [n.code for n in reply.notices])
+        self.assertNotIn("profile_version_changed", [n.code for n in reply.notices])
         self.assertIn("parental_consent", {m.document_code for m in reply.answer.materials
                                            if m.applicability == "required"})
 

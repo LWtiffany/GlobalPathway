@@ -26,8 +26,17 @@ def cmd_serve(args):
     else:
         from .knowledge import FixtureKnowledgeRead
         knowledge = FixtureKnowledgeRead.from_file()
+    accounts = None
+    try:
+        from .accounts import RdsAccountDirectory
+        accounts = RdsAccountDirectory()
+        accounts.ensure_lock_columns()
+    except Exception as exc:  # noqa: BLE001 — serve without password login if RDS unreachable
+        print(f"warning: account directory unavailable ({exc}); /v1/login disabled", flush=True)
+        accounts = None
     service = Agent2Service(Store(), knowledge,
-                            demo_enabled=os.environ.get("AGENT2_DEMO", "1") == "1")
+                            demo_enabled=os.environ.get("AGENT2_DEMO", "1") == "1",
+                            accounts=accounts)
     serve(service, args.host, args.port)
     return 0
 
