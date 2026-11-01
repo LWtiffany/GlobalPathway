@@ -398,6 +398,8 @@ class Store:
                     # Canonical identity/Profile tables must win name resolution.
                     # Agent2 contains workflow extensions only.
                     sql.Identifier(self.user_schema), sql.Identifier(self.schema)))
+            if not self._temporary:
+                self._migrate_legacy_auth_sessions()
             schema_ddl = SCHEMA
             if not self._temporary:
                 # The durable userinformation schema keeps conversations in a
@@ -418,6 +420,26 @@ class Store:
                     self._connection.execute(
                         "INSERT INTO schema_migrations(version) VALUES (%s) ON CONFLICT DO NOTHING",
                         (version,))
+
+    def _migrate_legacy_auth_sessions(self):
+        """Preserve the old plaintext-token table before installing cookie sessions.
+
+        Earlier deployments used ``auth_sessions(token, user_id, created_at)``.
+        The current login flow stores only a token hash plus a CSRF secret.  A
+        rename keeps the legacy rows available for audit while allowing the
+        idempotent schema DDL to create the new table.
+        """
+        columns = self._connection.execute("""SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema=%s AND table_name='auth_sessions'""",
+                                           (self.user_schema,)).fetchall()
+        if not columns or "token_hash" in {row["column_name"] for row in columns}:
+            return
+        legacy_name = f"auth_sessions_legacy_{uuid.uuid4().hex[:8]}"
+        self._connection.execute(
+            sql.SQL("ALTER TABLE {}.{} RENAME TO {}").format(
+                sql.Identifier(self.user_schema), sql.Identifier("auth_sessions"),
+                sql.Identifier(legacy_name)))
 
     def canonical_table(self, name):
         if name not in {"users", "profiles", "conversations", "message_index"}:
