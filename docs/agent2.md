@@ -17,7 +17,7 @@ agent2/
 ├── service.py        应用服务层：会话、档案、消息幂等、领域路由、事务持久化
 ├── runner.py         Legacy Runner：签证等旧流程 + 未接入领域的诚实 cannot_answer
 ├── clarify.py        Profile 字段注册表（类型/选项/时效/敏感级/领域）+ 追问合约
-├── store.py          SQLite 存储（会话/消息/档案三层/提案/快照投影）
+├── store.py          PostgreSQL/RDS 存储（主 Profile 在 userinformation；审计扩展在 agent2）
 ├── knowledge.py      知识读取协议 + 合成夹具（M07，签证 7 天新鲜度 SLA）
 ├── intent.py         确定性意图分类
 ├── models.py         领域无关的顶层模型（AnswerResult、Profile、提案…）
@@ -120,9 +120,11 @@ Provider 为阿里云百炼 OpenAI 兼容端点（默认 `qwen3.8-flash`，JSON 
 
 ## 存储
 
-- **会话侧**：SQLite（`store.py`），内存或文件模式；消息、回答、提案、快照投影单事务
-  写入。
-- **产品侧**：AWS RDS PostgreSQL（`agent1.storage`），**只读**（`read_session()`）；
+- **用户主数据**：沿用 RDS PostgreSQL 既有 `userinformation` schema；`users`、`profiles`、
+  `conversations`、`message_index` 以及四类当前建议 JSON 都以这里为唯一主数据。
+- **Agent2 扩展**：独立 `agent2` schema 只保存字段事件/提案、Advice 依赖与历史、刷新任务、
+  领域会话状态等既有模型没有的审计数据，并以跨 schema 外键关联主数据。没有 SQLite 回退。
+- **产品侧**：同一 RDS 的 `public` schema（`agent1.storage`），推荐链路**只读**（`read_session()`）；
   本地经 SSH 隧道 `scripts/start_team03_pg_tunnel.ps1`（127.0.0.1:15432），生产直连。
   写入只发生在数据同步脚本（`scripts/sync_hsbc_*.py`）。
 
@@ -145,7 +147,7 @@ scripts\start_team03_pg_tunnel.ps1
 # 4. 真实 LLM 追问回放（写 JSON 报告到 data/agent2/eval/）
 .venv\Scripts\python.exe scripts\test_agent2_followups.py
 
-# 5. 全套测试（离线确定性，109 个用例）
+# 5. 全套测试（每个集成测试使用隔离的临时 PostgreSQL schema）
 .venv\Scripts\python.exe -m unittest discover -s tests -t .
 ```
 
@@ -172,11 +174,13 @@ AGENT2_LLM_TIMEOUT_SECONDS=60
 AGENT2_LLM_API_KEY=                # 实际密钥放 local_secrets.py（已 gitignore）
 ```
 
-数据库连接沿用 agent1 的 `.env`（dev 走 SSH 隧道，prod 由环境变量覆盖 RDS 直连）。
+Agent2 状态库使用 `AGENT2_DB_*`；未单独配置时沿用 `AGENT1_DB_*` 连接，但始终写入
+`AGENT2_DB_SCHEMA=agent2`，用户主数据 schema 默认为
+`AGENT2_USER_SCHEMA=userinformation`。开发环境经 SSH 隧道，生产环境直连 RDS。
 
 ## 数据安全红线
 
-1. 推荐链路对 RDS **只读零写入**；写操作只在显式的同步脚本里。
+1. 产品/政策表对推荐链路只读；用户主数据写入 `userinformation`，审计扩展只写 `agent2`。
 2. LLM 密钥与用户数据隔离：理解 prompt 只收当前消息与字段目录，改写 prompt 只收已验证
    推荐对象（不含完整 Profile）。
 3. 回答快照不可变，先持久化快照再应用投影，保证"当时为什么这样回答"可复现审计。

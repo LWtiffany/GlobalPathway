@@ -5,11 +5,13 @@
 """
 import json
 import re
+import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
 from . import clarify
 from .service import ServiceError
@@ -33,13 +35,23 @@ def _dump(value):
         return [_dump(v) for v in value]
     if isinstance(value, dict):
         return {k: _dump(v) for k, v in value.items()}
-    return value
+    # psycopg returns native datetime/date/Decimal/UUID objects while the old
+    # SQLite adapter mostly returned strings and floats.  Normalize every leaf
+    # at the HTTP boundary so one raw RDS column cannot abort the connection.
+    return to_jsonable_python(value)
 
 
 @route("GET", r"/healthz", auth=False)
 def healthz(service, user_id, body, query):
     """Process-level health check; it deliberately does not expose user data."""
     return 200, {"status": "ok", "service": "user"}
+
+
+@route("GET", r"/readyz", auth=False)
+def readyz(service, user_id, body, query):
+    """Readiness requires the configured RDS state store to be reachable."""
+    service.store.one("SELECT 1 AS ok")
+    return 200, {"status": "ready", "service": "user", "storage": "rds"}
 
 
 @route("POST", r"/v1/demo/login", auth=False)
@@ -78,7 +90,9 @@ def list_proposals(service, user_id, body, query, profile_id):
 
 @route("POST", r"/v1/profile-proposals/(?P<proposal_id>[\w-]+)/confirm")
 def confirm_proposal(service, user_id, body, query, proposal_id):
-    return 200, service.confirm_proposal(user_id, proposal_id, expected_version=body.get("expected_version"))
+    return 200, service.confirm_proposal(
+        user_id, proposal_id, expected_version=body.get("expected_version"),
+        refresh_topics=body.get("refresh_topics") or [])
 
 
 @route("POST", r"/v1/profile-proposals/(?P<proposal_id>[\w-]+)/dismiss")
@@ -90,7 +104,8 @@ def dismiss_proposal(service, user_id, body, query, proposal_id):
 def confirm_proposals_batch(service, user_id, body, query):
     return 200, service.confirm_proposals(
         user_id, body.get("proposal_ids") or [],
-        expected_version=body.get("expected_version"))
+        expected_version=body.get("expected_version"),
+        refresh_topics=body.get("refresh_topics") or [])
 
 
 @route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/bank-relationships")
@@ -153,6 +168,16 @@ def react(service, user_id, body, query, message_id):
 @route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/advice/(?P<topic>[\w-]+)")
 def get_advice(service, user_id, body, query, profile_id, topic):
     return 200, service.get_advice(user_id, profile_id, topic)
+
+
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/advice/(?P<topic>[\w-]+)/refresh")
+def refresh_advice(service, user_id, body, query, profile_id, topic):
+    return 200, service.refresh_advice(user_id, profile_id, topic)
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/advice-refresh-jobs")
+def list_advice_refresh_jobs(service, user_id, body, query, profile_id):
+    return 200, service.list_refresh_jobs(user_id, profile_id, query.get("status"))
 
 
 @route("GET", r"/v1/knowledge/snapshots/(?P<revision_id>[\w-]+)")
@@ -285,21 +310,37 @@ def dispatch(service, method, path, headers, raw_body):
     except (ValueError, TypeError):
         return 400, {"code": "INVALID_INPUT", "message": "请求参数不合法", "retryable": False, "trace_id": trace_id}
     except Exception:
+        # The stack must stay out of the HTTP response, but a silent 500 is
+        # otherwise impossible to diagnose from the dev console.
+        traceback.print_exc()
         return 500, {"code": "INTERNAL", "message": "服务内部错误", "retryable": True, "trace_id": trace_id}
 
 
 def make_handler(service):
     class Handler(BaseHTTPRequestHandler):
+        def _respond(self, status, data, content_type, extra_headers=()):
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                for name, value in extra_headers:
+                    self.send_header(name, value)
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass  # Client aborted (refresh / fetch timeout); nothing left to deliver.
+
         def _handle(self, method):
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(min(length, MAX_BODY_BYTES + 1)) if length else b""
             status, payload = dispatch(service, method, self.path, self.headers, raw)
-            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            # Keep a final serialization guard even though dispatch already
+            # normalizes payloads.  This protects responses containing a nested
+            # value returned by a custom mapping/model implementation.
+            data = json.dumps(
+                payload, ensure_ascii=False, default=to_jsonable_python
+            ).encode("utf-8")
+            self._respond(status, data, "application/json; charset=utf-8")
 
         def do_GET(self):
             path = self.path.partition("?")[0]
@@ -312,13 +353,7 @@ def make_handler(service):
             if not found:
                 return self._handle("GET")
             data, content_type = found
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
-            for name, value in STATIC_HEADERS.items():
-                self.send_header(name, value)
-            self.end_headers()
-            self.wfile.write(data)
+            self._respond(200, data, content_type, STATIC_HEADERS.items())
 
         def do_POST(self):
             self._handle("POST")
