@@ -109,6 +109,25 @@ class VisaWorkflow:
         follow = clarify.assess("visa_documents", profile, facts,
                                 condition_fields=package.condition_fields,
                                 expected_profile_version=request.expected_profile_version)
+        # Same UX as credit-card / legacy runner: finish condition questions
+        # before emitting the materials list with many「待确认」rows.
+        if follow.questions and not package.conflicts:
+            notices = [*assessment.notices, *follow.notices,
+                       Notice(code="pending_conditions", message=follow.explanation)]
+            return DomainResult(
+                task_id=task.task_id, domain="visa", status="needs_input",
+                answer=AnswerBody(
+                    summary=follow.explanation or "补充以下信息后，我再给出更准确的材料清单。",
+                    steps=["回答下方问题后，我再给出确定的材料清单。"]),
+                missing_fields=[],
+                follow_up_questions=follow.questions,
+                notices=notices,
+                next_actions=_next_check(facts),
+                projection="chat_only",
+                observed_facts=facts, observed_basis=basis,
+                knowledge_read_id=getattr(self.knowledge, "read_id", None),
+                model_version=MODEL_VERSION)
+
         draft = self.generator.draft(facts=facts, package=package, assessment=follow)
         gated = visa_gate.run_gate(draft, package, self.knowledge, self.clock())
         citations = list(gated.citations)
