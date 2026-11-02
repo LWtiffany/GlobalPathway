@@ -9,6 +9,8 @@ from agent2.models import AnswerBody, FollowUpQuestion, Notice
 
 from ..composer import is_necessity_question
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
+from .credit_card_advisor import CreditCardAdvisor
+from .credit_card_knowledge import CreditCardKnowledgeService
 from .credit_card_engine import SCENARIO_RULES, assess_eligibility, needs_asset_information, recommend
 from .credit_card_models import CardCatalogRead, CreditCardRecommendationSet
 from .credit_card_repository import (CreditCardRepository, CreditCardRepositoryError,
@@ -425,9 +427,12 @@ def _looks_like_card_product_question(text):
 
 
 class CreditCardWorkflow:
-    def __init__(self, repository: CreditCardRepository | None = None, clock=None):
+    def __init__(self, repository: CreditCardRepository | None = None, clock=None, advisor=None,
+                 knowledge=None):
         self.repository = repository or RdsCreditCardRepository()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.advisor = advisor or CreditCardAdvisor(clock=self.clock)
+        self.knowledge = knowledge or CreditCardKnowledgeService(clock=self.clock)
 
     async def run(self, task: DomainTask, request: OrchestrationInput) -> DomainResult:
         if request.input_mode == "free_text":
@@ -458,6 +463,12 @@ class CreditCardWorkflow:
             overview = await self._product_question(task, request, facts, extracted, basis)
             if overview is not None:
                 return overview
+        # General servicing knowledge is a credit-card-domain capability, not
+        # a new router branch.  It is used only when no specific product answer
+        # was available above, and it never starts a recommendation interview.
+        general_knowledge = await self.knowledge.answer(task, request, facts, extracted, basis)
+        if general_knowledge is not None:
+            return general_knowledge
 
         # 「要不要办信用卡」：先确认意愿，再进入普通选卡流程。
         if facts.get("want_credit_card") is None and is_necessity_question(request.text):
@@ -694,6 +705,15 @@ class CreditCardWorkflow:
             steps.insert(0, self._format_borrowing_costs(by_id[result.primary.card_id]))
         if result.alternatives:
             steps.append("免年费选择：" + "、".join(card.product_name for card in result.alternatives))
+        # Customer-manager advice is strictly an explanation layer.  A failure
+        # to read supplementary account data must not interrupt card advice.
+        try:
+            advisor_brief = await self.advisor.enrich(
+                result.primary, by_id[result.primary.card_id], facts, recommendations)
+        except Exception:
+            advisor_brief = None
+        if advisor_brief:
+            steps.extend(advisor_brief.steps)
         limitations = list(dict.fromkeys(
             limit for card in recommendations for limit in card.limitations
             if limit and not limit.startswith(("满足", "不满足", "缺少门槛", "非香港居民"))))
@@ -730,19 +750,25 @@ class CreditCardWorkflow:
             "申请前可在官网查看最新迎新条款。")
         evidence = list(dict.fromkeys(
             [card.official_url for card in recommendations if card.official_url]
-            + [source for card in recommendations for source in card.borrowing_sources]))
+            + [source for card in recommendations for source in card.borrowing_sources]
+            + (advisor_brief.evidence_refs if advisor_brief else [])))
+        next_actions = ["申请前在发卡机构官网确认资格、年费、奖励上限和最新条款。"]
+        if advisor_brief and advisor_brief.next_action:
+            next_actions.insert(0, advisor_brief.next_action)
         return DomainResult(
             task_id=task.task_id, domain="credit_card",
             status="answered" if product_data_ready else "needs_verification",
             answer=AnswerBody(summary=f"主推荐：{result.primary.product_name}", steps=steps,
                               limitations=limitations),
             evidence_refs=evidence,
-            next_actions=["申请前在发卡机构官网确认资格、年费、奖励上限和最新条款。"],
+            next_actions=list(dict.fromkeys(next_actions)),
             notices=[] if product_data_ready else [Notice(
                 code="card_product_fields_need_verification",
                 message="信用卡奖励和年费字段尚未逐项完成官方核验")],
             payload={"recommendations": result.model_dump(mode="json"), "market": catalog.market,
-                     "catalog": self._catalog_summary(catalog)},
+                     "catalog": self._catalog_summary(catalog),
+                     "advisor": advisor_brief.audit if advisor_brief else {
+                         "policy_version": "credit-card-advisor-v1", "suppressed": "unavailable"}},
             knowledge_read_id=catalog.read_id, observed_facts=extracted, observed_basis=basis,
         )
 
