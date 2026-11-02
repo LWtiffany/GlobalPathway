@@ -1610,7 +1610,7 @@ async function openEdit(focus) {
       drawSheet();
       drawSide();
       drawChat({ keep: true });
-      toast(`档案已保存（v${S.profile.version}）；受影响的建议已标记待更新。`);
+      toast("档案已保存");
     } catch (e) {
       err.textContent = e.message;
       if (e.code === "VERSION_CONFLICT") refreshProfile();
