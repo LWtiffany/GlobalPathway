@@ -42,6 +42,13 @@ WAIVERS_ZH = {
         "符合美国汇丰尚玉或私人银行关系条件可获豁免",
 }
 BENEFITS_ZH = {
+    # These are catalogue identifiers, not customer-facing copy.  Keep this
+    # translation at the domain boundary so a new or older RDS row cannot
+    # expose implementation vocabulary in a recommendation.
+    "selected_lifestyle": "指定生活消费类别",
+    "lifestyle": "生活消费类别奖励",
+    "Enhanced travel protection": "升级旅游保障",
+    "Platinum lifestyle offers": "白金卡生活礼遇",
     "Retail partner discounts": "合作零售商优惠",
     "Mobile wallet support": "支持手机钱包支付",
     "Visa concierge": "威士礼宾服务",
@@ -122,6 +129,22 @@ def _waiver_text(value):
 
 def _benefit_text(value):
     return BENEFITS_ZH.get(value, "其他权益请见官网")
+
+
+def _category_text(value):
+    """Return public copy for a reward category stored in the card catalogue."""
+    labels = {
+        "online": "网购", "dining": "餐饮", "travel": "旅行",
+        "travel_and_transport": "旅行与交通", "overseas": "境外消费",
+        "mainland_china": "内地消费", "mainland_china_and_macau": "内地及澳门消费",
+        "retail": "零售消费", "groceries": "日常采购", "general": "日常消费",
+        "selected_lifestyle": "指定生活消费类别",
+        "selected_retail": "指定零售类别", "dining_and_lifestyle": "餐饮及生活消费",
+        "gas_and_groceries": "加油及日常采购",
+    }
+    # An unknown snake_case value is internal data, not suitable fallback copy.
+    return labels.get(value, "指定消费类别" if re.fullmatch(r"[a-z]+(?:_[a-z]+)+", value or "")
+                      else "日常消费")
 
 
 def _money(amount, currency):
@@ -740,16 +763,10 @@ class CreditCardWorkflow:
         lines = []
         evidence = []
         product_payload = []
-        scenario_label = {
-            "online": "网购", "dining": "餐饮", "travel": "旅行",
-            "travel_and_transport": "旅行与交通", "overseas": "境外消费",
-            "mainland_china": "内地消费", "mainland_china_and_macau": "内地及澳门消费",
-            "retail": "零售消费", "general": "日常消费",
-        }
         for product in named:
             assessment = assess_eligibility(product, facts)
             categories = list(dict.fromkeys(
-                scenario_label.get(rule.spend_category, rule.spend_category)
+                _category_text(rule.spend_category)
                 for rule in product.reward_rules if rule.spend_category))
             fee = self._fee_text_from_product(product)
             perks = self._perks_from_product(product)
@@ -766,7 +783,7 @@ class CreditCardWorkflow:
             if isinstance(profile_scenarios, str):
                 profile_scenarios = [profile_scenarios]
             raw_categories = {rule.spend_category for rule in product.reward_rules}
-            matched = [scenario_label.get(item, item) for item in profile_scenarios
+            matched = [_category_text(item) for item in profile_scenarios
                        if item in raw_categories
                        or (item == "mainland_china" and "mainland_china_and_macau" in raw_categories)]
             if matched:
@@ -1401,12 +1418,6 @@ class CreditCardWorkflow:
     def _format_card_lines(card):
         """Format a concise, customer-facing recommendation rather than raw DB fields."""
         label = {"primary": "主推荐", "supplement": "场景搭配", "alternative": "其他选择"}[card.role]
-        scenario_labels = {
-            "online": "网上消费", "dining": "餐饮", "travel": "旅行",
-            "overseas": "境外消费", "mainland_china": "内地消费",
-            "tuition": "学费", "retail": "指定商户", "groceries": "日常采购",
-            "general": "日常消费",
-        }
         if card.annual_fee is None:
             fee = "请见官网"
         elif card.annual_fee == 0:
@@ -1421,7 +1432,7 @@ class CreditCardWorkflow:
                     and card.estimated_annual_fee_hkd == 0):
                 fee += f"；豁免期后年费每年{card.ongoing_annual_fee_hkd:,.0f}港元"
         perks = [_benefit_text(item) for item in card.main_benefits[:3]]
-        scenes = [scenario_labels.get(s, "其他消费") for s in card.matched_scenarios if s]
+        scenes = [_category_text(s) for s in card.matched_scenarios if s]
         miles = card.reward_units.get("miles")
         points = card.reward_units.get("points")
         if miles is not None and miles > 0:
