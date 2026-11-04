@@ -63,6 +63,16 @@ def _canonical_visa(value):
     return "student_visa" if any(token in folded for token in ("student", "f-1", "study")) else value
 
 
+def _clear_card_fee_question(text, intents):
+    """The narrow direct-answer path that needs no profile fact extraction."""
+    return bool(
+        "credit_card" in intents
+        and re.search(r"这个卡|这张卡|那张卡|刚才那张|另一张|刚推荐的|备选卡", text)
+        and re.search(r"年费|豁免|免年费", text)
+        and not re.search(r"改成|说错|更正|其实|以后|收入|年龄|居民|搬去", text)
+    )
+
+
 class ServiceError(Exception):
     def __init__(self, code, message, http_status, retryable=False):
         super().__init__(message)
@@ -101,6 +111,7 @@ class Agent2Service:
             bank_repository=bank_account_repository,
             understanding=llm.understanding,
             writer=llm.writer,
+            reasoner=getattr(llm, "reasoner", None),
             visa_knowledge=knowledge,
             clock=clock,
             visa_generator=generator,
@@ -312,6 +323,32 @@ class Agent2Service:
         rows = self.store.all("SELECT profile_id FROM profiles WHERE user_id=? ORDER BY created_at, profile_id",
                               (user_id,))
         return {"profiles": [self.get_profile(user_id, r["profile_id"]) for r in rows]}
+
+    def delete_profile(self, user_id, profile_id, *, expected_version):
+        """Remove one owned profile and its conversation in a single transaction."""
+        with self.store.transaction() as db:
+            row = db.execute(
+                "SELECT version FROM profiles WHERE profile_id=? AND user_id=? FOR UPDATE",
+                (profile_id, user_id)).fetchone()
+            if not row:
+                raise not_found("档案")
+            if expected_version != row["version"]:
+                raise ServiceError("VERSION_CONFLICT", "档案资料已变化，请刷新后再确认删除", 409)
+
+            message_ids = ("SELECT message_id FROM message_index WHERE conversation_id IN "
+                           "(SELECT session_id FROM sessions WHERE profile_id=?)")
+            # These rows reference messages without ON DELETE CASCADE. Clear
+            # them before messages; other profiles' records never enter the subquery.
+            for table in ("answer_citations", "answer_runs", "message_reactions", "feedback_tickets"):
+                db.execute(f"DELETE FROM {table} WHERE message_id IN ({message_ids})", (profile_id,))
+            db.execute("DELETE FROM message_index WHERE conversation_id IN "
+                       "(SELECT session_id FROM sessions WHERE profile_id=?)", (profile_id,))
+            db.execute("DELETE FROM sessions WHERE profile_id=?", (profile_id,))
+            # Advice history has no profile FK; current advice has a restrictive FK.
+            for table in ("advice_history", "advice_current", "advice_scoped_current"):
+                db.execute(f"DELETE FROM {table} WHERE profile_id=?", (profile_id,))
+            db.execute("DELETE FROM profiles WHERE profile_id=? AND user_id=?", (profile_id, user_id))
+        return {"profile_id": profile_id, "deleted": True}
 
     @staticmethod
     def _check_values(values):
@@ -1023,9 +1060,45 @@ class Agent2Service:
         )
         return json.loads(row["state_json"]) if row else {}
 
+    def _credit_card_context(self, profile_id):
+        """Resolve references to the saved recommendation without trusting chat text."""
+        row = self.store.one(
+            "SELECT payload_json FROM advice_current WHERE profile_id=? AND topic='credit_card'",
+            (profile_id,),
+        )
+        if not row:
+            return {}
+        payload = _load_json(row["payload_json"], {})
+        cards = payload.get("cards") or card_summaries_from_steps(
+            payload.get("steps") or [], payload.get("groups") or [])
+        recommendations = payload.get("recommendations") or {}
+        ranked = [recommendations.get("primary"),
+                  *(recommendations.get("supplements") or []),
+                  *(recommendations.get("alternatives") or [])]
+        by_name = {item["product_name"]: item for item in ranked
+                   if isinstance(item, dict) and item.get("product_name")}
+        cards = [{**card,
+                  "card_id": card.get("card_id") or
+                  (by_name.get(card.get("product_name")) or {}).get("card_id")}
+                 for card in cards]
+        return {"market": payload.get("market"), "cards": cards}
+
     def _apply_understanding(self, request: OrchestrationInput):
         """Merge LLM intents/facts into the routing request (rules ∪ model). Fail soft."""
         port = self.v2_workflow.dependencies.understanding
+        # A short fee follow-up with an explicit card reference already has a
+        # session domain and a rule-backed question type. The model cannot add
+        # useful facts here, so avoid an extra serial network call.
+        card_context = (request.session_topic == "credit_card"
+                        or "credit_card" in request.conversation_intents)
+        if not card_context and _clear_card_fee_question(request.text, ["credit_card"]):
+            card_context = bool(self._credit_card_context(request.profile_id).get("cards"))
+        direct_card_fee = card_context and _clear_card_fee_question(
+            request.text, ["credit_card"])
+        if direct_card_fee:
+            # Mark the request handled so the graph does not repeat the same
+            # understanding call after service-level routing.
+            return request.model_copy(update={"understanding_applied": True}), True
         if (port is None or request.input_mode != "free_text" or not request.text.strip()
                 or request.understanding_applied):
             return request, False
@@ -1042,6 +1115,7 @@ class Agent2Service:
                 "understood_basis": basis,
                 "llm_topic_switch": topic_switch,
                 "understanding_applied": True,
+                "understanding_model_used": True,
             })
             return enriched, True
         except Exception:
@@ -1063,7 +1137,7 @@ class Agent2Service:
         cleared_fields = list(dict.fromkeys(cleared_fields or []))
         if confirmed_fields:
             if not isinstance(confirmed_fields, dict) or not set(confirmed_fields) <= set(asked):
-                raise bad_request("只能保存当前追问要求的画像字段")
+                raise ServiceError("STALE_FOLLOW_UP", "追问已更新，请按当前问题重新选择", 409)
             self._check_values(confirmed_fields)
             # Backward-compatible safety: older clients submitted every chip as
             # confirmed_fields.  Query scope fields are never durable Profile
@@ -1076,7 +1150,7 @@ class Agent2Service:
                                     if code not in transient}
         if session_fields:
             if not isinstance(session_fields, dict) or not set(session_fields) <= set(asked):
-                raise bad_request("只能提交当前追问要求的临时字段")
+                raise ServiceError("STALE_FOLLOW_UP", "追问已更新，请按当前问题重新选择", 409)
             self._check_values(session_fields)
             facts.update(session_fields)
         unknown_clear = [code for code in cleared_fields if code not in clarify.FIELDS]
@@ -1109,6 +1183,7 @@ class Agent2Service:
         classified = classify(text, asked_fields=asked)
         understood_facts, understood_basis = {}, {}
         understanding_applied = False
+        understanding_model_used = False
         llm_intents: list[str] = []
         llm_topic_switch = False
         # Structured follow-ups continue the open multi-domain turn, but a chip
@@ -1155,6 +1230,7 @@ class Agent2Service:
                 session_pending_questions=list(asked),
             )
             route_request, understanding_applied = self._apply_understanding(route_request)
+            understanding_model_used = route_request.understanding_model_used
             understood_facts = dict(route_request.understood_facts)
             understood_basis = dict(route_request.understood_basis)
             llm_intents = list(route_request.llm_intents)
@@ -1176,10 +1252,13 @@ class Agent2Service:
         )
         if use_v2:
             v2_intents = planned_intents or intents_for_session_topic(resolved_topic, facts)
+            direct_card_fee = _clear_card_fee_question(text, v2_intents)
             domain_state = {}
             if "hsbc_account" in v2_intents:
                 domain_state["bank_account"] = self._domain_state(
                     conversation_id, "bank_account")
+            if "credit_card" in v2_intents:
+                domain_state["credit_card"] = self._credit_card_context(profile.profile_id)
             output = run_v2(self.v2_workflow, profile=profile, text=text,
                             conversation_facts=facts, asked_fields=asked,
                             message_id=answer_id,
@@ -1187,7 +1266,8 @@ class Agent2Service:
                             conversation_intents=v2_intents,
                             understood_facts=understood_facts,
                             understood_basis=understood_basis,
-                            understanding_applied=understanding_applied,
+                            understanding_applied=understanding_applied or bool(direct_card_fee),
+                            understanding_model_used=understanding_model_used,
                             llm_intents=llm_intents,
                             llm_topic_switch=llm_topic_switch,
                             session_topic=topic,

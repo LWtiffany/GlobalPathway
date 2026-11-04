@@ -566,6 +566,26 @@ function profileSub(p) {
   return parts.filter((x) => x && x !== "—").join(" · ");
 }
 
+async function deleteProfile(p) {
+  if (S.busy) return toast("请等当前回答完成后再删除档案", true);
+  const name = val(p, "beneficiary") || "未命名档案";
+  if (!window.confirm(`确定删除「${name}」吗？该档案的通话记录、建议和待办也会一起删除，且无法恢复。`)) return;
+  try {
+    await api("DELETE", `/profiles/${p.profile_id}`, { expected_version: p.version });
+    S.profiles = S.profiles.filter((item) => item.profile_id !== p.profile_id);
+    if (S.pid === p.profile_id) {
+      S.pid = null; S.profile = null; S.conv = null;
+      localStorage.removeItem("gp_pid");
+      go(S.profiles.length ? `#/chat/${S.profiles[0].profile_id}` : "#/onboarding");
+    } else {
+      drawSide();
+    }
+    toast("档案及通话记录已删除");
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 function drawSide() {
   S.el.side.replaceChildren(
     h("div", { class: "lab" }, "我的 PROFILE"),
@@ -573,7 +593,9 @@ function drawSide() {
       const name = val(p, "beneficiary") || "未命名档案";
       return h("div", { class: "pf" + (p.profile_id === S.pid ? " on2" : ""), onclick: () => go("#/chat/" + p.profile_id) },
         h("div", { class: "av2 sf" }, name.slice(-1)),
-        h("div", null, h("b", { class: "sf" }, name), h("div", { class: "sub" }, profileSub(p))));
+        h("div", { class: "pf-body" }, h("b", { class: "sf" }, name), h("div", { class: "sub" }, profileSub(p))),
+        h("button", { class: "pf-delete", type: "button", title: `删除${name}`,
+          "aria-label": `删除${name}`, onclick: (event) => { event.stopPropagation(); deleteProfile(p); } }, "删除"));
     }),
     h("button", { class: "new", onclick: () => go("#/onboarding") }, "＋ 添加 profile"));
 }
@@ -804,9 +826,10 @@ function cardsFromAnswerSteps(steps) {
     const colon = line.indexOf("：");
     const label = colon >= 0 ? line.slice(0, colon) : "";
     const value = colon >= 0 ? line.slice(colon + 1).trim() : "";
-    const roles = { 主推荐: "primary", 场景搭配: "supplement", 其他选择: "alternative" };
+    const roles = { 主推荐: "primary", 初步选择: "primary", 场景搭配: "supplement",
+      附加推荐: "supplement", 其他选择: "alternative" };
     const network = line.match(/^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$/);
-    if (roles[label]) cards.push({ product_name: value, role: roles[label] });
+    if (roles[label]) cards.push({ product_name: value, role: roles[label], display_label: label });
     else if (network) cards.push({ product_name: network[1], role: "candidate" });
     else if (cards.length && ["为什么适合你", "为什么适合您", "推荐理由", "年费", "主要权益", "申请前提", "申请限制"].includes(label)) {
       const field = { 为什么适合你: "reason_text", 为什么适合您: "reason_text", 推荐理由: "reason_text", 年费: "fee_text",
@@ -887,7 +910,7 @@ function creditCardCard(t) {
       others.length ? h("div", { class: "cc-others" },
         h("div", { class: "cc-section" }, hasPrimary ? "其他选择" : "一起比较"),
         others.slice(0, 2).map((card, index) => h("div", { class: "cc-secondary" },
-          cardAdviceOption(card, card.role === "supplement" ? "场景搭配" :
+          cardAdviceOption(card, card.role === "supplement" ? (card.display_label || "场景搭配") :
             hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`, false))),
         others.length > 2 ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`) : null) : null,
       h("div", { class: "cc-apply" }, h("b", null, "申请前请确认"), h("span", null, condition)),
@@ -1062,7 +1085,19 @@ function drawChat({ keep } = {}) {
 
 function isCardRecommendationSteps(steps) {
   return steps.some((s) => s.startsWith("年费："))
-    && steps.some((s) => /主推荐：|汇丰.+发行的卡/.test(s));
+    && steps.some((s) => /(?:主推荐|初步选择)：|汇丰.+发行的卡/.test(s));
+}
+
+function cardStepForDisplay(step) {
+  return String(step)
+    .replace(/\s*[（(]\s*s\d+(?:\s*[,，、;；]\s*s\d+)*\s*[）)]/gi, "")
+    .replace(/^顾问分析：/, "")
+    .replace(/^客户需求匹配：/, "")
+    .replace(/^价值拆账：/, "按您提供的信息估算，")
+    .replace(/^怎样才能真正用到价值：/, "用卡时可以留意：")
+    .replace(/^(?:适合与取舍|组合建议|下一步建议)：/, "")
+    .replace(/^客户经理视角：$/, "")
+    .trim();
 }
 
 function multiDomainSections(steps) {
@@ -1099,7 +1134,7 @@ function renderAnswerSteps(steps) {
         h("span", { class: "market-tag" }, "申请地区"),
         h("span", null, `${market}发行的卡`)));
     }
-    else if (/^(主推荐|场景搭配|其他选择)：/.test(s)) {
+    else if (/^(主推荐|初步选择|场景搭配|附加推荐|其他选择)：/.test(s)) {
       const i = s.indexOf("：");
       box.append(h("div", { class: "card-name" },
         h("span", { class: "role-tag" }, s.slice(0, i)),
@@ -1160,7 +1195,9 @@ function answerBubble(b, latest) {
   if (b.status !== "answered") {
     kids.push(h("div", { class: "status" }, h("span", { class: "st " + st.cls }, st.label), h("span", { class: "why" }, st.why)));
   }
-  const stepList = (b.answer.steps || []).filter((s) => !String(s).startsWith("政策原文："));
+  const rawSteps = (b.answer.steps || []).filter((s) => !String(s).startsWith("政策原文："));
+  const stepList = isCardRecommendationSteps(rawSteps)
+    ? rawSteps.map(cardStepForDisplay).filter(Boolean) : rawSteps;
   const multi = multiDomainSections(stepList);
   const cardAnswer = isCardRecommendationSteps(stepList);
   if (!cardAnswer) {
@@ -1220,13 +1257,10 @@ function materialItem(m, cmap) {
 }
 
 function currentFollowUpQuestion() {
-  for (let i = S.messages.length - 1; i >= 0; i--) {
-    const m = S.messages[i];
-    if (m.role !== "assistant" || m.body?.status !== "needs_input") continue;
-    const qs = m.body.follow_up_questions || [];
-    return qs.find((q) => val(S.profile, q.field) === undefined) || qs[0] || null;
-  }
-  return null;
+  const latest = lastAnswer();
+  if (latest?.status !== "needs_input") return null;
+  const qs = latest.follow_up_questions || [];
+  return qs.find((q) => val(S.profile, q.field) === undefined) || qs[0] || null;
 }
 
 /** 当前问题之前、档案里已确认且可撤销的追问字段（trail 丢了也能继续上一步）。 */
@@ -1303,6 +1337,15 @@ function typedAnswers(except) {
 
 async function answerField(code, value, text, persistMode, routeMessage) {
   if (S.busy) { toast("上一条还在处理中，请稍候再提交"); return; }
+  if (currentFollowUpQuestion()?.field !== code) {
+    try {
+      await Promise.all([loadMessages(), refreshProfile()]);
+      deriveMissing();
+      drawChat({ keep: true });
+      toast("问题已更新，请回答现在显示的追问");
+    } catch (e) { toast(e.message, true); }
+    return;
+  }
   // Disambiguation choices steer only this turn. They are deliberately not
   // profile fields, so the user can ask about the other product next time.
   if (persistMode === "session_only") {
@@ -1525,7 +1568,20 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
     drawSide();
     return res;
   } catch (e) {
-    if (S.pending) S.pending.error = e;
+    if (e.code === "STALE_FOLLOW_UP") {
+      S.pending = null;
+      S.followTrail = [];
+      S.suppressFields = [];
+      try {
+        await Promise.all([loadMessages(), refreshProfile()]);
+        deriveMissing();
+        drawSheet();
+        drawSide();
+        toast("问题已更新，请回答现在显示的追问");
+      } catch (refreshError) {
+        toast(refreshError.message, true);
+      }
+    } else if (S.pending) S.pending.error = e;
     return null;
   } finally {
     // busy 必须在重绘前清掉，否则「上一步」会带着 disabled 画进 DOM 后一直点不了。

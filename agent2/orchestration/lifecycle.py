@@ -4,10 +4,10 @@ from .contracts import (AdviceUpdate, LifecycleActions, OrchestrationInput, Plan
                         ProfileChangeCandidate, TaskPlan, UnifiedAnswer)
 
 PROFILE_FIELDS_BY_DOMAIN = {
-    # Visa category inferred from a materials question is a query-scoped
-    # assumption.  A user must explicitly edit their profile to make it a
-    # durable field, so the visa domain emits no automatic Profile candidates.
-    "visa": set(),
+    # Visa category inferred from a materials question is query-scoped.
+    # A school named as the student's own school may be stored when the field
+    # is empty; replacing an existing value still requires confirmation.
+    "visa": {"school"},
     "credit_card": {"applicant_age", "applicant_age_band",
                     "annual_income_hkd", "annual_income_band_hkd", "asset_band",
                     "repayment_mode", "spending_scenarios", "study_card_focus",

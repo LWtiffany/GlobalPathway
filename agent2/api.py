@@ -161,6 +161,12 @@ def patch_profile(service, user_id, body, query, profile_id):
                                       clear_fields=body.get("clear_fields") or [])
 
 
+@route("DELETE", r"/v1/profiles/(?P<profile_id>[\w-]+)")
+def delete_profile(service, user_id, body, query, profile_id):
+    return 200, service.delete_profile(user_id, profile_id,
+                                       expected_version=body.get("expected_version"))
+
+
 @route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/proposals")
 def list_proposals(service, user_id, body, query, profile_id):
     return 200, service.list_proposals(user_id, profile_id)

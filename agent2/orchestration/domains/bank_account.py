@@ -772,6 +772,11 @@ class BankAccountWorkflow:
                                       message="模型未完成开户表述，已使用核验资料生成回答。"))
         citations, claims = evidence(assessments, catalog["read_id"])
         missing_questions = _missing_account_questions(assessments)
+        # A fee question can be answered from the published fee rows even if
+        # applicant eligibility is still unknown. Do not start an application
+        # interview when the user only asked about account charges.
+        if labels == ["fees_balance"]:
+            missing_questions = []
         followups = ([_question(missing_questions[0], request.profile_version)]
                      if missing_questions else [])
         if "documents_process" in labels and not followups and region == "CN-HK" and \
