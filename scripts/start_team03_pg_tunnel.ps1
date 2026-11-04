@@ -16,8 +16,19 @@ if (Test-Path $pidPath) {
     $existingPid = [int](Get-Content $pidPath -Raw)
     $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
     if ($existing -and $existing.ProcessName -eq 'ssh') {
-        Write-Output "Tunnel is already running (PID $existingPid), localhost:$LocalPort"
-        exit 0
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $client.Connect('127.0.0.1', $LocalPort)
+            Write-Output "Tunnel is already running (PID $existingPid), localhost:$LocalPort"
+            exit 0
+        }
+        catch {
+            # SSH may remain visible after the forward stops listening.
+            Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
+        }
+        finally {
+            $client.Dispose()
+        }
     }
     Remove-Item $pidPath -Force
 }
