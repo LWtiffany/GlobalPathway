@@ -185,7 +185,8 @@ FIELDS = {
         "ask_hsbc_premier_path", "请选择与您相符的汇丰卓越理财情况。"),
     "us_hsbc_account_path": (
         "美国汇丰账户情况",
-        _enum("existing_premier_checking", "plan_to_open", "not_applicable"),
+        _enum("existing_premier_checking", "plan_to_open", "need_opening_guidance",
+              "not_applicable"),
         "ask_us_hsbc_account_path", "您目前是否已有美国汇丰卓越理财支票账户？"),
     "uk_hsbc_account_path": (
         "英国汇丰账户情况",
@@ -243,6 +244,7 @@ OPTION_LABELS = {
     "us_hsbc_account_path": {
         "existing_premier_checking": "已有美国汇丰卓越理财支票账户",
         "plan_to_open": "到美国后计划先开卓越理财支票账户，再申请信用卡",
+        "need_opening_guidance": "还没有美国汇丰卓越理财支票账户，想先了解开户再办信用卡",
         "not_applicable": "目前没有美国汇丰卓越理财支票账户，想先了解其他选择",
     },
     "uk_hsbc_account_path": {

@@ -216,7 +216,8 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
             field = {"residency": "residency_status", "credit_assessment": "credit_history_band"}.get(
                 rule.rule_type, f"card_rule_{rule.rule_type}")
             value, passed = facts.get(field), False
-        if (rule.rule_type == "banking_relationship" and value == "plan_to_open"
+        if (rule.rule_type == "banking_relationship" and value in {
+                "plan_to_open", "need_opening_guidance"}
                 and wanted in {"us_premier_checking", "uk_student_account"}):
             return "pending", field
         # 「想先了解其他选择」：仍按待满足前提展示美国卡，不硬性剔除。

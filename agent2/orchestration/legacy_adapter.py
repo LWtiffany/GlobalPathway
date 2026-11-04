@@ -16,7 +16,9 @@ from .planner import INTENT_DOMAIN
 def _new_message_id():
     return str(uuid.uuid4())
 
-_CARD_ROLES = {"主推荐": "primary", "场景搭配": "supplement", "其他选择": "alternative"}
+_CARD_ROLES = {"主推荐": "primary", "初步选择": "primary",
+               "场景搭配": "supplement", "附加推荐": "supplement",
+               "其他选择": "alternative"}
 _CARD_NETWORK = re.compile(r"^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$")
 
 # Session topic values must match store CHECK (remittance/account/visa/credit_card).
@@ -42,7 +44,8 @@ def card_summaries_from_steps(steps, groups=()):
         label, sep, value = line.partition("：")
         network = _CARD_NETWORK.fullmatch(line)
         if sep and label in _CARD_ROLES:
-            cards.append({"product_name": value.strip(), "role": _CARD_ROLES[label]})
+            cards.append({"product_name": value.strip(), "role": _CARD_ROLES[label],
+                          "display_label": label})
         elif network:
             cards.append({"product_name": network.group(1), "role": "candidate"})
         elif cards and sep and label in {"为什么适合你", "为什么适合您", "推荐理由", "年费", "主要权益",
@@ -125,6 +128,7 @@ def intents_for_confirmed_fields(confirmed_fields: dict, active_intents: list[st
 def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message_id,
            structured_selection=False, conversation_intents=None,
            understood_facts=None, understood_basis=None, understanding_applied=False,
+           understanding_model_used=False,
            llm_intents=None, domain_state=None, llm_topic_switch=False,
            session_topic=None, session_last_user_text="", session_last_assistant_text="",
            session_pending_questions=(), expected_profile_version=None):
@@ -154,6 +158,7 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         understood_facts=dict(understood_facts or {}),
         understood_basis=dict(understood_basis or {}),
         understanding_applied=understanding_applied,
+        understanding_model_used=understanding_model_used,
         llm_intents=list(dict.fromkeys(llm_intents or [])),
         llm_topic_switch=llm_topic_switch,
         session_topic=session_topic,
