@@ -7,7 +7,21 @@ from typing import NamedTuple
 from agent2.models import AnswerBody
 from agent2.orchestration.contracts import OrchestrationInput
 
-from .schemas import UnderstandingResult
+from .schemas import CreditCardAdvisorDraft, UnderstandingResult
+
+
+def validate_card_advisor(draft: CreditCardAdvisorDraft, lines: dict[str, str],
+                          source: AnswerBody) -> None:
+    selected = [lines[key] for key in draft.evidence_ids if key in lines]
+    if len(selected) != len(draft.evidence_ids) or len(set(draft.evidence_ids)) != len(draft.evidence_ids):
+        raise ValueError("advisor cited unknown or duplicate evidence")
+    numbers = set(NUMBER_PATTERN.findall(draft.analysis))
+    allowed = set(NUMBER_PATTERN.findall(" ".join(selected)))
+    if numbers - allowed:
+        raise ValueError("advisor introduced an unsupported number")
+    prohibited = ("保证获批", "一定获批", "确保获批", "保证通过", "无条件获批")
+    if any(value in draft.analysis for value in prohibited):
+        raise ValueError("advisor guaranteed approval")
 
 
 class UnderstandingValidation(NamedTuple):

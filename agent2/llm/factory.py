@@ -5,7 +5,8 @@ import json
 from dataclasses import dataclass
 
 from .answer_writer import LlmAnswerWriter
-from .contracts import AnswerWriterPort, UserUnderstandingPort
+from .conversation_reasoner import LlmConversationReasoner
+from .contracts import AnswerWriterPort, ConversationReasonerPort, UserUnderstandingPort
 from .provider import OpenAICompatibleChatModel
 from .understanding import LlmUserUnderstanding
 
@@ -14,6 +15,7 @@ from .understanding import LlmUserUnderstanding
 class LlmComponents:
     understanding: UserUnderstandingPort | None = None
     writer: AnswerWriterPort | None = None
+    reasoner: ConversationReasonerPort | None = None
 
 
 def build_llm_components(env=None) -> LlmComponents:
@@ -64,4 +66,5 @@ def build_llm_components(env=None) -> LlmComponents:
         structured_mode=structured_mode,
         extra_body=extra_body,
     )
-    return LlmComponents(understanding=LlmUserUnderstanding(model), writer=LlmAnswerWriter(model))
+    return LlmComponents(understanding=LlmUserUnderstanding(model), writer=LlmAnswerWriter(model),
+                         reasoner=LlmConversationReasoner(model))

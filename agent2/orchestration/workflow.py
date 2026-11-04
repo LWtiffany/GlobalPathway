@@ -8,13 +8,13 @@ from dataclasses import dataclass, field
 from pydantic_graph import GraphBuilder, StepContext
 
 from agent2 import clarify
-from agent2.llm.contracts import AnswerWriterPort, UserUnderstandingPort
+from agent2.llm.contracts import AnswerWriterPort, ConversationReasonerPort, UserUnderstandingPort
 from agent2.llm.validation import validate_understanding, validate_written_answer
 from agent2.models import Notice
 
 from .composer import DefaultResponseComposer
 from .capabilities import RuleCapabilityPlanner
-from .contracts import (AnswerSnapshot, Domain, DomainResult, LifecycleActions, OrchestrationInput,
+from .contracts import (AnswerSnapshot, CapabilityAction, Domain, DomainResult, LifecycleActions, OrchestrationInput,
                         OrchestrationOutput, QualityReport, TaskPlan, UnifiedAnswer)
 from .domains import default_domain_workflows
 from .lifecycle import DefaultLifecyclePlanner
@@ -50,6 +50,7 @@ class WorkflowDependencies:
     lifecycle: LifecyclePlanner
     understanding: UserUnderstandingPort | None = None
     writer: AnswerWriterPort | None = None
+    reasoner: ConversationReasonerPort | None = None
 
 
 builder = GraphBuilder(
@@ -68,7 +69,7 @@ async def understand_user(ctx: StepContext[WorkflowState, WorkflowDependencies, 
     port = ctx.deps.understanding
     if ctx.inputs.understanding_applied:
         # Service already merged rule∪LLM intents for routing; reuse without a second call.
-        if port is not None:
+        if port is not None and ctx.inputs.understanding_model_used:
             ctx.state.llm_model_versions["understanding"] = port.model_version
             ctx.state.llm_prompt_versions["understanding"] = port.prompt_version
     elif (port is not None and ctx.inputs.input_mode == "free_text"
@@ -112,6 +113,44 @@ async def plan_capabilities(ctx: StepContext[WorkflowState, WorkflowDependencies
         (time.perf_counter() - started) * 1000, 3)
 
 
+@builder.step(label="对话下一步判断")
+async def reason_about_turn(ctx: StepContext[WorkflowState, WorkflowDependencies, None]) -> None:
+    started = time.perf_counter()
+    request, plan, reasoner = ctx.state.request, ctx.state.plan, ctx.deps.reasoner
+    assert request is not None and plan is not None
+    # The model cannot change an action backed by an explicit rule match.
+    # Avoid a serial model call when it has no decision left to make.
+    if (reasoner is not None and request.input_mode == "free_text" and plan.tasks
+            and any(not any(action.evidence for action in task.actions)
+                    for task in plan.tasks)):
+        try:
+            proposed = await reasoner.decide(request, plan)
+            decisions = {d.task_id: d for d in proposed.decisions}
+            revised = []
+            for task in plan.tasks:
+                decision = decisions.get(task.task_id)
+                # Explicit rule evidence wins. Model choices refine only defaults and
+                # elliptical follow-ups, never route or mutate profile data.
+                explicit = any(action.evidence for action in task.actions)
+                valid = (decision is not None and decision.confidence >= .8
+                         and bool(decision.evidence)
+                         and decision.evidence.casefold() in request.text.casefold()
+                         and not explicit)
+                if valid:
+                    action = CapabilityAction(
+                        action_id=f"{task.task_id}-reasoned", operation=decision.operation,
+                        confidence=decision.confidence, evidence=decision.evidence)
+                    task = task.model_copy(update={"actions": [action]})
+                revised.append(task)
+            ctx.state.plan = plan.model_copy(update={
+                "tasks": revised, "planner_version": f"{plan.planner_version}+reasoner-1"})
+            ctx.state.llm_model_versions["reasoner"] = reasoner.model_version
+            ctx.state.llm_prompt_versions["reasoner"] = reasoner.prompt_version
+        except Exception as exc:
+            ctx.state.llm_failures.append(f"reasoner:{type(exc).__name__}")
+    ctx.state.stage_ms["reasoned"] = round((time.perf_counter() - started) * 1000, 3)
+
+
 @builder.step(label="执行领域流程")
 async def run_domains(ctx: StepContext[WorkflowState, WorkflowDependencies, None]) -> None:
     started = time.perf_counter()
@@ -145,7 +184,12 @@ async def write_answer(ctx: StepContext[WorkflowState, WorkflowDependencies, Non
     started = time.perf_counter()
     assert ctx.state.request is not None and ctx.state.answer is not None
     port = ctx.deps.writer
-    if port is not None and ctx.state.answer.status in {"answered", "needs_verification"}:
+    direct_card_answer = (len(ctx.state.answer.domain_results) == 1
+                          and ctx.state.answer.domain_results[0].domain == "credit_card"
+                          and ctx.state.answer.domain_results[0].payload.get("capability")
+                          in {"product_qa", "general_knowledge"})
+    if (port is not None and not direct_card_answer
+            and ctx.state.answer.status in {"answered", "needs_verification"}):
         try:
             body = await port.write(request=ctx.state.request, verified_answer=ctx.state.answer)
             validate_written_answer(body, ctx.state.answer.answer)
@@ -198,7 +242,8 @@ builder.add(
     builder.edge_from(builder.start_node).to(understand_user),
     builder.edge_from(understand_user).to(plan_tasks),
     builder.edge_from(plan_tasks).to(plan_capabilities),
-    builder.edge_from(plan_capabilities).to(run_domains),
+    builder.edge_from(plan_capabilities).to(reason_about_turn),
+    builder.edge_from(reason_about_turn).to(run_domains),
     builder.edge_from(run_domains).to(gate_results),
     builder.edge_from(gate_results).to(compose_answer),
     builder.edge_from(compose_answer).to(write_answer),
@@ -219,7 +264,7 @@ class Agent2Workflow:
         return asyncio.run(self.run_async(request))
 
 
-def build_default_workflow(*, credit_card_repository=None, understanding=None, writer=None,
+def build_default_workflow(*, credit_card_repository=None, understanding=None, writer=None, reasoner=None,
                            fx_model=None, fx_policy_loader=None,
                            bank_model=None, bank_repository=None,
                            visa_knowledge=None, clock=None, visa_generator=None) -> Agent2Workflow:
@@ -246,4 +291,5 @@ def build_default_workflow(*, credit_card_repository=None, understanding=None, w
         lifecycle=DefaultLifecyclePlanner(),
         understanding=understanding,
         writer=writer,
+        reasoner=reasoner,
     ))

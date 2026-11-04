@@ -195,6 +195,8 @@ class OrchestrationInput(FrozenModel):
     understood_basis: dict[str, str] = Field(default_factory=dict)
     # Service may run understanding once for routing; workflow skips a second call.
     understanding_applied: bool = False
+    # True only when service actually called the model for this turn.
+    understanding_model_used: bool = False
     # Intents recovered by UserUnderstandingPort (distinct from session conversation_intents).
     llm_intents: list[str] = Field(default_factory=list)
     # Dialogue gist so routing can tell continuations of the open topic from new topics.
