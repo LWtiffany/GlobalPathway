@@ -126,31 +126,30 @@ class CreditCardAdvisor:
             })
 
         related_cards = related_cards or []
-        steps = ["客户经理视角："]
-        steps.extend(self._value_case(card, product, facts))
+        steps = self._value_case(card, product, facts)
         usage = self._usage_plan(product, card, facts)
         if usage:
-            steps.append("怎样才能真正用到价值：" + "；".join(usage))
+            steps.append("用卡时可以留意这些细节：" + "；".join(usage) + "。")
         prerequisite = await self._verified_prerequisite(product)
         evidence = [card.official_url] if card.official_url else []
         if prerequisite:
             steps.append(
-                f"申请路径：{card.product_name} 的公开条件包含 {prerequisite.product_name}；"
-                "请先核对该账户资格及开户安排，之后仍须通过银行审批。"
+                f"申请 {card.product_name} 前，建议先看看您是否符合 {prerequisite.product_name} "
+                "的开户条件和时间安排；信用卡申请仍须由银行审批。"
             )
             evidence.extend([prerequisite.official_url, prerequisite.card_rule_source_url])
 
         tradeoff = self._tradeoff(card)
         if tradeoff:
-            steps.append(f"适合与取舍：{tradeoff}")
+            steps.append(tradeoff)
         pairing = self._pairing_case(card, related_cards)
         if pairing:
-            steps.append(f"组合建议：{pairing}")
+            steps.append(pairing)
 
         next_action = (
-            f"下一步建议：先确认 {prerequisite.product_name} 的开户资格与时间安排。"
+            f"如果您愿意继续了解，可以先确认 {prerequisite.product_name} 的开户资格与时间安排。"
             if prerequisite else
-            "下一步建议：申请前核对资格、年费豁免条件和奖励上限。"
+            "如果您考虑申请，我们可以再一起核对资格、年费豁免条件和奖励上限。"
         )
         steps.append(next_action)
         return AdvisorBrief(
@@ -190,9 +189,9 @@ class CreditCardAdvisor:
         scenes = [SCENARIO_LABELS.get(item, "日常消费") for item in card.matched_scenarios]
         scene_text = "、".join(dict.fromkeys(scenes[:3]))
         if scene_text:
-            lead = f"客户需求匹配：这张卡优先覆盖您关注的{scene_text}，而不只是单看宣传回赠率。"
+            lead = f"您比较在意{scene_text}，这张卡在这些用途上比较贴合；我们也会一起看费用和奖励限制，不只看宣传回赠率。"
         else:
-            lead = "客户需求匹配：这张卡在您已确认的申请条件下，整体持卡价值更突出。"
+            lead = "按您目前提供的情况，这张卡值得优先比较；实际是否合适，还要看您会怎样使用和持卡成本。"
         lines = [lead]
         # The engine's monetary estimate is HKD-specific.  Never render it as a
         # universal promise for a UK/US card, or when the customer may carry a balance.
@@ -207,8 +206,8 @@ class CreditCardAdvisor:
             if card.estimated_annual_fx_cost_hkd is not None and card.estimated_annual_fx_cost_hkd > 0:
                 parts.append(f"预计外币手续费约 {card.estimated_annual_fx_cost_hkd:,.0f} 港元")
             parts.append(f"年度净价值约 {card.estimated_annual_net_value_hkd:,.0f} 港元")
-            lines.append("价值拆账：" + "；".join(parts) +
-                         "。以上以每月全额还款为前提，实际回报受消费类别、上限和活动条款影响。")
+            lines.append("按您提供的消费情况粗略估算，" + "；".join(parts) +
+                         "。这个估算以每月全额还款为前提，实际回报还会受消费类别、上限和活动条款影响。")
         return lines
 
     @staticmethod

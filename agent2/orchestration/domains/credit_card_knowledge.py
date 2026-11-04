@@ -21,7 +21,9 @@ MARKET_MAP = {"CN-HK": "CN-HK", "Hong Kong": "CN-HK", "HK": "CN-HK",
 TOPIC_PATTERNS = {
     "repayment": re.compile(r"还款|还清|最低还款|账单日|还款日|利息|finance.?charge", re.I),
     "rewards": re.compile(r"积分|奖赏钱|rewardcash|回赠.*兑换|里程.*兑换|积分.*兑换", re.I),
-    "overseas_use": re.compile(r"外币|海外|境外|汇率|换汇|动态货币|dcc", re.I),
+    "overseas_use": re.compile(r"外币|海外|境外|出国.{0,12}刷卡|汇率|换汇|动态货币|dcc|"
+                               r"(?:港币|港元|当地|本地|原币).{0,10}(?:结算|付款货币)|"
+                               r"(?:结算|付款货币).{0,10}(?:港币|港元|当地|本地|原币)", re.I),
     "lost_or_stolen": re.compile(r"丢[了失]|遗失|被盗|盗刷|锁卡|挂失|卡不见", re.I),
     "transaction_dispute": re.compile(r"争议|不认识.*交易|重复扣款|未收到.*商品|拒付|chargeback", re.I),
     "instalment": re.compile(r"分期|最低还款|循环利息|现金透支|总还款", re.I),
@@ -66,7 +68,13 @@ class CreditCardKnowledgeService:
         market = MARKET_MAP.get(facts.get("application_region"), "CN-HK")
         item = await self.repository.read(market, topic, self.clock())
         if item is None:
-            return None
+            return DomainResult(
+                task_id=task.task_id, domain="credit_card", status="needs_verification",
+                answer=AnswerBody(summary="这项信用卡使用问题目前缺少可核对的最新资料。",
+                                  steps=["请先核对发卡行的该卡条款；如告诉我卡名和发卡地区，我可以继续查具体规则。"]),
+                payload={"capability": "general_knowledge", "topic": topic, "market": market},
+                projection="chat_only", observed_facts=extracted, observed_basis=basis,
+            )
         market_label = {"CN-HK": "香港", "UK": "英国", "US": "美国"}.get(item["market"], "通用")
         return DomainResult(
             task_id=task.task_id,

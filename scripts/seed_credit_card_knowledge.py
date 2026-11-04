@@ -43,7 +43,9 @@ def apply(rows: list[dict]) -> None:
                    ON CONFLICT (knowledge_id) DO UPDATE SET
                      market=EXCLUDED.market, topic=EXCLUDED.topic, title=EXCLUDED.title,
                      customer_answer=EXCLUDED.customer_answer, source_url=EXCLUDED.source_url,
-                     verified_at=EXCLUDED.verified_at, status='ACTIVE'""",
+                     verified_at=EXCLUDED.verified_at, status='ACTIVE'
+                   WHERE card_knowledge_entry.verified_at IS NULL
+                      OR EXCLUDED.verified_at >= card_knowledge_entry.verified_at""",
                 (row["knowledge_id"], row["market"], row["topic"], row["title"],
                  row["customer_answer"], row["source_url"], row["verified_at"]),
             )

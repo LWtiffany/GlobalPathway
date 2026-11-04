@@ -23,9 +23,9 @@
       "market": "CN-HK",
       "topic": "overseas_use",
       "title": "海外及外币消费",
-      "customer_answer": "以外币进行的 Visa 或 Mastercard 消费会按网络在换汇日采用的参考汇率换算为卡账户货币；发卡行费用则须按您所持卡种的最新收费表核对。付款前应比较商户提供的币种选择与卡片外币费用，不要只看表面回赠。",
-      "source_url": "https://www.hsbc.com.hk/help/faq/credit-cards/",
-      "verified_at": "2026-11-02T00:00:00+08:00"
+      "customer_answer": "如果境外商户让您在当地货币和港币之间选择，我通常建议先选当地货币，再按所持卡种核对外币交易费。选港币属于商户提供的换汇安排，商户决定汇率及手续费，不一定更划算；汇丰也提示，境外以港币结算的香港港币 Visa／Mastercard 信用卡交易，仍可能有 1% 的相关费用。付款前请比较商户展示的汇率、手续费与您这张卡的外币交易费；若持有银联双币卡，需按该卡及交易币种另行核对。",
+      "source_url": "https://www.hsbc.com.hk/zh-cn/help/faq/credit-cards/",
+      "verified_at": "2026-11-03T00:00:00+08:00"
     },
     {
       "knowledge_id": "hk-card-lost-stolen",
