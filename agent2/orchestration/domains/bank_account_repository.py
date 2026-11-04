@@ -62,7 +62,9 @@ RULE_FIELDS = {
     "residency_duration": "uk_residency_years",
     "course_status": "qualifying_course_offer",
     "student_status": "applicant_identity",
-    "existing_customer": "existing_hsbc_hk_customer",
+    "existing_customer": "existing_hsbc_customer",
+    "parent_relationship_status": "parent_relationship_status",
+    "parent_relationship_market": "parent_relationship_market",
 }
 
 
@@ -86,6 +88,39 @@ class RdsBankAccountRepository:
     async def read(self, market: str) -> dict:
         return await anyio.to_thread.run_sync(self._load, market)
 
+    async def read_decision_paths(self, destination_market: str, *, origin_market: str | None = None,
+                                  applicant_location: str | None = None) -> list[dict]:
+        return await anyio.to_thread.run_sync(
+            self._load_decision_paths, destination_market, origin_market, applicant_location)
+
+    def _load_decision_paths(self, destination_market: str, origin_market: str | None,
+                             applicant_location: str | None) -> list[dict]:
+        try:
+            with storage.read_session() as db:
+                rows = [_row(row) for row in db.execute(
+                    """SELECT p.*, s.service_type, s.owner_role, s.beneficiary_role,
+                              s.required_relationship_status, s.eligibility_status, s.action_code,
+                              s.description AS policy_description
+                       FROM account_decision_path p
+                       LEFT JOIN account_service_policy s ON s.policy_id=p.policy_id
+                       WHERE p.destination_market=%s
+                         AND (%s::TEXT IS NULL OR p.origin_market IS NULL OR p.origin_market=%s::TEXT)
+                         AND (%s::TEXT IS NULL OR p.applicant_location IS NULL OR p.applicant_location=%s::TEXT)
+                         AND p.path_status <> 'withdrawn'
+                       ORDER BY p.path_id""",
+                    (destination_market, origin_market, origin_market,
+                     applicant_location, applicant_location))]
+                for path in rows:
+                    path["conditions"] = [_row(item) for item in db.execute(
+                        "SELECT * FROM account_decision_condition WHERE path_id=%s ORDER BY group_code, condition_id",
+                        (path["path_id"],))]
+                    path["evidence"] = [_row(item) for item in db.execute(
+                        "SELECT * FROM account_decision_evidence WHERE path_id=%s OR condition_id=ANY(%s) ORDER BY evidence_id",
+                        (path["path_id"], [item["condition_id"] for item in path["conditions"]]))]
+            return rows
+        except Exception as exc:
+            raise BankAccountRepositoryError(str(exc)) from exc
+
     async def read_source_chunks(self, account_ids: list[str], query: str,
                                  limit: int = 4) -> list[dict]:
         """Official-page chunks for the given (logical) account ids, ranked by query."""
@@ -102,7 +137,8 @@ class RdsBankAccountRepository:
             with storage.read_session() as db:
                 rows = [_row(row) for row in db.execute(
                     """SELECT c.chunk_id, c.doc_id, c.account_id, c.seq, c.heading,
-                              c.content, d.title, d.source_url, d.oss_bucket, d.oss_key
+                              c.content, d.title, d.source_url, d.oss_bucket, d.oss_key,
+                              d.verified_at
                        FROM ACCOUNT_DOC_CHUNK c
                        JOIN ACCOUNT_SOURCE_DOCUMENT d ON d.doc_id = c.doc_id
                        WHERE c.account_id = ANY(%s)
@@ -172,6 +208,10 @@ class RdsBankAccountRepository:
         rules = []
         for row in raw["rules"]:
             field = RULE_FIELDS.get(row["rule_type"])
+            if row["rule_type"] == "existing_customer":
+                field = {"HK": "existing_hsbc_hk_customer",
+                         "UK": "existing_hsbc_uk_customer",
+                         "US": "existing_hsbc_us_customer"}.get(rds_market)
             operator = row["operator"]
             value_text = row.get("value_text")
             if row["eligibility_rule_id"] == "elig_hk_child_guardian":

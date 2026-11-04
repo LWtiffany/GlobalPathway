@@ -34,6 +34,8 @@ class AccountSubintentResult(BaseModel):
     primary_subintent: AccountSubintent
     subintents: list[AccountSubintent] = Field(min_length=1)
     facts: list[AccountFact] = Field(default_factory=list)
+    service_goal: Literal["account_question", "family_opening_plan"] = "account_question"
+    goal_evidence: str = ""
 
     @model_validator(mode="after")
     def check_labels(self):

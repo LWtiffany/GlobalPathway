@@ -280,6 +280,41 @@ def combine_status(evaluations: list[dict]) -> str:
     return "meets_published_criteria"
 
 
+def evaluate_decision_path(path: dict, facts: dict) -> dict:
+    """AND within each alternative group, OR between groups; unknown never passes."""
+    groups: dict[str, list[str]] = {}
+    evaluated = []
+    for condition in path.get("conditions", []):
+        if condition["operator"] == "bank_confirm":
+            result = "bank_confirmation"
+        else:
+            if condition["field_code"] == "applicant_identity" and facts.get("account_applicant_relation") == "child":
+                result = "true"
+            else:
+                result = evaluate_rule(condition, facts)
+        evaluated.append({"condition": condition, "result": result})
+        if condition.get("required", True):
+            groups.setdefault(condition["group_code"], []).append(result)
+    outcomes = [combine_status([{"result": result} for result in values])
+                for values in groups.values()]
+    if not outcomes:
+        status = "requires_bank_confirmation"
+    elif "meets_published_criteria" in outcomes:
+        status = "meets_published_criteria"
+    elif "needs_input" in outcomes:
+        status = "needs_input"
+    elif "requires_bank_confirmation" in outcomes:
+        status = "requires_bank_confirmation"
+    else:
+        status = "does_not_meet_published_criteria"
+    if path.get("path_status") != "published" and status == "meets_published_criteria":
+        status = "requires_bank_confirmation"
+    return {"path_id": path["path_id"], "status": status,
+            "conditions": evaluated, "evidence": path.get("evidence", []),
+            "description": path["description"],
+            "predeparture_stage": path["predeparture_stage"]}
+
+
 def assess_product(product: dict, catalog: dict, facts: dict) -> dict:
     account_id = product["account_id"]
     application = [row for row in catalog["rules"] if row["account_id"] == account_id

@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import re
 
+from datetime import datetime, timezone
+
 from agent2 import clarify
 from agent2.llm.account_subintent import AccountSubintentClassifier
 from agent2.llm.contracts import StructuredModel
 from agent2.llm.prompts import PromptRenderer
 from agent2.llm.schemas import WrittenAnswer
 from agent2.llm.validation import validate_written_answer
-from agent2.models import AnswerBody, FollowUpQuestion, Notice
+from agent2.models import AnswerBody, Citation, FollowUpQuestion, Notice
 
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
 from .bank_account_answer import MARKET_LABEL, build_answer, evidence
@@ -19,9 +21,10 @@ from .bank_account_dialogue import (answer_mode_for, dialogue_act_from_capabilit
                                     exclusion_ids, infer_goal, load_account_state,
                                     pack_account_state, product_relationships, reduce_account_state,
                                     relationship_messages)
-from .bank_account_engine import (assess_product, normalize_product,
+from .bank_account_engine import (assess_product, evaluate_decision_path, normalize_product,
                                    normalize_products, positioning_for, product_order,
                                    PRODUCT_POSITIONING)
+from .bank_account_plan import build_opening_plan
 from .bank_account_repository import BankAccountRepositoryError, RdsBankAccountRepository
 from .minimal import catalog_question, merged_facts, needs_input
 
@@ -34,7 +37,9 @@ FACT_TYPES = {"account_region": str, "account_product": str, "applicant_age": in
               "identity_document_type": str, "has_hk_identity_card": bool,
               "tax_certificate_or_ssn": bool, "application_location": str,
               "qualifying_course_offer": bool, "guardian_present": bool,
-              "existing_hsbc_hk_customer": bool}
+              "existing_hsbc_hk_customer": str, "existing_hsbc_uk_customer": str,
+              "existing_hsbc_us_customer": str, "parent_relationship_status": str,
+              "parent_relationship_market": str}
 QUESTION_TEXT = {
     "uk_residency_years": "实际开户人在英国或指定属地住了几年？这会影响学生账户资格。",
     "identity_document_type": "实际开户人用香港身份证、护照，还是往来港澳通行证申请？",
@@ -45,10 +50,7 @@ QUESTION_TEXT = {
 
 INCOME_MENTION = re.compile(r"年收入|年薪|税前收入|月收入|\bincome\b", re.I)
 
-# HSBC deposit accounts qualify Premier by relationship balance / assets, never
-# by annual income (see 016_hsbc_deposit_accounts_seed.sql: hk_premier_trb,
-# us_fee_balance). A user who volunteers income expecting it to unlock Premier
-# gets a grounded correction instead of a fabricated income threshold.
+# Income and relationship criteria differ by market and by relationship holder.
 PREMIER_INCOME_CLARIFICATION = {
     "CN-HK": "补充一点：香港汇丰 Premier 的资格是按「总关系结余」判定的——最近三个月平均约 100 万港元，"
              "或您已在其他国家/地区持有合资格的汇丰 Premier（International Premier）；"
@@ -56,8 +58,9 @@ PREMIER_INCOME_CLARIFICATION = {
     "US": "补充一点：美国汇丰 Premier 是按关系条件豁免月费的——合格存款及投资总关系余额达 10 万美元、"
           "每月合资格直接入账达 5,000 美元、持有汇丰美国按揭，或为汇丰私人银行客户，满足其一即可；"
           "年收入本身不是官网列出的门槛。",
-    "UK": "补充一点：已收录的英国汇丰账户公开条件里没有年收入门槛；是否需要 Premier 级服务，"
-          "以汇丰官网公布的关系条件为准。",
+    "UK": "英国 Premier 的公开资格有不同路径：个人年收入至少 100,000 英镑并存入该账户，"
+          "或在汇丰英国持有至少 100,000 英镑存款或投资，或本人已符合其他国家的 Premier 资格。"
+          "家长符合资格不代表孩子自动符合，仍需核对孩子本人的申请路径。",
 }
 
 
@@ -115,7 +118,7 @@ def _validate_writer_scope(candidate: AnswerBody, labels: list[str], *,
                            selection_limited: bool = False,
                            allowed_product_names: list[str] | None = None,
                            supported_text: str = "",
-                           query_text: str = "") -> None:
+                           query_text: str = "", family_relationship: bool = False) -> None:
     text = " ".join([candidate.summary, *candidate.steps])
     # A question about 门槛/条件/资格 may legitimately need the fee-waiver
     # balance (e.g. "Premier 有什么开户门槛" = TRB + below-balance fee);
@@ -147,6 +150,11 @@ def _validate_writer_scope(candidate: AnswerBody, labels: list[str], *,
         language_check = language_check.replace(product_name, "")
     language_check = re.sub(r"\b(?:HSBC|SSN|UCAS|HKID|App)\b", "", language_check,
                             flags=re.I)
+    if family_relationship:
+        if re.search(r"作为.{0,15}Premier客户|凭.{0,12}Premier身份|免费开立|提前领取银行卡|抵英后即可|寄至|首周|录取信|租房合同|Next Generation|Junior Pack", text, re.I):
+            raise ValueError("unsupported family entitlement or fulfilment promise")
+        if re.search(r"可为[她他].{0,8}安排|符合.{0,12}要求.{0,10}可申请", text):
+            raise ValueError("family service described as confirmed eligibility")
     if supported_text:
         # English words present in the fed data (product names, account types,
         # rule terms) may be reused when the writer cites a proper noun such as
@@ -181,15 +189,34 @@ def _fallback_labels(text: str) -> list[str]:
 def _explicit_facts(text: str) -> dict:
     facts = {}
     folded = text.casefold()
-    if "香港" in text or "hsbc one" in folded or "汇丰 one" in folded:
+    relationship = re.search(
+        r"(?:我是|我有|持有|现有).{0,12}(香港|英国|美国).{0,12}(私行|私人银行|Premier|卓越理财)", text, re.I)
+    if relationship:
+        facts["parent_relationship_market"] = {"香港": "CN-HK", "英国": "UK",
+                                              "美国": "US"}[relationship[1]]
+        facts["parent_relationship_status"] = "user_stated_unverified"
+    relationship_text = re.search(r"(?:我是|我有|持有|现有).{0,20}(?:私行|私人银行|Premier|卓越理财)", text, re.I)
+    if relationship_text:
+        facts.setdefault("parent_relationship_market", "unknown")
+        facts.setdefault("parent_relationship_status", "user_stated_unverified")
+    destination = re.search(r"(?:去|赴|到|在)\s*(英国|美国|香港).{0,10}(?:留学|读书|上学|开户|开账户)", text)
+    if destination:
+        facts["account_region"] = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[destination[1]]
+    elif "香港" in text or "hsbc one" in folded or "汇丰 one" in folded:
         facts["account_region"] = "CN-HK"
     elif "英国" in text or "uk" in folded:
         facts["account_region"] = "UK"
     elif "美国" in text or "premier checking" in folded:
         facts["account_region"] = "US"
-    age = re.search(r"(?<!\d)(\d{1,2})\s*岁", text)
+    age_pattern = (r"(?:孩子|儿子|女儿)[^，。；]{0,8}?(\d{1,2})\s*岁"
+                   if re.search(r"孩子|儿子|女儿", text) else r"(?<!\d)(\d{1,2})\s*岁")
+    age = re.search(age_pattern, text)
     if age:
         facts["applicant_age"] = int(age.group(1))
+    location = re.search(r"(?:现在|目前|身在|身处|人在|住在|申请时在)\s*在?\s*(香港|英国|美国|内地|中国)", text)
+    if location:
+        facts["application_location"] = {"香港": "CN-HK", "英国": "UK", "美国": "US",
+                                         "内地": "CN", "中国": "CN"}[location[1]]
     if re.search(r"刚到英国|刚落地英国", text):
         facts["uk_residency_years"] = 0
     years = re.search(r"(?:在英国|英国).*?(?:住了|居住了|住满)\s*(\d+)\s*年", text)
@@ -229,6 +256,10 @@ def _model_facts(text: str, candidates) -> dict:
         if field == "identity_document_type" and value not in ("hkid", "passport", "eep"):
             continue
         if field == "account_applicant_relation" and value not in ("self", "child", "parent"):
+            continue
+        if field == "application_location" and not re.search(
+                r"(?:现在|目前|身在|身处|人在|申请时|从|住在|居住在|在).{0,5}(?:香港|英国|美国|内地|中国)",
+                item.evidence):
             continue
         if field in ("applicant_age", "uk_residency_years") and not 0 <= value <= 119:
             continue
@@ -515,6 +546,27 @@ class BankAccountWorkflow:
     async def run(self, task: DomainTask, request: OrchestrationInput) -> DomainResult:
         facts, basis = merged_facts(task, request)
         raw_state = request.domain_state.get("bank_account") or {}
+        # RDS scopes this JSON to the profile's unique conversation; reject misbound input.
+        if raw_state.get("profile_id") not in (None, request.profile_id):
+            raw_state = {}
+        family_context = dict(raw_state.get("family_context") or {})
+        existing_relationship = re.search(
+            r"(?:我是|我有|持有|现有).{0,12}(香港|英国|美国).{0,12}(私行|私人银行|Premier|卓越理财)",
+            request.text, re.I)
+        if existing_relationship:
+            family_context["parent_relationship_statement"] = request.text[:500]
+            family_context["relationship_market"] = {"香港": "CN-HK", "英国": "UK",
+                                                     "美国": "US"}[existing_relationship[1]]
+            family_context["relationship_status"] = "user_stated_unverified"
+        family_signal = bool(re.search(r"私行|私人银行|家庭权益|出发前|落地前", request.text))
+        family_plan = family_signal or bool(family_context)
+        if family_signal:
+            family_context["customer_goal"] = request.text[:1000]
+        if re.search(r"我.{0,12}(?:私行|私人银行|Premier|卓越理财)", request.text, re.I):
+            family_context["parent_relationship_statement"] = request.text[:500]
+        if re.search(r"出发前|落地前|开学前|到英国前|到美国前", request.text):
+            departure = re.search(r"(\d{1,2})\s*月", request.text)
+            family_context["target_milestone"] = "出发前" + (departure[0] if departure else "完成开户准备")
         # The current turn must beat the previous turn's stored query scope.
         explicit_seed = _explicit_facts(request.text)
         market_hint = explicit_seed.get("account_region") or facts.get("account_region")
@@ -524,6 +576,11 @@ class BankAccountWorkflow:
         if self.classifier and request.input_mode == "free_text":
             try:
                 classified = await self.classifier.classify(request.text)
+                if (classified.service_goal == "family_opening_plan"
+                        and classified.goal_evidence
+                        and classified.goal_evidence in request.text):
+                    family_plan = True
+                    family_context["customer_goal"] = request.text[:1000]
                 account_labels = [label for label in classified.subintents if label in ACCOUNT_LABELS]
                 if "fees_balance" in account_labels and "eligibility" in account_labels and \
                         not re.search(r"能不能开|能否开|能开吗|有资格|开户资格", request.text):
@@ -542,6 +599,10 @@ class BankAccountWorkflow:
         explicit = _explicit_facts(request.text)
         facts.update(explicit)
         basis.update({field: "本轮用户陈述" for field in explicit})
+        if not facts.get("parent_relationship_status") and family_context.get("relationship_status"):
+            facts["parent_relationship_status"] = family_context["relationship_status"]
+        if not facts.get("parent_relationship_market") and family_context.get("relationship_market"):
+            facts["parent_relationship_market"] = family_context["relationship_market"]
         if not facts.get("account_region") and state.market in MARKET_LABEL:
             facts["account_region"] = state.market
             basis["account_region"] = "沿用本次开户咨询地区"
@@ -695,8 +756,111 @@ class BankAccountWorkflow:
                 summary=verified.summary,
                 steps=[*verified.steps, income_note],
                 materials=verified.materials, limitations=verified.limitations)
+        if re.search(r"首选|推荐|怎么选|适合|比较|费用|月费|多少钱", request.text):
+            family_plan = family_plan and act not in {"discover_options", "compare_products", "ask_fees"}
+        account_ids = [item["product"]["source_account_id"] for item in assessments]
+        rules = [row for row in catalog.get("rules", []) if row["account_id"] in account_ids]
+        grouped = {}
+        for rule in rules:
+            grouped.setdefault((rule["account_id"], rule.get("rule_purpose"),
+                                rule.get("route_id"), rule.get("group_code")), []).append(rule)
+        grouped_results = []
+        for (account_id, purpose, route_id, group_code), group_rules in grouped.items():
+            evaluated = [evaluate_rule(rule, facts) for rule in group_rules]
+            if purpose == "fee_waiver":
+                outcome = "meets_published_criteria" if "true" in evaluated else (
+                    "needs_input" if "unknown" in evaluated else "does_not_meet_published_criteria")
+            elif group_code not in (None, "", "required"):
+                outcome = ("does_not_meet_published_criteria" if "false" in evaluated else
+                           "needs_input" if "unknown" in evaluated else
+                           "requires_bank_confirmation" if "bank_confirmation" in evaluated else
+                           "meets_published_criteria")
+            else:
+                outcome = ("does_not_meet_published_criteria" if "false" in evaluated else
+                           "needs_input" if "unknown" in evaluated else
+                           "requires_bank_confirmation" if "bank_confirmation" in evaluated else
+                           "meets_published_criteria")
+            grouped_results.append({"account_id": account_id, "purpose": purpose,
+                                    "route_id": route_id, "group_code": group_code,
+                                    "status": outcome, "rule_ids": [r["rule_id"] for r in group_rules]})
+        for item in assessments:
+            source_id = item["product"]["source_account_id"]
+            eligible = [result for result in grouped_results
+                        if result["account_id"] == source_id and result["purpose"] == "application"]
+            required_rule_groups = [group for group in eligible
+                                    if group["group_code"] in (None, "", "required")]
+            alternatives = [group for group in eligible
+                           if group["group_code"] not in (None, "", "required")]
+            if alternatives:
+                item["decision_status"] = ("meets_published_criteria" if any(
+                    group["status"] == "meets_published_criteria" for group in alternatives) else
+                    "needs_input" if any(group["status"] == "needs_input" for group in alternatives) else
+                    "requires_bank_confirmation" if any(
+                        group["status"] == "requires_bank_confirmation" for group in alternatives) else
+                    "does_not_meet_published_criteria")
+            elif required_rule_groups:
+                item["decision_status"] = required_rule_groups[0]["status"]
+            else:
+                item["decision_status"] = item["status"]
+            item["decision_groups"] = eligible
+        decision_paths = []
+        if family_plan:
+            origin_market = family_context.get("relationship_market")
+            # Only retrieve cross-border family routes when the stated relationship
+            # market is distinct from the destination; never treat it as eligibility.
+            if origin_market == region:
+                origin_market = None
+            try:
+                decision_paths = await self.repository.read_decision_paths(
+                    region, origin_market=origin_market,
+                    applicant_location=facts.get("application_location"))
+            except (BankAccountRepositoryError, AttributeError):
+                notices.append(Notice(code="account_decision_path_unavailable",
+                                      message="家庭开户路径规则暂不可用，已保留需银行确认的安全流程。"))
+        decision_results = [evaluate_decision_path(path, facts) for path in decision_paths]
+
+        source_extracts = []
+        if family_plan:
+            source_ids = [item["product"]["account_id"] for item in assessments]
+            if "香港" in family_context.get("parent_relationship_statement", ""):
+                source_ids.append("hsbc_hk_premier")
+            try:
+                source_extracts = await self.repository.read_source_chunks(
+                    source_ids, query=f"{request.text} 家庭权益 出发前 海外开户 材料", limit=6)
+            except Exception:
+                pass
+            if act not in {"ask_fees", "compare_products", "confirm_selection"}:
+                labels = list(dict.fromkeys([*labels, "documents_process"]))
+                location_label = {"CN": "中国内地", "CN-HK": "香港", "UK": "英国", "US": "美国"}.get(
+                    facts.get("application_location"))
+                location_step = (f"孩子目前在{location_label}，下一步核对从这里申请的渠道是否开放，"
+                                 "以及身份核验、收卡和激活哪些能在出发前完成。" if location_label else
+                                 "先确认孩子目前的申请所在地，再核对可用的境外申请渠道，以及哪些步骤需要到当地完成。")
+                verified = AnswerBody(
+                    summary=f"先围绕孩子去{MARKET_LABEL[region]}后的收付款和出发前准备来安排，账户资格与办理渠道要分别核对。",
+                    steps=[
+                        "现有银行关系可作为查询家庭跨境开户服务的线索；是否适用尚未由银行确认。",
+                        location_step,
+                        "先整理孩子的身份证明、现有常住地址证明、留学地区及出发月份；不同申请渠道接受的文件可能不同，先不要假定某种替代材料一定有效。",
+                        "请客户经理确认孩子适用的英国账户及申请渠道、内地申请是否开放、本人是否需到场，以及收卡和激活能否在出发前完成。这里还没有替您预约或提交申请。",
+                    ], limitations=["家庭服务资格、申请材料及办理时间尚待银行按孩子个案核实。"])
+                if re.search(r"准备|材料|带什么", request.text):
+                    verified = AnswerBody(
+                        summary="可以先把给客户经理的资料整理好，同时请他确认从孩子当前所在地办理的具体路径。",
+                        steps=[location_step,
+                               "先备好孩子的身份证明和现有常住地址证明；是否接受当前文件、是否需要补件，请客户经理按实际渠道确认，先不要为了开户办理未经确认的额外证明。",
+                               "把孩子的留学地区、计划出发时间和希望出发前完成的事项写清楚，并说明希望核对您现有银行关系下的家庭服务。",
+                               "请客户经理明确回复：孩子适用哪个账户、能从哪里申请、是否需要本人到场、材料清单，以及收卡和激活的安排。这样可以减少孩子落地后反复补办。"],
+                        limitations=["这是准备及交接清单，尚未提交申请或预约；最终材料以确认的渠道为准。"])
+        opening_plan = {}
+        if family_plan:
+            previous_plan = (raw_state.get("opening_plans") or {}).get(region, {})
+            opening_plan, verified = build_opening_plan(
+                profile_id=request.profile_id, market=region, facts=facts,
+                context=family_context, results=decision_results, text=request.text,
+                previous=previous_plan)
         body = verified
-        model_version = "account-seed-rules-1"
+        model_version = "account-decision-plan-1" if family_plan else "account-seed-rules-1"
         model_failure = None
         deterministic_dialogue = (
             act == "ask_necessity" or ambiguous_reference or act == "compare_products" or
@@ -704,7 +868,7 @@ class BankAccountWorkflow:
             act in {"request_alternatives", "ask_catalog_scope", "reject_product",
                     "focus_product", "confirm_selection"}
         )
-        if self.model and not deterministic_dialogue:
+        if self.model and not deterministic_dialogue and not family_plan:
             try:
                 # Official-page extracts: the structured rules stay the source of
                 # truth for deterministic checks, but pages carry more detail
@@ -712,7 +876,7 @@ class BankAccountWorkflow:
                 # Relevant chunks are supplied to the writer as quotable material;
                 # their numbers/wording count as supported input.
                 try:
-                    source_extracts = await self.repository.read_source_chunks(
+                    source_extracts = source_extracts or await self.repository.read_source_chunks(
                         [item["product"]["account_id"] for item in assessments],
                         query=f"{request.text} {named_product or ''}",
                     )
@@ -725,6 +889,11 @@ class BankAccountWorkflow:
                 extracts_text = " ".join(
                     f"{chunk.get('heading') or ''} {chunk['content']}" for chunk in source_extracts)
                 verified_payload = {"facts": facts, "subintents": labels,
+                                    "decision_paths": decision_results,
+                                    "family_context": family_context,
+                                    "profile_id": request.profile_id,
+                                    "previous_answer": request.session_last_assistant_text,
+                                    "pending_questions": request.session_pending_questions,
                                     "assessments": _writer_assessments(assessments, labels),
                                     "selection_context": {
                                         "broad_request": broad_selection,
@@ -763,6 +932,7 @@ class BankAccountWorkflow:
                     allowed_product_names=[row["product_name"] for row in catalog["products"]],
                     supported_text=f"{extracts_text} {_english_content(verified_payload)}",
                     query_text=request.text,
+                    family_relationship=bool(family_context.get("parent_relationship_statement")),
                 )
                 body = candidate
                 model_version = f"{self.model.model_name}+{PROMPT_VERSION}"
@@ -771,7 +941,20 @@ class BankAccountWorkflow:
                 notices.append(Notice(code="bank_llm_fallback",
                                       message="模型未完成开户表述，已使用核验资料生成回答。"))
         citations, claims = evidence(assessments, catalog["read_id"])
+        for chunk in source_extracts:
+            if not chunk.get("verified_at"):
+                continue
+            citations.append(Citation(
+                citation_id=f"C{len(citations) + 1}", record_id=chunk["doc_id"],
+                revision_id=catalog["read_id"], evidence_id=chunk["chunk_id"],
+                source_name=chunk.get("title") or "汇丰官方开户资料",
+                source_url=chunk["source_url"], quote=chunk["content"],
+                verified_at=datetime.fromisoformat(chunk["verified_at"]).replace(tzinfo=timezone.utc),
+                synthetic=False))
         missing_questions = _missing_account_questions(assessments)
+        if family_plan and act not in {"ask_fees", "compare_products", "confirm_selection"}:
+            missing_questions = (["application_location"]
+                                 if not facts.get("application_location") else [])
         # A fee question can be answered from the published fee rows even if
         # applicant eligibility is still unknown. Do not start an application
         # interview when the user only asked about account charges.
@@ -806,8 +989,15 @@ class BankAccountWorkflow:
                             observed_basis=observed_basis,
                             payload={"subintents": labels, "account_region": region,
                                      "dialogue_act": act, "answer_mode": mode,
+                                     "decision_paths": decision_results,
                                      "ambiguous_reference": ambiguous_reference,
-                                     "conversation_state": pack_account_state(raw_state, next_state),
+                                     "conversation_state": {
+                                         **pack_account_state(raw_state, next_state),
+                                         "profile_id": request.profile_id,
+                                         "family_context": family_context,
+                                         "opening_plans": {**(raw_state.get("opening_plans") or {}),
+                                                           **({region: opening_plan} if opening_plan else {})}},
+                                     "opening_plan": opening_plan,
                                      "candidate_results": assessments,
                                      "catalog_product_count": len(catalog["products"]),
                                      "selection_coverage":
