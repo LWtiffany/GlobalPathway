@@ -9,7 +9,16 @@
 data/
 scripts/
 tests/
+**/test_*.py
+**/*_test.py
+**/conftest.py
+**/*.test.js
+**/*.spec.js
+**/*.test.ts
+**/*.spec.ts
 docs/
+agent2/eval_m06.py
+agent2/fixtures/m06_cases.json
 admin_console/local_secrets.py
 .env
 .env.*

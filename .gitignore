@@ -1,7 +1,7 @@
 .venv/
 data/*
-!data/development/
 !data/agent2/
+data/development/
 data/agent2/*.sqlite3
 data/**/*.bak-*
 data/agent2/eval/
@@ -10,9 +10,29 @@ data/agent2/eval/
 *.sqlite3-shm
 __pycache__/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.pyc
+*.log
+*.db
+*.sqlite3
 .workbuddy/
 .env
 local_secrets.py
+# Test sources and local evaluation tools stay on developer machines.
+tests/
+test_*.py
+*_test.py
+conftest.py
+*.test.js
+*.spec.js
+*.test.ts
+*.spec.ts
+scripts/benchmark_*.py
+scripts/demo_*.py
+scripts/eval_*.py
+scripts/chat.py
 scripts/_watch_deploy.py
 # One-off eval / ops / debug scratch, removed 2026-10-30. Keep local copies ignored.
 scripts/eval_intents_100.py
