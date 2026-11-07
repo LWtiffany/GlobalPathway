@@ -5,9 +5,9 @@ from typing import Protocol, TypeVar
 from pydantic import BaseModel
 
 from agent2.models import AnswerBody
-from agent2.orchestration.contracts import OrchestrationInput, UnifiedAnswer
+from agent2.orchestration.contracts import OrchestrationInput, TaskPlan, UnifiedAnswer
 
-from .schemas import UnderstandingResult
+from .schemas import ConversationDecisions, UnderstandingResult
 
 StructuredResult = TypeVar("StructuredResult", bound=BaseModel)
 
@@ -33,3 +33,11 @@ class AnswerWriterPort(Protocol):
 
     async def write(self, *, request: OrchestrationInput,
                     verified_answer: UnifiedAnswer) -> AnswerBody: ...
+
+
+class ConversationReasonerPort(Protocol):
+    model_version: str
+    prompt_version: str
+
+    async def decide(self, request: OrchestrationInput,
+                     plan: TaskPlan) -> ConversationDecisions: ...

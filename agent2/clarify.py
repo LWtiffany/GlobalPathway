@@ -43,6 +43,11 @@ def _age(v):
     return None if isinstance(v, int) and not isinstance(v, bool) and 0 < v < 120 else "必须是 1–119 的整数"
 
 
+def _residency_years(v):
+    return None if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < 120 \
+        else "必须是 0–119 的居住年数"
+
+
 def _bool(v):
     return None if isinstance(v, bool) else "必须是 是/否"
 
@@ -79,35 +84,35 @@ def _income_band_hkd(v):
 
 # field_code -> (中文名, 校验, question_code, 追问文本)
 FIELDS = {
-    "role": ("角色", _enum("student", "parent"), "ask_role", "你是学生本人还是家长？"),
+    "role": ("角色", _enum("student", "parent"), "ask_role", "您是学生本人还是家长？"),
     "beneficiary": ("服务对象", _text, "ask_beneficiary", "这份方案是为谁准备的？（学生姓名）"),
     "course": ("课程 / 学位", _text, "ask_course", "就读什么课程或学位？"),
     "destination_country": ("留学目的地", _enum("UK", "US", "CN-HK"), "ask_destination_country",
-                            "你计划去哪个国家/地区留学？（英国 / 美国 / 香港）"),
+                            "您计划去哪个国家/地区留学？（英国 / 美国 / 香港）"),
     "visa_category": ("签证类别", _enum("student_visa", "visitor_visa", "graduate_visa", "dependant_visa"),
-                      "ask_visa_category", "你要办理哪一类签证？例如学生签证或访问签证。"),
-    "school": ("学校", _text, "ask_school", "你被哪所学校录取（或计划申请哪所学校）？"),
+                      "ask_visa_category", "您要办理哪一类签证？例如学生签证或访问签证。"),
+    "school": ("学校", _text, "ask_school", "您被哪所学校录取（或计划申请哪所学校）？"),
     "offer_status": ("offer 状态", _enum("none", "conditional", "unconditional"), "ask_offer_status",
-                     "你目前拿到的是无条件 offer、有条件 offer，还是还没有 offer？"),
+                     "您目前拿到的是无条件 offer、有条件 offer，还是还没有 offer？"),
     "planned_start_date": ("预计入学时间", _iso_date, "ask_planned_start_date", "课程预计哪天开学？"),
-    "applicant_age": ("申请人年龄", _age, "ask_applicant_age", "申请人现在多大？（是否未满 18 岁会影响材料要求）"),
+    "applicant_age": ("申请人年龄", _age, "ask_applicant_age", "申请人现在多大？"),
     "applicant_age_band": ("年龄区间", _enum("under_18", "18_or_over"), "ask_applicant_age_band",
-                           "你目前是否已满 18 岁？"),
+                           "您目前是否已满 18 岁？"),
     "funding_source": ("资金来源", _enum("own_or_parents", "student_loan", "sponsor", "scholarship"),
                        "ask_funding_source",
                        "学费和生活费的资金来自哪里？本人或父母存款、学生贷款，还是机构资助/奖学金？"),
     "tb_listed_country_resident": ("是否居住在需做肺结核检测的国家", _bool, "ask_tb_listed_country_resident",
-                                   "你是否在需要做肺结核（TB）检测的国家或地区（如中国大陆）住满 6 个月，"
+                                   "您是否在需要做肺结核（TB）检测的国家或地区（如中国大陆）住满 6 个月，"
                                    "且最近 6 个月内仍住在那里？"),
     "stay_over_6_months": ("是否在目的地停留 6 个月或以上", _bool, "ask_stay_over_6_months",
                            "这次去英国是否停留 6 个月或以上？"),
     "applicant_residence": ("申请人常住地", _enum("CN", "MO", "TW", "other"), "ask_applicant_residence",
-                            "你目前常住在哪里？中国内地、澳门、台湾，还是其他地区？"),
+                            "您目前常住在哪里？中国内地、澳门、台湾，还是其他地区？"),
     "hk_sponsor": ("香港本地保证人", _enum("institution", "individual"), "ask_hk_sponsor",
-                   "你在香港的本地保证人是录取你的院校，还是个人？"),
+                   "您在香港的本地保证人是录取您的院校，还是个人？"),
     "hk_sponsor_permanent_resident": ("保证人是否香港永久性居民", _bool, "ask_hk_sponsor_permanent_resident",
-                                      "你的个人保证人是香港永久性居民吗？"),
-    "has_hk_identity_card": ("是否持有香港身份证", _bool, "ask_has_hk_identity_card", "你本人是否持有香港身份证？"),
+                                      "您的个人保证人是香港永久性居民吗？"),
+    "has_hk_identity_card": ("是否持有香港身份证", _bool, "ask_has_hk_identity_card", "您本人是否持有香港身份证？"),
     "remittance_purpose": ("汇款用途", _enum("tuition", "living"), "ask_remittance_purpose",
                            "这笔汇款是交学费还是生活费？"),
     "payment_deadline": ("付款期限", _iso_date, "ask_payment_deadline", "学校要求的付款截止日期是哪天？"),
@@ -115,61 +120,80 @@ FIELDS = {
     "currency": ("币种", _currency, "ask_currency", "金额是什么币种？（如 GBP、USD、HKD）"),
     "payer": ("付款人", _enum("self", "parent", "other"), "ask_payer", "由谁付款？本人、父母还是其他人？"),
     "account_region": ("开户地区", _enum("UK", "US", "CN-HK", "CN"), "ask_account_region",
-                       "你想在哪个地区开汇丰账户？"),
-    "account_product": ("账户产品", _text, "ask_account_product", "想开哪种账户或产品？"),
+                       "您想在哪个地区开账户？选一个就好，我会按当地规则为您整理。"),
+    "account_product": ("账户产品", _text, "ask_account_product",
+                        "您已经有想了解的账户了吗？有的话告诉我名称；还没决定也没关系。"),
     "applicant_identity": ("申请人身份", _enum("student", "parent", "other"), "ask_applicant_identity",
-                           "开户/申请人是学生本人、家长还是其他人？"),
-    "card_product_scope": ("信用卡产品范围", _text, "ask_card_product_scope", "你想比较哪些信用卡产品？"),
+                           "这次实际开户的是学生本人、家长，还是其他人？"),
+    "account_applicant_relation": ("开户人与提问者关系", _enum("self", "child", "parent"),
+                                   "ask_account_applicant_relation", "这次实际开户的是您本人、孩子，还是家长？"),
+    "uk_residency_years": ("英国居住年数", _residency_years, "ask_uk_residency_years",
+                           "实际开户人在英国或指定属地居住多久了？"),
+    "application_location": ("开户申请时所在地", _enum("CN", "UK", "US", "CN-HK", "other"),
+                             "ask_application_location", "准备申请时，实际开户人会在哪里？"),
+    "identity_document_type": ("开户身份证件", _enum("hkid", "passport", "eep", "other"),
+                               "ask_identity_document_type", "开户人准备使用哪种证件：香港身份证、护照，还是港澳通行证？"),
+    "qualifying_course_offer": ("合格课程录取证明", _bool, "ask_qualifying_course_offer",
+                                "开户人有符合该账户条件的课程录取证明吗？"),
+    "tax_certificate_or_ssn": ("SSN 或有效税务证明", _bool, "ask_tax_certificate_or_ssn",
+                               "开户人有 SSN 或可提交有效税务证明吗？"),
+    "guardian_present": ("家长或监护人陪同", _bool, "ask_guardian_present",
+                         "未成年开户人到网点时会有家长或监护人陪同吗？"),
+    "existing_hsbc_hk_customer": ("是否已有香港汇丰客户关系", _bool,
+                                  "ask_existing_hsbc_hk_customer",
+                                  "开户人目前是否已经是香港汇丰客户？"),
+    "card_product_scope": ("信用卡产品范围", _text, "ask_card_product_scope", "您想比较哪些信用卡？"),
     "want_credit_card": (
         "是否想办信用卡", _enum("yes", "no"), "ask_want_credit_card",
-        "信用卡不是硬性必需。你这轮想继续比较可申请的卡吗？"),
+        "信用卡不是硬性必需。您这次想继续看看可申请的卡吗？"),
     "application_region": ("申请地区", _enum("UK", "US", "CN-HK", "CN"), "ask_application_region",
-                           "你打算在哪个地区申请信用卡？"),
+                           "您打算在哪个地区申请信用卡？"),
     "annual_income_hkd": ("税前年收入（港币）", _amount, "ask_annual_income_hkd",
-                          "你的税前年收入大约是多少港币？可以填估算金额。"),
+                          "您的税前年收入大约是多少港币？填估算金额就可以。"),
     "annual_income_band_hkd": ("税前年收入区间（港币）", _income_band_hkd,
-                               "ask_annual_income_band_hkd", "请选择税前年收入所在区间。"),
+                               "ask_annual_income_band_hkd", "请选择您的税前年收入区间。"),
     "asset_band": ("可证明资产区间", _enum("none", "under_100k", "100k_500k", "500k_plus"),
-                   "ask_asset_band", "你能否提供最近3个月的银行资产证明？可证明资产大致在哪个区间？"),
+                   "ask_asset_band", "您能提供最近 3 个月的银行资产证明吗？大致在哪个区间？"),
     "repayment_mode": ("还款方式", _enum("full", "sometimes_carry", "usually_carry"),
-                       "ask_repayment_mode", "你通常会每月全额还款，还是可能分期或保留余额？"),
+                       "ask_repayment_mode", "您通常会每月全额还款，还是可能分期或保留余额？"),
     "spending_scenarios": ("主要消费场景",
                            _multi_enum("online", "dining", "travel", "overseas", "mainland_china",
                                        "tuition", "retail", "groceries", max_items=3),
-                           "ask_spending_scenarios", "请选择最主要的两到三个消费场景。"),
+                           "ask_spending_scenarios", "请选择最常见的两到三个消费场景。"),
     "study_card_focus": ("信用卡选择侧重",
                          _enum("lower_fee", "travel_benefits", "compare"),
-                         "ask_study_card_focus", "你更重视较低年费，还是旅行权益？"),
+                         "ask_study_card_focus", "您更看重较低年费，还是旅行权益？"),
     "reward_preference": ("奖励偏好", _enum("cashback", "points", "miles", "no_preference"),
-                          "ask_reward_preference", "你更偏好返现、积分、里程，还是都可以？"),
+                          "ask_reward_preference", "您更偏好返现、积分、里程，还是都可以？"),
     "monthly_card_spend_band_hkd": (
         "每月信用卡消费区间", _enum("under_2k", "2k_5k", "5k_10k", "10k_20k", "20k_plus"),
-        "ask_monthly_card_spend_band_hkd", "你预计每月信用卡消费大约在哪个区间？"),
+        "ask_monthly_card_spend_band_hkd", "您预计每月信用卡消费大约在哪个区间？"),
     "mainland_payment_method": (
         "内地消费付款方式", _enum("mobile_or_qr", "physical_card", "mixed_or_unsure"),
-        "ask_mainland_payment_method", "你在中国内地消费时通常怎样付款？"),
-    "full_time_student": ("是否全日制学生", _bool, "ask_full_time_student", "你目前是全日制大专或大学生吗？"),
+        "ask_mainland_payment_method", "您在中国内地消费时通常怎样付款？"),
+    "full_time_student": ("是否全日制学生", _bool, "ask_full_time_student", "您目前是全日制大专或大学生吗？"),
     "student_institution_eligible": ("是否就读汇丰指定院校", _bool, "ask_student_institution_eligible",
-                                     "你是否就读于汇丰指定名单内的香港全日制院校课程？"),
+                                     "您是否就读于汇丰指定名单内的香港全日制院校课程？"),
     "premier_relationship": ("是否为卓越理财客户", _bool, "ask_premier_relationship",
-                             "你目前是否持有符合条件的汇丰卓越理财关系？"),
+                             "您目前是否持有符合条件的汇丰卓越理财关系？"),
     "hsbc_relationship_balance_band": (
         "汇丰总关系结余区间", _enum("under_100k", "100k_999k", "1m_plus"),
-        "ask_hsbc_relationship_balance_band", "请选择你在汇丰的总关系结余区间。"),
+        "ask_hsbc_relationship_balance_band", "请选择您在汇丰的总关系结余区间。"),
     "hsbc_premier_path": (
         "汇丰卓越理财资格路径",
         _enum("existing_premier", "can_qualify_with_1m_trb", "not_applicable"),
-        "ask_hsbc_premier_path", "请选择与你相符的汇丰卓越理财情况。"),
+        "ask_hsbc_premier_path", "请选择与您相符的汇丰卓越理财情况。"),
     "us_hsbc_account_path": (
         "美国汇丰账户情况",
-        _enum("existing_premier_checking", "plan_to_open", "not_applicable"),
-        "ask_us_hsbc_account_path", "你目前是否已有美国汇丰卓越理财支票账户？"),
+        _enum("existing_premier_checking", "plan_to_open", "need_opening_guidance",
+              "not_applicable"),
+        "ask_us_hsbc_account_path", "您目前是否已有美国汇丰卓越理财支票账户？"),
     "uk_hsbc_account_path": (
         "英国汇丰账户情况",
         _enum("student_account", "premier_account", "plan_to_open", "not_applicable"),
-        "ask_uk_hsbc_account_path", "你目前是否已有汇丰英国学生或卓越理财账户？"),
+        "ask_uk_hsbc_account_path", "您目前是否已有汇丰英国学生或卓越理财账户？"),
     "hk_resident": ("是否为香港居民", _bool, "ask_hk_resident",
-                    "你目前是否为香港特别行政区居民？"),
+                    "您目前是否为香港特别行政区居民？"),
 }
 
 
@@ -220,6 +244,7 @@ OPTION_LABELS = {
     "us_hsbc_account_path": {
         "existing_premier_checking": "已有美国汇丰卓越理财支票账户",
         "plan_to_open": "到美国后计划先开卓越理财支票账户，再申请信用卡",
+        "need_opening_guidance": "还没有美国汇丰卓越理财支票账户，想先了解开户再办信用卡",
         "not_applicable": "目前没有美国汇丰卓越理财支票账户，想先了解其他选择",
     },
     "uk_hsbc_account_path": {
@@ -233,8 +258,8 @@ OPTION_LABELS = {
                             "tuition": "学费", "retail": "日常零售",
                             "groceries": "超市 / 日常采购"},
     "want_credit_card": {
-        "yes": "想，帮我比较一下",
-        "no": "这轮先不办，只看开户或其他事项",
+        "yes": "想，请帮我看看",
+        "no": "暂时不考虑信用卡",
     },
     "study_card_focus": {
         "lower_fee": "优先控制年费，兼顾日常使用",
@@ -243,6 +268,29 @@ OPTION_LABELS = {
     },
     "applicant_residence": {"CN": "中国内地", "MO": "澳门", "TW": "台湾", "other": "其他地区"},
     "hk_sponsor": {"institution": "录取院校", "individual": "个人"},
+}
+
+# Extra semantic guidance is consumed by the small understanding model only.
+# Customer-facing surfaces continue to use the labels/options above; internal
+# enum codes never need to appear in copy shown to the user.
+UNDERSTANDING_HINTS = {
+    "annual_income_hkd": "年薪、年收入、税前年收入；中文“万”按 10000 换算为港币金额",
+    "spending_scenarios": (
+        "信用卡主要用途；国内消费、回内地刷卡、回国用卡映射为 mainland_china，"
+        "网购映射为 online，吃饭映射为 dining，出游/机酒映射为 travel"
+    ),
+    "mainland_payment_method": (
+        "只描述中国内地消费的付款习惯；微信/支付宝/云闪付/二维码属于 mobile_or_qr，"
+        "刷实体卡属于 physical_card"
+    ),
+    "repayment_mode": "每月还清/不欠款属于 full；偶尔分期属于 sometimes_carry；常分期或最低还款属于 usually_carry",
+    "reward_preference": (
+        "现金回赠/返现属于 cashback；航空里数属于 miles；积分属于 points；"
+        "都可以、没有偏好、按价值比较属于 no_preference；这是单选字段"
+    ),
+    "application_region": "申请信用卡的地区，不等于留学目的地",
+    "account_region": "开银行账户的地区，不等于留学目的地",
+    "applicant_identity": "实际申请产品的人，不一定是当前提问者",
 }
 
 
@@ -257,7 +305,8 @@ def field_catalog():
             [{"value": True, "label": "是"}, {"value": False, "label": "否"}] if check is _bool else []
         kind = "multi_enum" if getattr(check, "multi", False) else "enum" if values else kinds.get(check, "text")
         catalog[code] = {"label": label_zh, "kind": kind, "options": options, "question": question,
-                         "max_selections": getattr(check, "max_items", None)}
+                         "max_selections": getattr(check, "max_items", None),
+                         "understanding_hint": UNDERSTANDING_HINTS.get(code)}
     return catalog
 
 
@@ -276,6 +325,48 @@ VOLATILE_FIELDS = {"annual_income_hkd": 365, "annual_income_band_hkd": 365, "ass
                    "premier_relationship": 180, "hsbc_relationship_balance_band": 180,
                    "hsbc_premier_path": 180, "hk_resident": 365, "offer_status": 90}
 
+# Persistence is semantic, not a property of the input widget.  In particular,
+# choosing a market/product for one question must not claim that the student
+# owns an account there.  These policies are also exposed to the UI through
+# field_definitions().
+SESSION_ONLY_FIELDS = frozenset({
+    "account_region", "account_product", "application_region",
+    "card_product_scope", "want_credit_card",
+})
+RELATIONSHIP_CONTEXT_FIELDS = frozenset({
+    "account_applicant_relation", "application_location",
+    "identity_document_type", "guardian_present", "existing_hsbc_hk_customer",
+})
+STUDY_PLAN_PROPOSAL_FIELDS = frozenset({
+    "destination_country", "school", "course", "planned_start_date",
+    "visa_category",
+})
+ALWAYS_CONFIRM_FIELDS = frozenset({
+    *FINANCIAL_FIELDS,
+})
+
+
+def persistence_policy(code: str) -> dict:
+    if code in SESSION_ONLY_FIELDS:
+        return {"storage_class": "session_only", "confirmation_mode": "never",
+                "scope": "market" if code in {"account_region", "application_region"}
+                else "conversation"}
+    if code in RELATIONSHIP_CONTEXT_FIELDS:
+        return {"storage_class": "relationship", "confirmation_mode": "never",
+                "scope": "relationship"}
+    if code in STUDY_PLAN_PROPOSAL_FIELDS:
+        return {"storage_class": "core_profile", "confirmation_mode": "proposal",
+                "scope": "study_plan"}
+    if code in ALWAYS_CONFIRM_FIELDS:
+        return {"storage_class": "core_profile", "confirmation_mode": "always_confirm",
+                "scope": "global"}
+    if code in {"spending_scenarios", "study_card_focus", "reward_preference",
+                "mainland_payment_method"}:
+        return {"storage_class": "preference", "confirmation_mode": "direct_answer",
+                "scope": "global"}
+    return {"storage_class": "core_profile", "confirmation_mode": "direct_answer",
+            "scope": "global"}
+
 
 def field_definitions():
     """Versioned registry persisted by the service for audit and UI rendering."""
@@ -292,12 +383,59 @@ def field_definitions():
                     "us_hsbc_account_path", "uk_hsbc_account_path",
                     "monthly_card_spend_band_hkd", "mainland_payment_method", "hk_resident"}:
             domains.append("credit_card")
+        if code in {"account_applicant_relation", "applicant_identity", "applicant_age",
+                    "applicant_age_band", "uk_residency_years",
+                    "application_location", "identity_document_type", "has_hk_identity_card",
+                    "qualifying_course_offer", "tax_certificate_or_ssn", "guardian_present",
+                    "existing_hsbc_hk_customer"}:
+            domains.append("bank_account")
         result[code] = {**item, "domains": sorted(set(domains)),
+                        **persistence_policy(code),
                         "sensitivity": "financial" if code in FINANCIAL_FIELDS else
                                        "personal" if code in PERSONAL_FIELDS else "standard",
                         "freshness_days": VOLATILE_FIELDS.get(code), "ask_priority": 0,
                         "ask_only_when_needed": True}
     return result
+
+
+# Exact-value and band variants of the same underlying condition route to the
+# same domains; field_definitions only tags the band form for some fields.
+_FIELD_DOMAIN_ALIASES = {
+    "annual_income_hkd": "annual_income_band_hkd",
+    "applicant_age": "applicant_age_band",
+}
+
+
+def domains_for_fields(codes) -> list[str]:
+    """Domains whose advice depends on any of the given field codes."""
+    definitions = field_definitions()
+    domains: set[str] = set()
+    for code in codes:
+        for lookup in (code, _FIELD_DOMAIN_ALIASES.get(code)):
+            if lookup and lookup in definitions:
+                domains.update(definitions[lookup].get("domains") or ())
+    return sorted(domains)
+
+
+_DOMAIN_ADVICE_TOPIC = {
+    "credit_card": "credit_card",
+    "bank_account": "account",
+    "hsbc_account": "account",
+    "visa": "visa",
+    "visa_documents": "visa",
+    "fx": "remittance",
+    "remittance_tuition": "remittance",
+    "remittance_living": "remittance",
+    "overseas_spending": "remittance",
+}
+
+
+def advice_topics_for_fields(codes) -> list[str]:
+    """Saved advice cards whose inputs include any changed Profile field."""
+    return sorted({
+        topic for domain in domains_for_fields(codes)
+        if (topic := _DOMAIN_ADVICE_TOPIC.get(domain))
+    })
 
 
 @dataclass(frozen=True)
@@ -354,15 +492,35 @@ def validate(field_code, value):
     return FIELDS[field_code][1](value)
 
 
-def _question(field_code, rule, version, text=None):
+# Shared fields (e.g. applicant_age) need topic-specific copy so visa asks do not
+# sound like bank/card product questions.
+TOPIC_QUESTION_OVERRIDES = {
+    "visa_documents": {
+        "applicant_age": "申请人现在多大？（部分签证材料与是否未满 18 岁有关）",
+        "applicant_age_band": "申请人目前是否已满 18 岁？（部分签证材料与此有关）",
+    },
+    "credit_card": {
+        "applicant_age": "申请人现在多大？（年龄会影响可选产品和申请要求）",
+        "applicant_age_band": "您目前是否已满 18 岁？（年龄会影响可选信用卡）",
+    },
+    "bank_account": {
+        "applicant_age": "申请人现在多大？（年龄会影响开户要求）",
+        "applicant_age_band": "您目前是否已满 18 岁？（年龄会影响开户要求）",
+    },
+}
+
+
+def _question(field_code, rule, version, text=None, *, topic=None):
     _, _, code, default = FIELDS[field_code]
     item = field_catalog()[field_code]
     input_type = "multi_select" if item["kind"] == "multi_enum" else \
         "single_select" if item["options"] else item["kind"] if item["kind"] in ("date",) else "text"
-    # Date and option answers come from an explicit follow-up control; save them
-    # immediately so the same question is not asked again next turn.
-    persist = "save_on_select" if item["options"] or item["kind"] == "date" else "proposal"
-    return FollowUpQuestion(question_code=code, field=field_code, text=text or default,
+    policy = persistence_policy(field_code)
+    persist = "session_only" if policy["confirmation_mode"] == "never" else \
+        "proposal" if policy["confirmation_mode"] == "proposal" else \
+        "save_on_select" if item["options"] or item["kind"] == "date" else "proposal"
+    prompt = text or TOPIC_QUESTION_OVERRIDES.get(topic or "", {}).get(field_code) or default
+    return FollowUpQuestion(question_code=code, field=field_code, text=prompt,
                             rule=rule, profile_version=version, input_type=input_type,
                             options=item["options"], max_selections=item["max_selections"],
                             persist_mode=persist)
@@ -385,10 +543,8 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
     if rule is None:
         return Assessment(topic, "unsupported_topic", f"主题 {topic} 没有条件表，不作确定结论",
                           version, rule_ms=(time.perf_counter() - started) * 1000)
-    if expected_profile_version is not None and expected_profile_version != version:
-        notices.append(Notice(code="profile_version_changed",
-                              message=f"档案已从 v{expected_profile_version} 更新为 v{version}，"
-                                      f"本轮按 v{version} 的已确认字段重新判断。"))
+    # expected_profile_version is still accepted for callers; a version bump no longer
+    # surfaces a customer-facing notice (re-assess silently on the current profile).
 
     facts, invalid, conflicts = {}, [], []
     for code, item in profile.fields.items():
@@ -401,6 +557,12 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
             facts[code] = Fact(item.value, "profile")
     for code, value in (stated or {}).items():
         if value is None:
+            continue
+        # Conversation state also carries workflow-owned facts (for example
+        # ``fx_mode``).  They are useful to their domain workflow but are not
+        # profile fields and therefore must not enter profile validation or
+        # follow-up question construction.
+        if code not in FIELDS:
             continue
         error = validate(code, value)
         if error:
@@ -433,7 +595,7 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
     missing = [f for f in rule.must_have if f not in facts and f not in conflicted]
     candidates = [(code, f"invalid.{code}", None) for code, _, _ in invalid]
     candidates += [(code, f"conflict.{code}",
-                    f"档案中{label(code)}是「{old}」，这次你提到「{new}」。以哪一个为准？"
+                    f"档案中{label(code)}是「{old}」，这次您提到「{new}」。以哪一个为准？"
                     f"如果要改档案，请在档案页确认更新。") for code, old, new in conflicts]
     taken = {code for code, _, _ in candidates}
     candidates += [(code, f"{topic}.must_have.{code}", None) for code in missing if code not in taken]
@@ -454,7 +616,7 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
                                   message=f"模型建议追问的字段不在本轮条件表内，已忽略：{', '.join(rejected)}"))
         preferred = [eligible[f] for f in dict.fromkeys(suggested) if f in eligible]
         candidates = preferred + [c for c in candidates if c not in preferred]
-    questions = [_question(code, rule_id, version, text)
+    questions = [_question(code, rule_id, version, text, topic=topic)
                  for code, rule_id, text in candidates[:MAX_QUESTIONS_PER_ROUND]]
 
     if invalid:

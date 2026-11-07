@@ -96,7 +96,6 @@ jobs:
             repo_root="$(pwd -P)"
             test "$repo_root" = "/srv/globalpathway"
             rm -rf -- "$repo_root/tests"
-            rm -f -- "$repo_root/scripts/test_agent2_followups.py"
 
   smoke:
     needs: deploy

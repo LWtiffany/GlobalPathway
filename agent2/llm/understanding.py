@@ -8,7 +8,7 @@ from .contracts import StructuredModel
 from .prompts import PromptRenderer
 from .schemas import UnderstandingResult
 
-PROMPT_VERSION = "understand-user-v2"
+PROMPT_VERSION = "understand-user-v5"
 
 
 class LlmUserUnderstanding:
@@ -25,6 +25,12 @@ class LlmUserUnderstanding:
             "understand_user.jinja2",
             user_text=request.text,
             allowed_fields_json=json.dumps(allowed_fields, ensure_ascii=False, sort_keys=True),
+            session_intents_json=json.dumps(list(request.conversation_intents), ensure_ascii=False),
+            session_topic=request.session_topic or "",
+            session_last_user_text=request.session_last_user_text,
+            session_last_assistant_text=request.session_last_assistant_text,
+            session_pending_questions_json=json.dumps(list(request.session_pending_questions),
+                                                      ensure_ascii=False),
         )
         return await self.model.parse(prompt=prompt, output_type=UnderstandingResult,
                                       operation="understand_user")

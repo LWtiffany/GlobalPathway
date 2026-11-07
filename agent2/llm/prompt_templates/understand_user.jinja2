@@ -9,14 +9,41 @@ Rules:
 5. Do not infer income, assets, student status, residency, repayment behavior, or eligibility.
 6. Intents are multi-label: return every supported intent the user is asking about in this turn. Empty list if none.
 7. Tolerate clear misspellings and casing variants when mapping to intents (e.g. "credti card", "VISA卡", "Master card" → credit_card). Prefer recalling a supported intent over dropping it.
-8. credit_card covers card recommendations, fees, rewards, Visa/Mastercard product questions, 办卡/开卡/刷卡优惠. "信用卡开户/开卡" is credit_card only, not hsbc_account.
-9. remittance_tuition / remittance_living cover tuition or living-cost transfers; overseas_spending covers 换汇/购汇/汇率/境外消费. hsbc_account covers bank account opening (开户/汇丰账户), not credit cards.
+8. credit_card covers explicit credit-card recommendations, fees, rewards, Visa/Mastercard product questions, and 刷卡/开卡优惠. "信用卡开户/开卡" is credit_card only, not hsbc_account. Bare 办卡/开卡/申卡 is ambiguous and must not be labeled credit_card without another clear credit cue.
+9. remittance_tuition / remittance_living cover tuition or living-cost transfers; overseas_spending covers 换汇/购汇/汇率/境外消费. hsbc_account covers ordinary bank accounts, savings/debit cards, HSBC One, Premier Checking, account opening, documents, fees, and application problems.
 10. visa_documents is for immigration/study visas. Do not treat "Visa卡" / "visa card" as visa_documents.
 11. Study-prep questions that name several topics (visa, tuition remittance, account opening, credit card) should return all matching intents.
 12. Normalize values to the option values and types described by ALLOWED_FIELDS.
+13. Bare "银行卡", "办卡", "开卡", "申卡", "哪张卡", or "卡推荐" does not establish debit versus credit. Without another clear account or credit cue, return no banking intent so the assistant can clarify or continue the active banking topic.
+14. SESSION_CONTEXT describes the open conversation topic. When active_intents is non-empty and USER_TEXT replies to, elaborates, constrains, or answers that open topic (including elliptical continuations, e.g. describing one's own use case right after an account-opening discussion), the turn is a continuation: set topic_switch=false and return only intents already inside active_intents (usually the active intent itself). Never add another domain's intent merely because the wording resembles it.
+15. Set topic_switch=true only when the user clearly opens a different topic: a new subject or object outside the active topic, or explicit switching wording such as 换个问题 / 不说这个了 / 顺便问. Then return the new topic's intents.
+16. When active_intents is empty there is no open topic: set topic_switch=false and classify USER_TEXT on its own.
+17. A user may be correcting or updating their profile after receiving a recommendation. Treat phrases such as
+    “以后…”, “改成…”, “其实…”, “现在…”, “主要…”, “大部分…”, and “接下来…” as current facts when they state
+    a concrete value. Extract the normalized fact even when the user does not say “修改资料”.
+18. Profile-update language is still part of the affected open domain. For example, during a credit-card discussion,
+    “以后主要回内地用”, “平时都在国内刷”, or “大部分用微信支付宝” continues credit_card and should map to the
+    appropriate spending_scenarios / mainland_payment_method values. Do not require the user to say internal labels.
+19. Use the Chinese labels, option labels, questions, and understanding_hint in ALLOWED_FIELDS as the ontology.
+    Internal field/value codes are output normalization targets only, never wording the user must have used.
+20. Apply the same behavior to every allowed field, not only spending scenarios: income changes, repayment habits,
+    reward preferences, applicant age/identity, residence, study plans, remittance details, and account-opening facts
+    should all be normalized when explicitly supported by USER_TEXT.
+21. For a multi_enum field, return only values supported by USER_TEXT and set update_mode deliberately:
+    - replace: “改成/以后主要/现在主要/只” replaces the old selection with the stated list.
+    - add: “也/另外/还会/再加上” adds the stated values to the current selection.
+    - remove: “不再/去掉/不要” removes the stated values from the current selection.
+    For scalar fields always use replace. Do not invent old values; the server performs add/remove against its trusted state.
 
 ALLOWED_FIELDS:
 {{ allowed_fields_json }}
+
+SESSION_CONTEXT:
+active_intents: {{ session_intents_json }}
+session_topic: {{ session_topic }}
+last_user_text: {{ session_last_user_text }}
+last_assistant_text: {{ session_last_assistant_text }}
+pending_questions: {{ session_pending_questions_json }}
 
 USER_TEXT:
 {{ user_text }}

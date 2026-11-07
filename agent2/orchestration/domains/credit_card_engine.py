@@ -82,6 +82,30 @@ def needs_asset_information(product: CreditCardProduct, facts: dict) -> bool:
     return False
 
 
+def _student_preview(product: CreditCardProduct, eligibility: EligibilityAssessment,
+                     facts: dict) -> bool:
+    """Allow a conditional student-card preview without inventing eligibility facts."""
+    if product.market != "Hong Kong" or eligibility.status != "unknown":
+        return False
+    student_rules = {rule.rule_type for rule in product.eligibility_rules if rule.required}
+    if not {"student_status", "institution_status"} <= student_rules:
+        return False
+    if (facts.get("full_time_student") is False or
+            facts.get("student_institution_eligible") is False):
+        return False
+    if (facts.get("applicant_identity") == "parent" or
+            (facts.get("role") == "parent" and
+             facts.get("applicant_identity") != "student")):
+        return False
+    destination = facts.get("destination_country")
+    if destination and destination not in {"CN-HK", "HK", "Hong Kong", "香港", "中国香港"}:
+        return False
+    return (facts.get("role") == "student" or
+            facts.get("applicant_identity") == "student" or
+            facts.get("full_time_student") is True or
+            bool(facts.get("school")))
+
+
 # HSBC Hong Kong lists HK residency as a written basic requirement, yet a
 # small number of non-resident applications are approved case by case. A
 # failed residency check therefore downgrades instead of excluding.
@@ -216,7 +240,8 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
             field = {"residency": "residency_status", "credit_assessment": "credit_history_band"}.get(
                 rule.rule_type, f"card_rule_{rule.rule_type}")
             value, passed = facts.get(field), False
-        if (rule.rule_type == "banking_relationship" and value == "plan_to_open"
+        if (rule.rule_type == "banking_relationship" and value in {
+                "plan_to_open", "need_opening_guidance"}
                 and wanted in {"us_premier_checking", "uk_student_account"}):
             return "pending", field
         # 「想先了解其他选择」：仍按待满足前提展示美国卡，不硬性剔除。
@@ -626,6 +651,27 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
         if eligibility.status == "ineligible":
             excluded[product.card_id] = eligibility.reasons
             continue
+        # A generic bank-review route only says that documents may be submitted.
+        # It must not override this card's separately stated financial floor.
+        # In particular, a small asset balance cannot make a premium card a
+        # sensible recommendation after both its income and asset tests fail.
+        if eligibility.matched_path == "asset_review":
+            asset_limits = [rule.value_numeric for rule in product.eligibility_rules
+                            if rule.required and rule.rule_type == "minimum_assets"
+                            and rule.value_numeric is not None]
+            asset_amount = facts.get("provable_financial_assets_hkd")
+            asset_band = facts.get("asset_band")
+            asset_upper = {"none": Decimal("0"), "under_100k": Decimal("100000"),
+                           "100k_399k": Decimal("400000"),
+                           "100k_500k": Decimal("500001")}.get(asset_band)
+            if asset_limits and (
+                    (asset_amount is not None and
+                     Decimal(str(asset_amount)) < min(asset_limits)) or
+                    (asset_amount is None and asset_upper is not None and
+                     asset_upper <= min(asset_limits))):
+                excluded[product.card_id] = [
+                    "已确认的可证明资产低于该卡公开资产门槛；通用个案审批路径不作为推荐依据。"]
+                continue
         monthly_spend = MONTHLY_SPEND_ESTIMATES.get(
             facts.get("monthly_card_spend_band_hkd"), Decimal("5000"))
         scored.append(score_product(
@@ -635,11 +681,45 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
 
     eligibility_rank = {"eligible": 3, "needs_bank_assessment": 2, "unknown": 1}
 
+    def income_floor(card_id):
+        return min((rule.value_numeric for rule in by_id[card_id].eligibility_rules
+                    if rule.required and rule.rule_type == "minimum_income"
+                    and rule.value_numeric is not None), default=None)
+
     def compare(left, right):
-        left_eligibility = eligibility_rank.get(left.eligibility.status, 0)
-        right_eligibility = eligibility_rank.get(right.eligibility.status, 0)
+        def path_rank(card):
+            if card.eligibility.status == "eligible":
+                return 5
+            if (card.eligibility.status == "needs_bank_assessment"
+                    and card.eligibility.matched_path != "asset_review"):
+                return 4
+            if _student_preview(by_id[card.card_id], card.eligibility, facts):
+                return 3
+            if card.eligibility.status == "needs_bank_assessment":
+                return 2
+            return eligibility_rank.get(card.eligibility.status, 0)
+
+        left_eligibility = path_rank(left)
+        right_eligibility = path_rank(right)
         if left_eligibility != right_eligibility:
             return -1 if left_eligibility > right_eligibility else 1
+        # A passed published route (including the student route) is stronger
+        # evidence of suitability than the generic option to submit asset
+        # documents for discretionary review. Non-residency can downgrade both
+        # to the same status, so the path still needs to break that tie.
+        left_review = left.eligibility.matched_path == "asset_review"
+        right_review = right.eligibility.matched_path == "asset_review"
+        if left_review != right_review:
+            return 1 if left_review else -1
+        # When both cards depend on discretionary asset review, prefer the
+        # public income tier closest to the customer's known income. Reward
+        # estimates are not evidence that a higher-tier application is viable.
+        if (left.eligibility.matched_path == right.eligibility.matched_path == "asset_review"
+                and (facts.get("annual_income_hkd") is not None or
+                     facts.get("annual_income_band_hkd") is not None)):
+            left_floor, right_floor = income_floor(left.card_id), income_floor(right.card_id)
+            if left_floor is not None and right_floor is not None and left_floor != right_floor:
+                return -1 if left_floor < right_floor else 1
         if preference in {"points", "miles"}:
             left_units = left.reward_units.get(preference, Decimal("0"))
             right_units = right.reward_units.get(preference, Decimal("0"))
@@ -664,12 +744,43 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
 
     scored.sort(key=cmp_to_key(compare))
     ranked_candidates = [item.model_copy(update={"role": "alternative"}) for item in scored]
+    student_preview = _student_preview(by_id[scored[0].card_id], scored[0].eligibility, facts)
+    # A non-resident whose public income route fails has two independent
+    # application hurdles. A generic asset-document review alone is too weak
+    # to justify presenting any of these cards as the main recommendation.
+    if (not student_preview and facts.get("hk_resident") is False
+            and (facts.get("annual_income_hkd") is not None or
+                 facts.get("annual_income_band_hkd") is not None)
+            and all(item.eligibility.status == "unknown" or
+                    (item.eligibility.low_approval_chance and
+                     item.eligibility.matched_path == "asset_review")
+                    for item in scored)):
+        return CreditCardRecommendationSet(ranked_candidates=ranked_candidates,
+                                           excluded=excluded)
+    # Missing facts about an unrelated premium/student route are not a basis
+    # to promote it after the customer has ruled out the documented income and
+    # asset routes for the ordinary cards.
+    if (not student_preview and facts.get("asset_band") == "none"
+            and (facts.get("annual_income_hkd") is not None or
+                 facts.get("annual_income_band_hkd") is not None)
+            and not any(item.eligibility.status in {"eligible", "needs_bank_assessment"}
+                        for item in scored)):
+        return CreditCardRecommendationSet(ranked_candidates=ranked_candidates,
+                                           excluded=excluded)
     primary = scored[0].model_copy(update={"role": "primary"})
     selected = {primary.card_id}
     gaps = set(scenarios) - set(primary.matched_scenarios)
     supplements = []
     for item in scored[1:]:
         if item.eligibility.status not in {"eligible", "needs_bank_assessment"}:
+            continue
+        if (primary.eligibility.matched_path != "asset_review"
+                and item.eligibility.matched_path == "asset_review"):
+            continue
+        if (primary.eligibility.matched_path == item.eligibility.matched_path == "asset_review"
+                and income_floor(primary.card_id) is not None
+                and income_floor(item.card_id) is not None
+                and income_floor(item.card_id) > income_floor(primary.card_id)):
             continue
         new_coverage = gaps & set(item.matched_scenarios)
         if not new_coverage:
@@ -685,6 +796,9 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
         if item.card_id in selected:
             continue
         if item.eligibility.status not in {"eligible", "needs_bank_assessment"}:
+            continue
+        if (primary.eligibility.matched_path != "asset_review"
+                and item.eligibility.matched_path == "asset_review"):
             continue
         annual = _fee(by_id[item.card_id], "annual_fee")
         if annual and annual.amount == 0:

@@ -235,10 +235,10 @@ agent2.py          # Agent2 CLI 入口（serve / eval-m06）
 sources.json       # 来源登记（含权威等级、负责人、检查周期、SLA、Schema 类型）
 data/
   agent1.sqlite3   # 历史混合库，保留原位
-  development/    # 开发新结构；legacy/ 为独立兼容管道
+  development/    # 本地开发数据，不纳入 Git 或生产镜像
   production/     # 正式新结构，须显式 db init 后创建
 docs/agent1-database.md # 新库表关系、边界与后续接入说明
-tests/             # 隔离环境、增量采集与候选比较的离线测试
+tests/             # 本地测试，不纳入 Git 或生产镜像
 local_secrets.py   # LLM API key（gitignored）
 EVALUATION.md      # 实测记录
 ```

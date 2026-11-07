@@ -10,7 +10,7 @@ from agent1 import storage
 from scripts.sync_hsbc_credit_card_eligibility import PRODUCT_URLS
 
 
-FEE_SCHEDULE_URL = "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/red/ewelcome-pack.pdf"
+FEE_SCHEDULE_URL = "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/ways-to-bank/bank-tariff/20261101-guide.pdf"
 FX_SOURCE_URL = "https://www.hsbc.com.hk/help/faq/credit-cards/"
 
 ANNUAL_FEES = {
@@ -47,7 +47,8 @@ def sync():
                    notes=NULL,scope_text='primary card annual fee',source_url=%s,last_verified_at=%s,
                    waiver_min_annual_spend_hkd=%s
                    WHERE card_id=%s AND fee_type='annual_fee'""",
-                (amount, waiver, FEE_SCHEDULE_URL, verified_at,
+                (amount, waiver, (PRODUCT_URLS[card_id] if card_id == "hsbc_visa_gold_student"
+                                  else FEE_SCHEDULE_URL), verified_at,
                  FEE_WAIVER_MIN_SPEND_HKD.get(card_id), card_id),
             )
             connection.execute(

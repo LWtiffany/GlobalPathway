@@ -19,21 +19,22 @@ The SDK is only the protocol client; requests go to `AGENT2_LLM_BASE_URL`.
 Default configuration:
 
 ```text
-AGENT2_LLM_MODEL=qwen3.8-flash
-AGENT2_LLM_STRUCTURED_MODE=json_schema
+AGENT2_LLM_MODEL=deepseek-v4.1-flash
+AGENT2_LLM_STRUCTURED_MODE=json_object
 AGENT2_LLM_EXTRA_BODY={"enable_thinking":false}
 ```
 
-The default uses provider-side JSON Schema plus application-side Pydantic and business validation. A benchmark
-on 2026-10-18 with the VPN off measured Qwen understanding at 3.464 seconds and answer writing at 1.252 seconds,
-so strict schema no longer has the earlier network latency penalty.
+The default uses provider-side JSON Object plus application-side Pydantic and business validation.
+The 2026-11-07 workspace probe measured DeepSeek understanding at 5.608 seconds versus
+Qwen3.8 Flash at 8.166 seconds; both completed the structured benchmark. This is one
+sample, not a production latency guarantee. Agent2 caps each model call at 30 seconds
+without SDK retries and falls back to its deterministic answer on failure.
 
-`deepseek-v4.1-flash` remains available as a fallback. It does not currently accept `json_schema` in this
-workspace, so use JSON Object and let Pydantic validate its response:
+`qwen3.8-flash` can be selected when provider-side JSON Schema is preferred:
 
 ```text
-AGENT2_LLM_MODEL=deepseek-v4.1-flash
-AGENT2_LLM_STRUCTURED_MODE=json_object
+AGENT2_LLM_MODEL=qwen3.8-flash
+AGENT2_LLM_STRUCTURED_MODE=json_schema
 ```
 
 Secrets belong in ignored `local_secrets.py` as `AGENT2_LLM_API_KEY` and `AGENT2_LLM_BASE_URL`, or in the
