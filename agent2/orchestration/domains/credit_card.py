@@ -10,6 +10,7 @@ from agent2 import clarify
 from agent2.models import AnswerBody, FollowUpQuestion, Notice
 
 from ..composer import is_necessity_question
+from ..capabilities import RuleCapabilityPlanner
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
 from .credit_card_advisor import CreditCardAdvisor
 from .credit_card_knowledge import CreditCardKnowledgeService
@@ -304,10 +305,12 @@ QUESTION_OPTIONS = {
          "label": "还没有美国汇丰卓越理财支票账户，想先了解开户再办信用卡"},
     ],
     "uk_hsbc_account_path": [
+        {"value": "student_account",
+         "label": "已有英国汇丰学生账户"},
         {"value": "premier_account",
-         "label": "是，已有英国汇丰卓越理财或私人银行账户"},
+         "label": "已有英国汇丰卓越理财或私人银行账户"},
         {"value": "plan_to_open",
-         "label": "否，优先看学生卡（需先开英国学生账户）"},
+         "label": "还没有，计划先开英国学生或卓越理财账户"},
     ],
     "hsbc_relationship_balance_band": [
         {"value": "under_100k", "label": "少于十万港元"},
@@ -430,13 +433,13 @@ def _named_card_products(text, products):
 
 def _looks_like_card_product_question(text):
     return bool(re.search(
-        r"怎么样|好不好|值得|适合我|适合谁|介绍|讲讲|评价|优缺点|"
+        r"怎么样|好不好|值得|适合|介绍|讲讲|评价|优缺点|"
         r"年费|费用|权益|回赠|返现|积分|里程|申请条件|能不能申请|区别|对比|哪个好",
         text, re.I))
 
 
 def _refers_to_card(text):
-    return bool(re.search(r"这个卡|这张卡|那张卡|刚才那张|刚推荐的|刚才推荐的|另一张|备选卡|它的", text))
+    return bool(re.search(r"这个卡|这张(?:卡)?|那张(?:卡)?|刚才那张|刚推荐的|刚才推荐的|另一张|备选卡|它", text))
 
 
 def _requested_card_scope(text):
@@ -485,29 +488,61 @@ class CreditCardWorkflow:
             # persisted card-application region and the two fields couple.
             facts["application_region"] = destination
 
+        if request.input_mode == "free_text":
+            prerequisite = re.search(r"美国|Premier Checking", request.text, re.I) and re.search(
+                r"怎么申请|如何申请|没有.{0,24}(?:账户|Checking)|替代.{0,24}(?:账户|Checking)|先开户|先开.*账户", request.text, re.I)
+            if prerequisite:
+                return DomainResult(
+                    task_id=task.task_id, domain="credit_card", status="answered",
+                    answer=AnswerBody(
+                        summary=PREREQUISITES["US"],
+                        steps=["先按美国汇丰官网核对并开立 Premier Checking，之后另行申请信用卡并接受银行审批。"]),
+                    evidence_refs=[US_CARDS_URL, US_PREMIER_CHECKING_URL],
+                    payload={"capability": "general_knowledge"}, projection="chat_only",
+                    observed_facts=extracted, observed_basis=basis)
+            if re.search(r"信用卡.*(?:必需|必要)|(?:必需|必要).*信用卡", request.text):
+                return DomainResult(
+                    task_id=task.task_id, domain="credit_card", status="answered",
+                    answer=AnswerBody(summary="信用卡不是硬性必需，可按订票、酒店和日常付款需要决定。",
+                                      steps=["先确认现有借记卡和付款方式是否够用；需要选卡时再比较费用、权益和申请条件。"]),
+                    payload={"capability": "general_knowledge"}, projection="chat_only")
+
+        if re.search(r"(?:未满|不满)\s*18\s*岁|\bunder\s*18\b", request.text, re.I):
+            facts["applicant_age_band"] = "under_18"
+            if re.search(r"申请|能办|可以|能不能", request.text):
+                return DomainResult(
+                    task_id=task.task_id, domain="credit_card", status="answered",
+                    answer=AnswerBody(summary="未满18岁尚未达到所覆盖信用卡基本卡的申请年龄要求。",
+                                      steps=["如考虑附属卡，需要另外核对具体产品的持卡年龄及监护人要求。"]),
+                    payload={"capability": "general_knowledge"}, projection="chat_only")
+
         # Product Q&A is a chat capability, not another recommendation run.
         # It must answer “Red 卡怎么样 / 年费多少 / 和 Pulse 有什么区别”
         # without collecting every preference used by the ranking engine.
-        capability_qa = any(
+        actions = [*task.actions, *RuleCapabilityPlanner()._enrich_task(task, request.text).actions]
+        # "哪张卡比较合适" asks us to choose; "Red 和 Pulse 比较" asks
+        # us to compare named products. The word 比较 alone is not decisive.
+        explicit_comparison = any(action.operation == "compare" for action in actions) and (
+            not re.search(r"比较(?:适合|合适|好|划算)", request.text)
+            or len({mention.text.casefold() for action in actions
+                    for mention in action.entity_mentions}) >= 2)
+        recommendation_requested = bool(re.search(r"(?:想要|想办|推荐).{0,10}免年费.{0,6}信用卡", request.text)) or not request.text.strip() or (
+            not explicit_comparison and any(
+                action.operation == "recommend" and action.evidence for action in actions))
+        capability_qa = not recommendation_requested and any(
             action.operation in {"explain", "compare", "assess", "how_to", "troubleshoot"}
-            for action in task.actions
+            for action in actions
         )
-        if request.input_mode == "free_text" and (capability_qa or _looks_like_card_product_question(request.text)):
+        if request.input_mode == "free_text" and (capability_qa or
+                (not recommendation_requested and _looks_like_card_product_question(request.text))):
             overview = await self._product_question(task, request, facts, extracted, basis)
             if overview is not None:
                 return overview
-            if capability_qa:
-                return DomainResult(
-                    task_id=task.task_id, domain="credit_card", status="answered",
-                    answer=AnswerBody(summary="我可以先按您关心的点比较卡片。方便告诉我两张卡的名称吗？"),
-                    payload={"capability": "product_qa"}, projection="chat_only",
-                    observed_facts=extracted, observed_basis=basis)
+            # Unnamed questions may be servicing questions; give knowledge
+            # retrieval a chance before asking for comparison product names.
         # General servicing knowledge is a credit-card-domain capability, not
         # a new router branch.  It is used only when no specific product answer
         # was available above, and it never starts a recommendation interview.
-        recommendation_requested = not request.text.strip() or bool(re.search(
-            r"推荐|帮我选|选哪|哪张卡|哪种卡|最适合|挑.{0,4}卡",
-            request.text))
         profile_update_turn = bool(
             request.domain_state.get("credit_card", {}).get("cards")
             and set(extracted) & {"spending_scenarios", "mainland_payment_method",
@@ -711,19 +746,6 @@ class CreditCardWorkflow:
                 QUESTION_OPTIONS,
             )
 
-        student_questions = self._student_questions_needed(gate_products, facts)
-        if student_questions and not adaptive_hk:
-            prompts = {
-                "full_time_student": (
-                    "学生信用卡可能有不同的申请条件。方便了解您是否为全日制学生吗？"
-                ),
-                "student_institution_eligible": (
-                    "方便了解您是否在汇丰指定名单内的香港院校就读全日制课程吗？这会影响学生卡资格。"
-                ),
-            }
-            return self._needs_input(
-                task, request, extracted, basis, student_questions, prompts, QUESTION_OPTIONS)
-
         required_usage_fields = ["repayment_mode", "spending_scenarios"]
         scenarios_so_far = facts.get("spending_scenarios") or []
         if isinstance(scenarios_so_far, str):
@@ -790,11 +812,20 @@ class CreditCardWorkflow:
                 f"{names.get(card_id, '汇丰信用卡')}：{'；'.join(_public_reason(reason) for reason in reasons)}"
                 for card_id, reasons in result.excluded.items()
             ]
+            dual_hurdle = facts.get("hk_resident") is False and any(
+                card.eligibility.matched_path == "asset_review"
+                for card in result.ranked_candidates)
+            summary = (
+                "您目前不符合香港居民的成文申请条件，收入也未达到相关卡片的公开门槛。"
+                "仅靠提交资产资料接受个案审批，获批把握不足，我暂时不建议您申请某张特定信用卡。"
+                "如果申请条件之后有变化，我可以重新为您比较。"
+                if dual_hurdle else
+                "根据目前已确认的申请条件，暂时没有可推荐的汇丰信用卡。"
+                "若之后情况有变化，我们可以再为您比较适合的选择。")
             return DomainResult(
                 task_id=task.task_id, domain="credit_card", status="answered",
                 answer=AnswerBody(
-                    summary="根据目前已确认的申请条件，暂时没有可推荐的汇丰信用卡。"
-                            "若之后情况有变化，我们可以再为您比较适合的选择。",
+                    summary=summary,
                     steps=steps),
                 payload={"recommendations": result.model_dump(mode="json"),
                          "catalog": self._catalog_summary(catalog)},
@@ -812,6 +843,7 @@ class CreditCardWorkflow:
                                         "monthly_card_spend_band_hkd"}]
         provisional_fields = list(dict.fromkeys([*eligibility_missing, *optional_inputs]))
         recommendations = [result.primary, *result.supplements, *result.alternatives]
+        provisional_choice = bool(provisional_fields) or result.primary.eligibility.status != "eligible"
         now = self.clock()
         by_id = {product.card_id: product for product in catalog.products}
         product_data_ready = all(
@@ -826,10 +858,10 @@ class CreditCardWorkflow:
         )
         show_estimates = not (adaptive_hk and "monthly_card_spend_band_hkd" in provisional_fields)
         steps = self._format_card_lines(result.primary, show_estimates=show_estimates,
-                                        provisional=bool(provisional_fields))
+                                        provisional=provisional_choice)
         for card in result.supplements:
             steps.extend(self._format_card_lines(card, show_estimates=show_estimates,
-                                                 provisional=bool(provisional_fields),
+                                                 provisional=provisional_choice,
                                                  near_tie=card.card_id in near_tie_ids))
         if facts["repayment_mode"] != "full" and not (adaptive_hk and "repayment_mode" in provisional_fields):
             steps.insert(0, self._format_borrowing_costs(by_id[result.primary.card_id]))
@@ -840,7 +872,7 @@ class CreditCardWorkflow:
         try:
             advisor_brief = (await self.advisor.enrich(
                 result.primary, by_id[result.primary.card_id], facts, recommendations)
-                if not (adaptive_hk and provisional_fields) else None)
+                if not (adaptive_hk and provisional_choice) else None)
         except Exception:
             advisor_brief = None
         if advisor_brief:
@@ -915,7 +947,7 @@ class CreditCardWorkflow:
         return DomainResult(
             task_id=task.task_id, domain="credit_card",
             status="answered" if product_data_ready else "needs_verification",
-            answer=AnswerBody(summary=f"{'初步选择' if provisional_fields else '主推荐'}：{result.primary.product_name}", steps=steps,
+            answer=AnswerBody(summary=f"{'初步选择' if provisional_choice else '主推荐'}：{result.primary.product_name}", steps=steps,
                               limitations=limitations),
             evidence_refs=evidence,
             next_actions=list(dict.fromkeys(next_actions)),
@@ -945,7 +977,9 @@ class CreditCardWorkflow:
                 continue
         products = [product for catalog in catalogs for product in catalog.products]
         named = _named_card_products(request.text, products)
-        if not named and not _refers_to_card(request.text):
+        contextual_reference = _refers_to_card(request.text) or bool(
+            context.get("cards") and re.fullmatch(r"(?:那|那么|还有)?(?:年费|费用|权益|回赠|积分|里程)(?:呢|多少|怎么样)?[？?]?", request.text.strip()))
+        if not named and not contextual_reference:
             # Explicit product names outrank the study destination or the
             # previously recommended market. Search the other shelves only
             # when the current shelf did not resolve the names.
@@ -959,7 +993,7 @@ class CreditCardWorkflow:
                 catalogs.append(catalog)
                 products.extend(catalog.products)
             named = _named_card_products(request.text, products)
-        if not named and _refers_to_card(request.text):
+        if not named and contextual_reference:
             cards = context.get("cards") or []
             focus = next((card for card in cards if card.get("product_name")
                           and card["product_name"] in request.session_last_assistant_text), None)
@@ -1142,7 +1176,7 @@ class CreditCardWorkflow:
         if facts.get(account_field) is None:
             # Premier in another country does not establish a local account.
             prompt = (
-                "为了核对英国卡的申请条件，方便了解您是否已有英国汇丰卓越理财或私人银行账户吗？"
+                "为了按您实际可申请的路径比较，方便了解您是否已有英国汇丰学生账户、卓越理财或私人银行账户吗？"
                 if region == "UK" else
                 "为了避免推荐暂时无法申请的美国卡，方便了解您是否已有"
                 "美国汇丰卓越理财支票账户吗？"
@@ -1770,6 +1804,13 @@ class CreditCardWorkflow:
         scene_text = "、".join(scenes)
         if near_tie:
             opening = "这张卡和主推荐在您关注的场景下表现接近，值得一起比较年费、奖赏上限和申请条件。"
+        elif card.role == "primary" and set(card.eligibility.missing_fields) & {
+                "full_time_student", "student_institution_eligible"}:
+            opening = ("从您的留学画像看，学生卡值得先了解。全日制身份及学校是否在指定名单内"
+                       "尚未核实，所以这只是有条件的初步选择；申请前请按汇丰要求核对。")
+        elif card.role == "primary" and card.eligibility.matched_path == "student":
+            opening = ("您已确认全日制学生身份和指定院校资格，这张卡有独立的学生申请路径，"
+                       "值得先核对申请条件；最终仍由银行审批。")
         elif card.role == "supplement" and scene_text:
             opening = f"可以和主卡搭配使用，专门补足您在{scene_text}方面的需求。"
         elif scene_text:
@@ -1806,48 +1847,6 @@ class CreditCardWorkflow:
         return lines
 
     @staticmethod
-    def _student_questions_needed(products, facts) -> list[str]:
-        """Ask about student status only when income rules out non-student cards.
-
-        The student card is the only eligible route for applicants below the
-        lowest non-student income threshold, so mainstream applicants never
-        see these questions.
-        """
-        student_ids = {product.card_id for product in products if any(
-            rule.required and rule.rule_type == "student_status"
-            for rule in product.eligibility_rules)}
-        if not student_ids:
-            return []
-        non_student_thresholds = [
-            rule.value_numeric for product in products if product.card_id not in student_ids
-            for rule in product.eligibility_rules
-            if rule.required and rule.rule_type == "minimum_income"
-            and rule.value_numeric is not None]
-        if not non_student_thresholds:
-            return []
-        threshold = min(non_student_thresholds)
-        income = facts.get("annual_income_hkd")
-        if income is not None:
-            below = Decimal(str(income)) < threshold
-        else:
-            band = str(facts.get("annual_income_band_hkd") or "")
-            parts = band.split("_")
-            if parts[0] == "lt":
-                below = Decimal(parts[1]) <= threshold
-            elif parts[0] == "range":
-                below = Decimal(parts[2]) < threshold
-            else:
-                below = False
-        if not below:
-            return []
-        if facts.get("full_time_student") is True:
-            return (["student_institution_eligible"]
-                    if facts.get("student_institution_eligible") is None else [])
-        if facts.get("full_time_student") is False:
-            return []
-        return ["full_time_student"]
-
-    @staticmethod
     def _catalog_summary(catalog):
         return {
             "market": catalog.market,
@@ -1871,6 +1870,9 @@ class CreditCardWorkflow:
             if card.card_id in selected:
                 continue
             if card.eligibility.status != primary.eligibility.status:
+                continue
+            if (primary.eligibility.matched_path != "asset_review"
+                    and card.eligibility.matched_path == "asset_review"):
                 continue
             if set(card.eligibility.missing_fields) != set(primary.eligibility.missing_fields):
                 continue
@@ -1908,8 +1910,6 @@ class CreditCardWorkflow:
             "reward_preference": "您更喜欢现金回赠、积分还是里程？没有偏好也可以。",
             "hsbc_premier_path": "如果您有汇丰卓越理财关系，部分选择会不同。您属于哪种情况？",
             "asset_band": "如果收入条件不适用，您愿意考虑由银行参考资产证明作个案审批吗？",
-            "full_time_student": "学生卡可能是另一种选择。方便了解您是否为全日制学生吗？",
-            "student_institution_eligible": "若考虑学生卡，方便了解您是否就读汇丰指定名单内的香港院校吗？",
             "mainland_payment_method": "您提到内地消费，平时更常用手机扫码还是实体卡？这会影响实际回赠。",
             "hk_resident": "方便了解您是否为香港居民吗？这会影响香港信用卡的申请机会，最终仍由银行审批。",
             "hsbc_relationship_balance_band": "如果考虑卓越理财信用卡，方便了解您在汇丰的总关系结余大致区间吗？选范围即可。",
@@ -1938,8 +1938,6 @@ class CreditCardWorkflow:
                                  now=self.clock()).primary
             missing = set(selected.eligibility.missing_fields) if selected else set()
             critical = (
-                ("full_time_student", {"full_time_student"}),
-                ("student_institution_eligible", {"student_institution_eligible"}),
                 ("hsbc_premier_path", {"hsbc_premier_path", "premier_relationship"}),
                 ("hsbc_relationship_balance_band", {"hsbc_relationship_balance_band",
                                                     "hsbc_total_relationship_balance_hkd"}),
@@ -1965,7 +1963,6 @@ class CreditCardWorkflow:
             fields.append("hsbc_premier_path")
         if any(needs_asset_information(product, facts) for product in remaining):
             fields.append("asset_band")
-        fields.extend(self._student_questions_needed(remaining, facts))
         if not facts.get("spending_scenarios"):
             fields.append("spending_scenarios")
         elif "mainland_china" in facts["spending_scenarios"] and not facts.get("mainland_payment_method"):
