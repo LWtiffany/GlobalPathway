@@ -186,45 +186,163 @@ def _fallback_labels(text: str) -> list[str]:
     return [label for label, pattern in patterns if re.search(pattern, text, re.I)] or ["documents_process"]
 
 
+
+
+def _family_scenario(text: str) -> str | None:
+    patterns = (
+        ("handoff", r"客户经理|转介|对接当地|交接摘要"),
+        ("funding", r"汇.*(?:学费|生活费)|给孩子.*(?:汇|转).*(?:钱|学费|生活费)"),
+        ("fees", r"月费|管理费|免.*费|免.*管理费|关系余额|放一笔钱|资金|存款|豁免|需要自己放|钱吗"),
+        ("maintenance", r"满\s*18岁|转去美国|毕业|回国|账户怎么办"),
+        ("activation", r"卡没收到|借记卡没|账户已经开|账户已开|激活|马上用"),
+        ("source_of_funds", r"没有收入|资金来源|解释资金|补件|开户受阻|申请被拒"),
+        ("eligibility_documents", r"没有当地地址|没有.*税号|先申请|资格|需要什么材料|(?:便利|权益).*(?:材料)|材料.*(?:便利|权益)"),
+        ("minor", r"未成年|\d{1,2}岁|不陪同|谁能帮.*开"),
+        ("timeline", r"出发|八月份|八月|\d{1,2}月|国内先办|来得及"),
+        ("use_case", r"生活费|房租|日常消费|收款|交房租|开什么合适"),
+        ("family_setup", r"一家|家庭|准备哪些账户|准备.*账户|孩子去.*读书|孩子.*留学"),
+    )
+    for scenario, pattern in patterns:
+        if re.search(pattern, text):
+            return scenario
+    if re.search(r"孩子|子女|儿子|女儿|未成年", text):
+        return "family_setup"
+    return None
+
+
+def _family_scenario_answer(*, scenario: str | None, text: str, region: str,
+                            facts: dict, context: dict, catalog_available: bool) -> AnswerBody | None:
+    market = MARKET_LABEL[region]
+    age = facts.get("applicant_age")
+    location = facts.get("application_location")
+    location_name = {"CN": "中国内地", "CN-HK": "香港", "UK": "英国", "US": "美国"}.get(location)
+    location_question = "孩子准备申请时会在中国内地、香港，还是已经在目的地国家？"
+    if scenario == "family_setup":
+        summary = "先按家庭分工整理账户用途，不用先为每个家人各开一款账户。"
+        steps = ["先明确实际开户人通常是留学生本人；家长账户用于供款，孩子账户用于收款、房租和日常消费，两者不应混作一个申请人。",
+                 "再核对孩子是否已有可用的当地账户、银行卡或付款安排；只有缺少必要的本地收付款能力时，才进一步比较开户。",
+                 f"目的地暂按{market}理解；如果不是这个地区请纠正。{location_question}"]
+        if not age:
+            steps.append("孩子多大？年龄会影响可申请的账户、监护和陪同要求。")
+        return AnswerBody(summary=summary, steps=steps)
+    if scenario == "handoff":
+        return AnswerBody(summary="可以整理一份交给现有客户经理核对的咨询摘要；目前不能确认已具备正式跨境转介。",
+                          steps=["说明孩子本人将在哪个地区开户、年龄、申请所在地和计划出发时间。",
+                                 "请客户经理确认能否协助联系目的地实体、孩子适用的账户、申请渠道、本人到场要求和收卡激活安排。",
+                                 "家长的现有关系只作为核对线索，不代表孩子已获资格或费用豁免；本次没有替您发送或预约。",
+                                 location_question])
+    if scenario == "funding":
+        return AnswerBody(summary="开户后给孩子汇学费和生活费，先区分学校收款与孩子个人账户收款。",
+                          steps=["学费应先核对学校发票上的收款人、账户和币种；学校直接收款与汇入孩子个人账户不是同一条路径。",
+                                 "生活费再核对孩子个人账户的账户名、币种、可收款方式及家长汇出所需信息。",
+                                 "准备汇款前核对金额、用途、收款信息及可能的银行费用；不要只凭账户已开通就假设款项可即时使用。"])
+    if scenario == "timeline":
+        return AnswerBody(summary="可以按出发时间倒排，但申请、审核、开户、收卡和激活不能视为同一个完成节点。",
+                          steps=["先确认孩子从当前所在地申请目的地账户的渠道是否开放、申请人是否需到场。",
+                                 "整理孩子身份证明、现有地址证明、学生身份或录取材料；具体必需项按适用渠道确认。",
+                                 "分别向银行确认审核时长、开户生效、卡片寄送地点和激活要求；目前不能保证出发前全部完成。",
+                                 location_question])
+    if scenario == "use_case":
+        return AnswerBody(summary=f"针对生活费、房租和日常消费，优先核对{market}账户是否支持孩子需要的本地收款、转账及借记卡使用，再比较具体产品。",
+                          steps=["先确认孩子是否需要本地账户收款和本地转账，房租收款方是否接受该账户付款。",
+                                 "核对借记卡、网银/手机银行、多币种及账户费用；普通往来账户若满足这些需求，未必需要高等级关系账户。",
+                                 "家长的私行关系是否给孩子带来可核实的服务便利，需另向客户经理确认。",
+                                 f"要按资格筛选具体产品，还需确认孩子年龄和申请所在地（当前记录：{location_name or '待确认'}）。"])
+    if scenario == "minor":
+        return AnswerBody(summary=f"{age or '未成年'}岁开户要按孩子本人作为账户持有人核对{market}当地未成年人规则，家长能否代办或不陪同不能跨市场推断。",
+                          steps=["先确认申请账户的持有人是孩子本人，家长是监护人或协助人，不应把账户归属说成家长代持。",
+                                 "请确认孩子的申请所在地，以及当地银行对监护人同意、到场陪同、身份证件和地址证明的要求。",
+                                 "目前没有依据确认家长不陪同仍可开户，也不应直接推荐面向成年人的学生账户。",
+                                 location_question])
+    if scenario == "eligibility_documents":
+        summary = ("现有私行或家庭关系可能提供咨询便利，但不能据此确认孩子已有开户资格；材料和渠道需按孩子本人核对。"
+                   if re.search(r"便利|权益", text) else
+                   "没有当地地址或税号时能否先申请，取决于孩子、目的地账户和具体申请渠道；不能把常见材料清单当成统一门槛。")
+        return AnswerBody(summary=summary,
+                          steps=["先区分问题发生在申请资格、身份证明、地址证明，还是税务信息；税号要求因地区和账户而不同。",
+                                 "请确认孩子计划从哪里申请，以及目前已有的身份证件、常住地址证明和学生材料。",
+                                 "向该渠道核实哪些材料必须提交、哪些可以接受替代文件、哪些可在开户后补交；未经确认不要自行假设可后补。",
+                                 location_question])
+    if scenario == "source_of_funds":
+        return AnswerBody(summary="孩子没有个人收入不等于资金来源问题无法说明；应如实说明家庭资助关系，并按银行要求提供可核实材料。",
+                          steps=["先区分银行要求的是申请人收入、账户资金来源，还是家长汇款来源；这几项不能互相替代。",
+                                 "可先准备家长资助说明、亲属关系证明及与资金来源相符的文件，具体格式和是否需要翻译由经办银行确认。",
+                                 "不要编造孩子收入或承诺一定通过审核；若已收到补件通知，按通知原文逐项核对并联系经办渠道。"])
+    if scenario == "activation":
+        return AnswerBody(summary="账户已开不一定代表借记卡已送达或可以立即完成所有付款。",
+                          steps=["核对开户状态、卡片是否已制发、寄送地址和预计送达时间，并确认是否需要本人签收。",
+                                 "同时确认网银/手机银行是否已激活、手机号能否接收验证码、卡片是否需要单独启用。",
+                                 "在当地付款能力确认前，不要假定落地即可刷卡或转账；可向银行核实临时付款方式和联系路径。"])
+    if scenario == "maintenance":
+        return AnswerBody(summary="年龄、留学目的地或毕业身份变化后，账户处理取决于现有账户条款和服务地区，不能直接推断要转换或关闭。",
+                          steps=["先确认孩子目前持有的具体账户、开户地区、登记居住地址和联系方式。",
+                                 "再请该账户所属银行核实满18岁或迁往美国后是否影响账户类别、费用、税务信息、卡片和网银。",
+                                 "毕业回国时再核实是否可保留、需要更新资料或申请关闭，并取得正式办理要求。"])
+    return None
+
+
 def _explicit_facts(text: str) -> dict:
     facts = {}
     folded = text.casefold()
+    destination = re.search(r"(?:去|赴|到|前往|转去)\s*(英国|美国|香港).{0,14}(?:留学|读书|上学|工作|开户|开账户|读研)", text)
+    if destination:
+        facts["account_region"] = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[destination[1]]
+    elif re.search(r"(?:英国|美国|香港).{0,8}(?:账户|开户|读书|留学|读研)", text):
+        market = re.search(r"英国|美国|香港", text)
+        facts["account_region"] = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[market[0]]
     relationship = re.search(
         r"(?:我是|我有|持有|现有).{0,12}(香港|英国|美国).{0,12}(私行|私人银行|Premier|卓越理财)", text, re.I)
     if relationship:
         facts["parent_relationship_market"] = {"香港": "CN-HK", "英国": "UK",
                                               "美国": "US"}[relationship[1]]
         facts["parent_relationship_status"] = "user_stated_unverified"
-    relationship_text = re.search(r"(?:我是|我有|持有|现有).{0,20}(?:私行|私人银行|Premier|卓越理财)", text, re.I)
-    if relationship_text:
-        facts.setdefault("parent_relationship_market", "unknown")
-        facts.setdefault("parent_relationship_status", "user_stated_unverified")
-    destination = re.search(r"(?:去|赴|到|在)\s*(英国|美国|香港).{0,10}(?:留学|读书|上学|开户|开账户)", text)
-    if destination:
-        facts["account_region"] = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[destination[1]]
-    elif "香港" in text or "hsbc one" in folded or "汇丰 one" in folded:
+    if not facts.get("account_region") and ("hsbc one" in folded or "汇丰 one" in folded):
         facts["account_region"] = "CN-HK"
-    elif "英国" in text or "uk" in folded:
-        facts["account_region"] = "UK"
-    elif "美国" in text or "premier checking" in folded:
+    elif not facts.get("account_region") and "premier checking" in folded:
         facts["account_region"] = "US"
+    location = re.search(
+        r"国内先|国内申请|国内办理|(?:现在|目前)(?:在)?\s*(香港|英国|美国|内地|中国|国内)|(?:身在|身处|人在|住在|申请时在|从)\s*(香港|英国|美国|内地|中国|国内)",
+        text)
+    if location and location[0].startswith("国内"):
+        facts["application_location"] = "CN"
+    elif location:
+        location_name = location[1] or location[2]
+        facts["application_location"] = {"香港": "CN-HK", "英国": "UK", "美国": "US",
+                                         "内地": "CN", "中国": "CN", "国内": "CN"}[location_name]
+    if re.search(r"孩子|儿子|女儿|子女|未成年", text):
+        facts["account_applicant_relation"] = "child"
+        facts["applicant_identity"] = "student"
     age_pattern = (r"(?:孩子|儿子|女儿)[^，。；]{0,8}?(\d{1,2})\s*岁"
                    if re.search(r"孩子|儿子|女儿", text) else r"(?<!\d)(\d{1,2})\s*岁")
     age = re.search(age_pattern, text)
     if age:
         facts["applicant_age"] = int(age.group(1))
-    location = re.search(r"(?:现在|目前|身在|身处|人在|住在|申请时在)\s*在?\s*(香港|英国|美国|内地|中国)", text)
-    if location:
-        facts["application_location"] = {"香港": "CN-HK", "英国": "UK", "美国": "US",
-                                         "内地": "CN", "中国": "CN"}[location[1]]
+    region_name = re.search(r"英国|美国|香港", text)
+    if region_name and re.search(r"开户|账户|HSBC\s*(?:One|Premier)", text, re.I) and not relationship:
+        facts["account_region"] = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[region_name[0]]
+    return_to_market = re.search(r"(?:回到|回头说|继续说|再说|切回)\s*(英国|美国|香港)", text)
+    if return_to_market:
+        facts["account_region"] = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[return_to_market[1]]
+    if re.search(r"(?:未满|不满)\s*18\s*岁", text):
+        facts.pop("applicant_age", None)
+        facts["applicant_age_band"] = "under_18"
     if re.search(r"刚到英国|刚落地英国", text):
         facts["uk_residency_years"] = 0
     years = re.search(r"(?:在英国|英国).*?(?:住了|居住了|住满)\s*(\d+)\s*年", text)
     if years:
         facts["uk_residency_years"] = int(years.group(1))
-    if re.search(r"孩子|儿子|女儿", text):
+    if re.search(r"孩子|儿子|女儿|子女|未成年", text):
         facts["account_applicant_relation"] = "child"
         facts["applicant_identity"] = "student"
+        location = re.search(
+            r"国内先|国内申请|国内办理|(?:现在|目前)(?:在)?\s*(香港|英国|美国|内地|中国|国内)|(?:身在|身处|人在|住在|申请时在|从)\s*(香港|英国|美国|内地|中国|国内)",
+            text)
+        if location and location[0].startswith("国内"):
+            facts["application_location"] = "CN"
+        elif location:
+            location_name = location[1] or location[2]
+            facts["application_location"] = {"香港": "CN-HK", "英国": "UK", "美国": "US",
+                                             "内地": "CN", "中国": "CN", "国内": "CN"}[location_name]
     if re.search(r"没有香港身份证|没香港身份证", text):
         facts["has_hk_identity_card"] = False
     elif re.search(r"有香港身份证|持有香港身份证", text):
@@ -550,6 +668,20 @@ class BankAccountWorkflow:
         if raw_state.get("profile_id") not in (None, request.profile_id):
             raw_state = {}
         family_context = dict(raw_state.get("family_context") or {})
+        family_signals = r"孩子|子女|儿子|女儿|未成年|留学|读书|读研|出发前|开学前|家庭账户|我们一家|家长|监护人"
+        explicit_child = bool(re.search(r"孩子|子女|儿子|女儿|未成年", request.text))
+        family_mode = bool(re.search(family_signals, request.text)) or bool(family_context.get("family_mode"))
+        scenario = _family_scenario(request.text)
+        family_context["family_mode"] = family_mode
+        if scenario:
+            family_context["scenario"] = scenario
+        destination_market = _explicit_facts(request.text).get("account_region")
+        explicit_destination = re.search(r"(?:去|赴|到|前往|转去)\s*(英国|美国|香港)|(英国|美国|香港).{0,8}(?:账户|开户|读书|留学|读研)", request.text)
+        if explicit_destination:
+            destination_name = explicit_destination[1] or explicit_destination[2]
+            destination_market = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[destination_name]
+        elif re.search(r"孩子.*(?:开户|账户).*(?:有什么便利|权益|私行|客户身份)", request.text):
+            destination_market = None
         existing_relationship = re.search(
             r"(?:我是|我有|持有|现有).{0,12}(香港|英国|美国).{0,12}(私行|私人银行|Premier|卓越理财)",
             request.text, re.I)
@@ -559,7 +691,7 @@ class BankAccountWorkflow:
                                                      "美国": "US"}[existing_relationship[1]]
             family_context["relationship_status"] = "user_stated_unverified"
         family_signal = bool(re.search(r"私行|私人银行|家庭权益|出发前|落地前", request.text))
-        family_plan = family_signal or bool(family_context)
+        family_plan = family_mode or family_signal
         if family_signal:
             family_context["customer_goal"] = request.text[:1000]
         if re.search(r"我.{0,12}(?:私行|私人银行|Premier|卓越理财)", request.text, re.I):
@@ -569,7 +701,19 @@ class BankAccountWorkflow:
             family_context["target_milestone"] = "出发前" + (departure[0] if departure else "完成开户准备")
         # The current turn must beat the previous turn's stored query scope.
         explicit_seed = _explicit_facts(request.text)
-        market_hint = explicit_seed.get("account_region") or facts.get("account_region")
+        if re.search(r"孩子.*(?:开户|账户).*(?:有什么便利|权益|私行|客户身份)", request.text):
+            explicit_seed.pop("account_region", None)
+        destination_match = re.search(r"(?:去|赴|到|前往|转去)\s*(英国|美国|香港).{0,14}(?:留学|读书|上学|工作|开户|开账户|读研)", request.text)
+        if destination_match:
+            explicit_seed["account_region"] = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[destination_match[1]]
+        destination_market = explicit_seed.get("account_region")
+        if re.search(r"国内先|在国内|从国内", request.text):
+            explicit_seed["application_location"] = "CN"
+            facts["application_location"] = "CN"
+            basis["application_location"] = "本轮明确表示国内办理"
+        if destination_market:
+            explicit_seed["account_region"] = destination_market
+        market_hint = destination_market or facts.get("account_region")
         state = load_account_state(raw_state, market_hint)
         labels = _fallback_labels(request.text)
         notices: list[Notice] = []
@@ -603,15 +747,46 @@ class BankAccountWorkflow:
             facts["parent_relationship_status"] = family_context["relationship_status"]
         if not facts.get("parent_relationship_market") and family_context.get("relationship_market"):
             facts["parent_relationship_market"] = family_context["relationship_market"]
+        if facts.get("application_location") == facts.get("account_region") and re.search(r"国内先|在国内|从国内", request.text):
+            facts["application_location"] = "CN"
+        if destination_market:
+            facts["account_region"] = destination_market
+            basis["account_region"] = "本轮提到的留学或开户目的地"
+        if not facts.get("account_applicant_relation") and family_mode:
+            facts["account_applicant_relation"] = "child"
+            facts["applicant_identity"] = "student"
         if not facts.get("account_region") and state.market in MARKET_LABEL:
             facts["account_region"] = state.market
             basis["account_region"] = "沿用本次开户咨询地区"
-        region = facts.get("account_region")
+        region = destination_market or facts.get("account_region")
+        if (family_mode and region and family_context.get("relationship_market") == region
+                and not destination_match):
+            region = None
+        if region is None and family_mode:
+            destination_country = re.search(r"(?:去|赴|到|前往|转去)\s*(英国|美国|香港)", request.text)
+            if destination_country:
+                region = {"英国": "UK", "美国": "US", "香港": "CN-HK"}[destination_country[1]]
+            elif state.market in MARKET_LABEL and state.market != family_context.get("relationship_market"):
+                region = state.market
+            elif re.search(r"英国", request.text):
+                region = "UK"
+            elif re.search(r"美国", request.text):
+                region = "US"
+            elif re.search(r"香港", request.text) and not family_context.get("relationship_market"):
+                region = "CN-HK"
+            else:
+                region = "UK"
+                facts["account_region"] = region
+                basis["account_region"] = "留学家庭场景暂按英国理解；请纠正目的地"
         if region is None and facts.get("destination_country") in MARKET_LABEL:
             # Rendering default for this turn only.  Kept out of facts/basis so
             # the study destination never becomes a persisted account region.
             region = facts["destination_country"]
         region_assumed = False
+        if region not in MARKET_LABEL and family_mode:
+            region = "UK"
+            facts["account_region"] = region
+            basis["account_region"] = "家庭留学安排暂按英国核对；可纠正"
         if region not in MARKET_LABEL:
             if "account_region" in request.asked_fields:
                 # The region follow-up is already open and the user asked a new
@@ -628,6 +803,15 @@ class BankAccountWorkflow:
                                            "（香港、英国或美国），我再按当地规则回答。",
                                    missing=["account_region"], facts=facts, basis=basis,
                                    profile_version=request.profile_version)
+        if re.search(r"(?:开户|开账户).*(?:必须现在|现在必须|必须先|一定要现在)", request.text):
+            return DomainResult(task_id=task.task_id, domain="bank_account", status="answered",
+                                answer=_necessity_answer(region), projection="chat_only")
+        if facts.get("applicant_age_band") == "under_18":
+            return DomainResult(
+                task_id=task.task_id, domain="bank_account", status="answered",
+                answer=AnswerBody(summary="未成年人开户需按具体年龄、地区和账户核对，不能直接按成人账户办理。",
+                                  steps=["请提供实际年龄，并向银行核对监护人陪同或同意、身份证明及可用申请渠道。"]),
+                projection="chat_only")
         broad_opening = bool(re.fullmatch(
             r"(?:开户地区[:：]?\s*)?(?:英国|美国|香港)(?:开户|账户)?",
             request.text.strip()))
@@ -641,12 +825,63 @@ class BankAccountWorkflow:
             catalog = {"read_id": "unavailable", "products": [], "routes": [], "rules": [],
                        "documents": [], "fees": [], "relations": []}
         if not catalog["products"]:
-            return DomainResult(task_id=task.task_id, domain="bank_account",
-                                status="cannot_answer", answer=AnswerBody(
-                                    summary=f"暂时没有可核对的{MARKET_LABEL[region]}汇丰开户资料。"),
-                                observed_facts=facts, observed_basis=basis,
-                                notices=[*notices, Notice(code="hsbc_account_missing",
-                                                           message="汇丰开户知识未就绪。")])
+            if not family_mode:
+                return DomainResult(task_id=task.task_id, domain="bank_account",
+                                    status="cannot_answer", answer=AnswerBody(
+                                        summary=f"暂时没有可核对的{MARKET_LABEL[region]}汇丰开户资料。"),
+                                    observed_facts=facts, observed_basis=basis,
+                                    notices=[*notices, Notice(code="hsbc_account_missing",
+                                                               message="汇丰开户知识未就绪。")])
+            catalog = {"read_id": "unavailable", "products": [], "routes": [], "rules": [],
+                       "documents": [], "fees": [], "relations": []}
+        if family_mode:
+            scenario = scenario or family_context.get("scenario") or "family_setup"
+            if (family_context.get("relationship_market") and destination_match is None
+                    and re.search(r"客户经理|私行|私人银行", request.text)):
+                scenario = _family_scenario(request.text) or scenario
+            scenario_answer = _family_scenario_answer(
+                scenario=scenario, text=request.text, region=region, facts=facts,
+                context=family_context, catalog_available=bool(catalog["products"]))
+            if scenario_answer is not None:
+                plan_stage = ("handoff_ready" if scenario == "handoff" else
+                              "clarifying_location" if not facts.get("application_location") else
+                              scenario)
+                followup = ([_question("application_location", request.profile_version)]
+                            if family_mode and not facts.get("application_location") and scenario in {
+                                "family_setup", "timeline", "minor", "eligibility_documents", "fees", "handoff"}
+                            else [])
+                next_state = reduce_account_state(
+                    state, market=region, act="ask_documents", mode="procedural",
+                    named_product=None, shown_product_ids=[], candidate_product_ids=[],
+                    unresolved_fields=["application_location"] if followup else [])
+                observed_facts = {key: value for key, value in facts.items() if key != "account_product"}
+                opening_plan = None
+                if scenario == "handoff":
+                    previous_plan = (raw_state.get("opening_plans") or {}).get(region, {})
+                    opening_plan, scenario_answer = build_opening_plan(
+                        profile_id=request.profile_id, market=region, facts=facts,
+                        context=family_context, results=[], text=request.text,
+                        previous=previous_plan)
+                stored_plans = dict(raw_state.get("opening_plans") or {})
+                if opening_plan:
+                    stored_plans[region] = opening_plan
+                payload = {"family_mode": True, "family_scenario": scenario,
+                           "account_region": region,
+                           "conversation_state": {**pack_account_state(raw_state, next_state),
+                                                  "profile_id": request.profile_id,
+                                                  "family_context": family_context,
+                                                  "opening_plans": stored_plans}}
+                if opening_plan:
+                    payload["opening_plan"] = opening_plan
+                return DomainResult(
+                    task_id=task.task_id, domain="bank_account",
+                    status="needs_input" if followup else "answered", answer=scenario_answer,
+                    missing_fields=["application_location"] if followup else [],
+                    follow_up_questions=followup,
+                    next_actions=["按回答中的核对清单确认目的地银行的个案要求。"],
+                    notices=notices, observed_facts=observed_facts,
+                    observed_basis={key: basis[key] for key in observed_facts if key in basis},
+                    payload=payload)
         explicit_named_ids = normalize_products(request.text, catalog["products"])
         explicit_named = explicit_named_ids[0] if explicit_named_ids else None
         model_named = normalize_product(facts.get("account_product"), catalog["products"])
@@ -829,8 +1064,14 @@ class BankAccountWorkflow:
                     source_ids, query=f"{request.text} 家庭权益 出发前 海外开户 材料", limit=6)
             except Exception:
                 pass
+        if family_plan:
             if act not in {"ask_fees", "compare_products", "confirm_selection"}:
                 labels = list(dict.fromkeys([*labels, "documents_process"]))
+                scenario_answer = _family_scenario_answer(
+                    scenario=scenario, text=request.text, region=region, facts=facts,
+                    context=family_context, catalog_available=bool(catalog["products"]))
+                if scenario_answer is not None:
+                    verified = scenario_answer
                 location_label = {"CN": "中国内地", "CN-HK": "香港", "UK": "英国", "US": "美国"}.get(
                     facts.get("application_location"))
                 location_step = (f"孩子目前在{location_label}，下一步核对从这里申请的渠道是否开放，"

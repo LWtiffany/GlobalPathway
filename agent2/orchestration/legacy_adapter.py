@@ -146,7 +146,14 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         if field.status == "confirmed" and field.value is not None
         and clarify.persistence_policy(code)["storage_class"] in {"core_profile", "preference"}
     }
-    profile_values.update(conversation_facts or {})
+    # Durable fields edited or cleared after earlier turns must not be revived
+    # by replayed chat facts. New statements are still extracted from this turn.
+    historical = dict(conversation_facts or {})
+    for code, field in profile.fields.items():
+        if (clarify.persistence_policy(code)["storage_class"] in {"core_profile", "preference"}
+                and (field.status == "confirmed" or field.field_version > 0)):
+            historical.pop(code, None)
+    profile_values.update(historical)
     request = OrchestrationInput(
         text=text,
         profile_id=profile.profile_id,

@@ -50,7 +50,7 @@ def build_llm_components(env=None) -> LlmComponents:
         raise RuntimeError("AGENT2_LLM_ENABLED is on but AGENT2_LLM_API_KEY is missing")
     if not base_url.startswith("https://"):
         raise RuntimeError("AGENT2_LLM_BASE_URL must be an HTTPS URL")
-    model_name = env.get("AGENT2_LLM_MODEL") or local_model or "qwen3.8-flash"
+    model_name = env.get("AGENT2_LLM_MODEL") or local_model or "deepseek-v4.1-flash"
     structured_mode = env.get("AGENT2_LLM_STRUCTURED_MODE") or \
         ("json_object" if model_name.startswith("deepseek") else "json_schema")
     raw_extra = env.get("AGENT2_LLM_EXTRA_BODY", "")
@@ -61,8 +61,8 @@ def build_llm_components(env=None) -> LlmComponents:
         model_name=model_name,
         api_key=api_key,
         base_url=base_url,
-        timeout_seconds=float(env.get("AGENT2_LLM_TIMEOUT_SECONDS", "60")),
-        max_retries=int(env.get("AGENT2_LLM_MAX_RETRIES", "1")),
+        timeout_seconds=float(env.get("AGENT2_LLM_TIMEOUT_SECONDS", "30")),
+        max_retries=int(env.get("AGENT2_LLM_MAX_RETRIES", "0")),
         structured_mode=structured_mode,
         extra_body=extra_body,
     )

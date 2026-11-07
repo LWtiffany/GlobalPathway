@@ -1030,6 +1030,8 @@ class Agent2Service:
             body = _load_json(row["body_json"], {})
             if row["role"] == "user":
                 facts.update(body.get("facts") or {})
+                for code in body.get("cleared_fields") or []:
+                    facts.pop(code, None)
                 topic = body.get("topic") or topic
                 if body.get("active_intents"):
                     active_intents = list(body["active_intents"])
@@ -1037,9 +1039,10 @@ class Agent2Service:
             else:
                 asked = self._asked_from_assistant_body(body)
                 last_version = body.get("profile_version", last_version)
-                summary = (body.get("answer") or {}).get("summary") or ""
+                answer_body = body.get("answer") or {}
+                summary = answer_body.get("summary") or ""
                 if summary:
-                    last_assistant_text = summary[:300]
+                    last_assistant_text = "\n".join([summary, *(answer_body.get("steps") or [])])[:2000]
         return facts, topic, asked, last_version, active_intents, last_user_text, last_assistant_text
 
     def _stored_reply(self, conversation_id, client_message_id):
@@ -1338,7 +1341,8 @@ class Agent2Service:
         if proposals:
             output.result = output.result.model_copy(update={
                 "answer": output.result.answer.model_copy(update={
-                    "summary": "请确认以下资料更新，确认后我会重新计算建议。",
+                    "summary": "您这次提到的" + "、".join(clarify.label(item.field_code) for item in proposals)
+                               + "与当前档案不同。请确认下方变更；确认后可重新生成受影响的建议。",
                     "steps": [], "materials": [], "limitations": []
                 }),
                 "status": "answered",
@@ -1556,7 +1560,7 @@ class Agent2Service:
                         if code not in cleared_fields}
         active = list(output.active_intents or [])
         user_body = {"text": text, "facts": stored_facts, "topic": output.topic,
-                     "active_intents": active}
+                     "cleared_fields": list(cleared_fields), "active_intents": active}
         db.execute("""INSERT INTO message_index
             (message_id, conversation_id, seq, role, client_message_id, reply_to, body_json, status, created_at)
             VALUES (?,?,?,?,?,?,?,?,?)""",

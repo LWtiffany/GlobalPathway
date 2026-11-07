@@ -166,9 +166,9 @@ scripts\start_team03_pg_tunnel.ps1
 
 ```text
 AGENT2_LLM_ENABLED=auto            # auto=有密钥才启用；0 强制纯规则
-AGENT2_LLM_MODEL=qwen3.8-flash
+AGENT2_LLM_MODEL=deepseek-v4.1-flash
 AGENT2_LLM_BASE_URL=https://…/compatible-mode/v1
-AGENT2_LLM_STRUCTURED_MODE=json_schema   # deepseek 用 json_object
+AGENT2_LLM_STRUCTURED_MODE=json_object   # qwen3.8-flash 可用 json_schema
 AGENT2_LLM_EXTRA_BODY={"enable_thinking":false}
 AGENT2_LLM_TIMEOUT_SECONDS=60
 AGENT2_LLM_API_KEY=                # 实际密钥放 local_secrets.py（已 gitignore）

@@ -1155,6 +1155,15 @@ function renderAnswerSteps(steps) {
     compare ? "两张卡怎么选" : "为您挑选的信用卡"), box];
 }
 
+function isInternalOutput(text) {
+  const value = String(text || "");
+  return /\b(?:prompt|completion)\s*\d+|\b(?:evidence_ids?|source_ids?|field_code|trace_id|prompt_version)\b|\b(?:llm|gateway|model|tokens?|timeout)\b|只在\s*(?:evidence|证据)|内部(?:字段|指令|提示)|不要向用户|不可展示|\bs\d+(?:\s*[,，、;；]\s*s\d+)*\b/i.test(value);
+}
+
+function visibleOutputLines(lines) {
+  return (lines || []).filter((line) => !isInternalOutput(line));
+}
+
 function answerBubble(b, latest) {
   // Follow-ups: chat only ever shows the current question + answer controls.
   // Past needs_input turns are dropped so the cluttered status/steps/proposal card
@@ -1166,14 +1175,15 @@ function answerBubble(b, latest) {
     if (!question) return null;
     const kids = [];
     // Multi-intent: show each domain's short summary before the first follow-up.
-    const multi = multiDomainSections(b.answer?.steps || []);
-    if (multi.length > 1) {
-      if (b.answer?.summary) kids.push(h("p", null, b.answer.summary));
-      kids.push(...multi.map((sec) => h("div", { class: "multi-sec" },
-        h("div", { class: "sub-h" }, sec.title),
-        sec.lines[0] ? h("p", null, sec.lines[0]) : null)));
+    const safeSteps = visibleOutputLines(b.answer?.steps || []);
+    if (b.answer?.summary && !isInternalOutput(b.answer.summary)) {
+      kids.push(h("p", null, b.answer.summary));
     }
-    kids.push(followUp(question));
+    if (safeSteps.length) kids.push(...renderAnswerSteps(safeSteps));
+    kids.push(followUp({ ...question,
+      text: isInternalOutput(question.text) ? "请补充相关信息，我会继续为您核对。" : question.text,
+      options: (question.options || []).filter((o) => !isInternalOutput(o.label) && !isInternalOutput(o.message)),
+    }));
     if (canGoBackFollowUp(question.field)) {
       kids.push(h("div", { class: "fq-nav" },
         h("button", {
@@ -1195,13 +1205,16 @@ function answerBubble(b, latest) {
   if (b.status !== "answered") {
     kids.push(h("div", { class: "status" }, h("span", { class: "st " + st.cls }, st.label), h("span", { class: "why" }, st.why)));
   }
-  const rawSteps = (b.answer.steps || []).filter((s) => !String(s).startsWith("政策原文："));
+  const safeSummary = isInternalOutput(b.answer.summary)
+    ? "当前资料不足以支持确定回答，请按页面提示补充信息或核实官方要求。"
+    : b.answer.summary;
+  const rawSteps = visibleOutputLines(b.answer.steps).filter((s) => !String(s).startsWith("政策原文："));
   const stepList = isCardRecommendationSteps(rawSteps)
     ? rawSteps.map(cardStepForDisplay).filter(Boolean) : rawSteps;
   const multi = multiDomainSections(stepList);
   const cardAnswer = isCardRecommendationSteps(stepList);
   if (!cardAnswer) {
-    kids.push(h("p", null, b.answer.summary));
+    kids.push(h("p", null, safeSummary));
   }
   // Multi-intent answers already nest domain copy under ## sections; keep materials
   // out of the top so bank docs do not look like a free-floating visa list.
@@ -1220,16 +1233,18 @@ function answerBubble(b, latest) {
       h("div", { class: "evidence-list" }, citeList.map((c) => h("div", null, citeRef(c))))));
   }
   if ((b.answer.limitations || []).length) {
-    kids.push(h("div", { class: "sub-h" }, "温馨提示"), h("ul", { class: "lim" }, b.answer.limitations.map((s) => h("li", null, s))));
+    const limitations = visibleOutputLines(b.answer.limitations);
+    if (limitations.length) kids.push(h("div", { class: "sub-h" }, "温馨提示"), h("ul", { class: "lim" }, limitations.map((s) => h("li", null, s))));
   }
   if (b.status !== "answered" && (b.next_actions || []).length) {
-    kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, b.next_actions.map((s) => h("li", null, s))));
+    const nextActions = visibleOutputLines(b.next_actions);
+    if (nextActions.length) kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, nextActions.map((s) => h("li", null, s))));
   }
   // Hide internal/debug notices (routing audit JSON, etc.) from the customer UI.
   const HIDDEN_NOTICE = new Set([
     "intent_routing", "llm_routing_low_confidence", "unsupported_intent", "partial_out_of_scope",
   ]);
-  (b.notices || []).filter((n) => n && !HIDDEN_NOTICE.has(n.code) && !(n.message || "").trim().startsWith("{"))
+  (b.notices || []).filter((n) => n && !HIDDEN_NOTICE.has(n.code) && !isInternalOutput(n.message) && !(n.message || "").trim().startsWith("{"))
     .forEach((n) => kids.push(h("div", { class: "notice" }, n.message)));
   const open = new Set(S.proposals.map((p) => p.proposal_id));
   // Only propose fields the UI knows how to label (registered profile fields).

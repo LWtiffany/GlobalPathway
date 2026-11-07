@@ -19,6 +19,8 @@ htmlcov/
 *.sqlite3
 .workbuddy/
 .env
+.env.*
+!.env.example
 local_secrets.py
 # Test sources and local evaluation tools stay on developer machines.
 tests/

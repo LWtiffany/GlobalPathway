@@ -1,6 +1,7 @@
 """Typed Agent2 v2 graph: plan -> domains -> gate -> compose -> snapshot -> projections."""
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -22,6 +23,58 @@ from .planner import RuleTaskPlanner
 from .ports import (CapabilityPlanner, DomainWorkflow, LifecyclePlanner, QualityGate,
                     ResponseComposer, TaskPlanner)
 from .quality import DefaultQualityGate
+
+
+_INTERNAL_OUTPUT_PATTERNS = (
+    re.compile(r"\b(?:prompt|completion)\s*\d+", re.I),
+    re.compile(r"\b(?:evidence_ids?|source_ids?|field_code|trace_id|prompt_version)\b", re.I),
+    re.compile(r"\b(?:llm|gateway|model|token(?:s)?|completion|timeout)\b", re.I),
+    re.compile(r"只在\s*(?:evidence|证据)|内部(?:字段|指令|提示)|不要向用户|不可展示", re.I),
+    re.compile(r"\bs\d+(?:\s*[,，、;；]\s*s\d+)*\b", re.I),
+)
+
+
+def _looks_internal_output(text: str) -> bool:
+    value = str(text or "").strip()
+    return bool(value) and any(pattern.search(value) for pattern in _INTERNAL_OUTPUT_PATTERNS)
+
+
+def _sanitize_user_answer(answer: UnifiedAnswer) -> UnifiedAnswer:
+    body = answer.answer
+    clean_steps = [line for line in body.steps if not _looks_internal_output(line)]
+    clean_limitations = [line for line in body.limitations if not _looks_internal_output(line)]
+    clean_actions = [line for line in answer.next_actions if not _looks_internal_output(line)]
+    clean_notices = [notice for notice in answer.notices if not _looks_internal_output(notice.message)]
+    summary = body.summary if not _looks_internal_output(body.summary) else "当前资料不足以支持确定回答，请按页面提示补充信息或核实官方要求。"
+    if not clean_steps and body.steps:
+        clean_steps = ["当前资料不足以支持确定回答，请核实适用条件和官方要求。"]
+    return answer.model_copy(update={
+        "answer": body.model_copy(update={
+            "summary": summary,
+            "steps": clean_steps,
+            "limitations": clean_limitations,
+        }),
+        "domain_results": [result.model_copy(update={
+            "answer": _sanitize_user_answer(UnifiedAnswer(
+                status=result.status, answer=result.answer,
+                next_actions=result.next_actions, notices=result.notices,
+                follow_up_questions=result.follow_up_questions)).answer,
+            "next_actions": [line for line in result.next_actions if not _looks_internal_output(line)],
+            "notices": [notice for notice in result.notices if not _looks_internal_output(notice.message)],
+            "follow_up_questions": _sanitize_user_answer(UnifiedAnswer(
+                status=result.status, answer=result.answer,
+                follow_up_questions=result.follow_up_questions)).follow_up_questions,
+        }) for result in answer.domain_results],
+        "next_actions": clean_actions,
+        "notices": clean_notices,
+        "follow_up_questions": [question.model_copy(update={
+            "text": question.text if not _looks_internal_output(question.text)
+            else "请补充相关信息，我会继续为您核对。",
+            "options": [option for option in question.options
+                        if not _looks_internal_output(option.get("label", ""))
+                        and not _looks_internal_output(option.get("message", ""))],
+        }) for question in answer.follow_up_questions],
+    })
 
 
 @dataclass
@@ -214,6 +267,7 @@ async def finalize(ctx: StepContext[WorkflowState, WorkflowDependencies, None]) 
     started = time.perf_counter()
     assert ctx.state.request is not None and ctx.state.plan is not None
     assert ctx.state.answer is not None and ctx.state.quality_report is not None
+    ctx.state.answer = _sanitize_user_answer(ctx.state.answer)
     read_ids = {item.task_id: item.knowledge_read_id for item in ctx.state.domain_results
                 if item.knowledge_read_id}
     model_versions = {item.task_id: item.model_version for item in ctx.state.domain_results}
