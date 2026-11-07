@@ -32,6 +32,9 @@ a{color:#8b7140}
 .pf b{font-weight:400;font-size:15px;color:#22201c}
 .pf .sub{font-size:11px;color:#8a8170;margin-top:3px}
 .pf.on2{background:#f6f3ee;border-left-color:#8e1b24}
+.pf-body{flex:1;min-width:0}
+.pf-delete{flex:none;border:1px solid #d7c9be;background:transparent;color:#8e1b24;padding:4px 6px;cursor:pointer;font-size:11px}
+.pf-delete:hover,.pf-delete:focus-visible{background:#8e1b24;color:#fff}
 .av2{width:34px;height:34px;border-radius:50%;border:1px solid #b89b6a;display:flex;align-items:center;justify-content:center;color:#8b7140;flex:none}
 .new{display:block;width:100%;border:1px solid #22201c;background:transparent;padding:10px;text-align:center;letter-spacing:1px;margin-top:18px;font-size:13px}
 .new:hover{background:#22201c;color:#f6f3ee}
@@ -110,6 +113,10 @@ a{color:#8b7140}
 .cites-label{color:#8a8172;font-size:11px;margin-bottom:4px}
 .cites-list{display:flex;flex-direction:column;gap:3px}
 .cites-inline{margin-left:4px;white-space:nowrap}
+.evidence{margin-top:10px;color:#6b6358;font-size:12px}
+.evidence summary{width:fit-content;color:#6f675a;cursor:pointer;list-style-position:inside}
+.evidence summary:hover{color:#8e1b24}
+.evidence-list{display:flex;flex-direction:column;gap:4px;margin:6px 0 2px 16px}
 
 .todo{border:1px solid #ece6db}
 .todo li{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #f1ece3;list-style:none}
@@ -155,6 +162,15 @@ a{color:#8b7140}
 .sub-h{font-size:11px;color:#8a8170;letter-spacing:1px;margin:10px 0 2px}
 .multi-sec{margin:8px 0 12px}
 .multi-sec > p{margin:4px 0 0;font-size:13px;line-height:1.55;color:#3a342c}
+.bank-rels{display:flex;flex-wrap:wrap;gap:8px;padding:8px 0 2px}
+.bank-rels.empty{font-size:12px;color:#9a917f;padding:8px 2px}
+.bank-rel{display:flex;align-items:center;gap:8px;border:1px solid #e5ddd0;background:#fffdf9;padding:7px 10px;font-size:12px}
+.bank-rel b{font-weight:600}
+.rel-status{color:#6f675a;background:#f2ede4;padding:1px 6px;font-size:10px}
+.rel-status.open{color:#3f6b47;background:#eaf2e9}
+.rel-status.blocked{color:#8e1b24;background:#f7e9e7}
+.relationship-prop{border-left:3px solid #8b7140}
+.rel-proposed{margin-left:8px;color:#8b7140;font-size:11px}
 .lim{margin:2px 0;padding-left:18px;color:#6f675a;font-size:12px}
 .card-rec{margin:6px 0 10px;max-width:760px}
 .card-rec .card-sec{margin:14px 0 6px;font-weight:600;font-size:13px;color:#22201c;padding:7px 9px;border-left:3px solid #8e1b24;background:#f8f4ec;display:flex;align-items:center;gap:8px}
@@ -193,6 +209,13 @@ a{color:#8b7140}
 .chips input{border:1px solid #cfc6b5;padding:4px 10px;margin:8px 8px 0 0;width:150px;background:#fff}
 .prop{margin-top:10px;padding:8px 10px;background:#f8f1e1;border:1px solid #e3d3ad;font-size:12px}
 .prop .btns{margin-top:6px;display:flex;gap:8px}
+.proposal-list{margin:8px 0 0;padding-left:20px}
+.proposal-list li{margin:4px 0}
+.proposal-advice-choices{margin-top:9px;padding-top:8px;border-top:1px solid #e3d3ad}
+.proposal-advice-choices label{display:inline-flex;align-items:center;gap:4px;margin:7px 14px 0 0}
+.proposal-advice-choices .note{margin-top:6px}
+.advice-stale{border-color:#d7aa58!important;background:#fffaf0!important}
+.advice-refresh{margin-top:10px;padding:9px 10px;background:#f8f1e1;border-top:1px solid #e3d3ad;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px}
 .acts{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:10px;border-top:1px solid #f1ece3;gap:12px}
 .fb{font-size:11px;color:#9a917f;letter-spacing:.5px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .fb button{background:none;border:none;color:#9a917f;font-size:11px;padding:0 4px}
@@ -252,8 +275,9 @@ a{color:#8b7140}
 .preset b{font-weight:400;font-size:17px}
 .preset .who{font-size:11px;color:#b89b6a;letter-spacing:2px}
 .preset .kids{font-size:12px;color:#6f675a;line-height:1.7}
-.custom{display:flex;gap:0;margin-top:22px;max-width:420px}
-.custom input{flex:1;border:1px solid #d9d1c2;border-right:0;padding:9px 12px;background:#fffdf9}
+.custom{display:flex;flex-direction:column;gap:10px;margin-top:22px;max-width:420px}
+.custom input{border:1px solid #d9d1c2;padding:9px 12px;background:#fffdf9;width:100%;box-sizing:border-box}
+.custom .btn{align-self:flex-start}
 .card{background:#fffdf9;border:1px solid #e6dfd2;padding:24px 28px;overflow:hidden;max-width:100%;box-sizing:border-box}
 .tickets{width:100%;border-collapse:collapse;background:#fffdf9;border:1px solid #e6dfd2}
 .tickets th,.tickets td{text-align:left;padding:10px 12px;border-bottom:1px solid #ece6db;font-size:12px;vertical-align:top}

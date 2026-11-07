@@ -1,20 +1,28 @@
 """Agent 2 HTTP API（S1 最小集，标准库实现）。
 
-认证：POST /v1/demo/login 得到 token，之后带 `Authorization: Bearer <token>`。
+认证：POST /v1/login（账号密码）或 POST /v1/demo/login（仅 AGENT2_DEMO=1）。
+会话放在 HttpOnly Cookie `gp_session`；写请求需 CSRF（Cookie 会话）与 Origin/Referer 校验。
+Bearer token 仍可用于测试与兼容；Cookie 优先。
 错误统一为 {"code","message","retryable","trace_id"}，不含内部堆栈。
 """
 import json
 import re
+import traceback
 import uuid
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
 from . import clarify
-from .service import ServiceError
+from .service import SESSION_COOKIE, ServiceError
 
 MAX_BODY_BYTES = 64 * 1024
+MUTATING = {"POST", "PATCH", "DELETE", "PUT"}
+CSRF_EXEMPT_PATHS = {"/v1/login", "/v1/demo/login", "/healthz"}
 
 ROUTES = []
 
@@ -33,13 +41,86 @@ def _dump(value):
         return [_dump(v) for v in value]
     if isinstance(value, dict):
         return {k: _dump(v) for k, v in value.items()}
-    return value
+    # psycopg returns native datetime/date/Decimal/UUID objects while the old
+    # SQLite adapter mostly returned strings and floats.  Normalize every leaf
+    # at the HTTP boundary so one raw RDS column cannot abort the connection.
+    return to_jsonable_python(value)
+
+
+def parse_cookies(headers):
+    raw = headers.get("Cookie") or headers.get("cookie") or ""
+    jar = SimpleCookie()
+    try:
+        jar.load(raw)
+    except CookieError:
+        return {}
+    return {k: morsel.value for k, morsel in jar.items()}
+
+
+def session_token_from_headers(headers):
+    cookies = parse_cookies(headers)
+    if cookies.get(SESSION_COOKIE):
+        return cookies[SESSION_COOKIE], "cookie"
+    auth = headers.get("Authorization") or headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip(), "bearer"
+    return None, None
+
+
+def _header(headers, name):
+    return headers.get(name) or headers.get(name.lower()) or headers.get(name.title()) or ""
+
+
+def origin_allowed(headers):
+    """Same-origin check for mutating requests (Origin preferred, else Referer)."""
+    host = _header(headers, "Host")
+    if not host:
+        return False
+    origin = _header(headers, "Origin")
+    if origin:
+        parsed = urlparse(origin)
+        return parsed.netloc == host
+    referer = _header(headers, "Referer")
+    if referer:
+        parsed = urlparse(referer)
+        return parsed.netloc == host
+    # Same-origin fetch from some clients omits Origin on GET; mutating without
+    # either header is rejected when using cookie auth.
+    return False
+
+
+def _session_cookie_value(token, *, secure, max_age=7 * 24 * 3600, clear=False):
+    parts = [f"{SESSION_COOKIE}={'' if clear else token}", "Path=/", "HttpOnly", "SameSite=Lax"]
+    if clear:
+        parts.append("Max-Age=0")
+    else:
+        parts.append(f"Max-Age={max_age}")
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def _is_secure_request(headers):
+    proto = (_header(headers, "X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+    return proto == "https"
 
 
 @route("GET", r"/healthz", auth=False)
 def healthz(service, user_id, body, query):
     """Process-level health check; it deliberately does not expose user data."""
-    return 200, {"status": "ok", "service": "user"}
+    return 200, {"status": "ok", "service": "user", "demo_login": bool(service.demo_enabled)}
+
+
+@route("POST", r"/v1/login", auth=False)
+def login(service, user_id, body, query):
+    return 200, service.login(body.get("username"), body.get("password"))
+
+
+@route("GET", r"/readyz", auth=False)
+def readyz(service, user_id, body, query):
+    """Readiness requires the configured RDS state store to be reachable."""
+    service.store.one("SELECT 1 AS ok")
+    return 200, {"status": "ready", "service": "user", "storage": "rds"}
 
 
 @route("POST", r"/v1/demo/login", auth=False)
@@ -47,9 +128,18 @@ def demo_login(service, user_id, body, query):
     return 200, service.demo_login(body.get("user"))
 
 
+@route("POST", r"/v1/logout", auth=False)
+def logout(service, user_id, body, query):
+    # session token injected by dispatch via body["_session_token"]
+    return 200, service.logout(body.get("_session_token"))
+
+
 @route("GET", r"/v1/me")
 def me(service, user_id, body, query):
-    return 200, service.me(user_id)
+    payload = service.me(user_id)
+    if body.get("_csrf_token"):
+        payload["csrf_token"] = body["_csrf_token"]
+    return 200, payload
 
 
 @route("POST", r"/v1/profiles")
@@ -71,6 +161,12 @@ def patch_profile(service, user_id, body, query, profile_id):
                                       clear_fields=body.get("clear_fields") or [])
 
 
+@route("DELETE", r"/v1/profiles/(?P<profile_id>[\w-]+)")
+def delete_profile(service, user_id, body, query, profile_id):
+    return 200, service.delete_profile(user_id, profile_id,
+                                       expected_version=body.get("expected_version"))
+
+
 @route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/proposals")
 def list_proposals(service, user_id, body, query, profile_id):
     return 200, service.list_proposals(user_id, profile_id)
@@ -78,12 +174,44 @@ def list_proposals(service, user_id, body, query, profile_id):
 
 @route("POST", r"/v1/profile-proposals/(?P<proposal_id>[\w-]+)/confirm")
 def confirm_proposal(service, user_id, body, query, proposal_id):
-    return 200, service.confirm_proposal(user_id, proposal_id, expected_version=body.get("expected_version"))
+    return 200, service.confirm_proposal(
+        user_id, proposal_id, expected_version=body.get("expected_version"),
+        refresh_topics=body.get("refresh_topics") or [])
 
 
 @route("POST", r"/v1/profile-proposals/(?P<proposal_id>[\w-]+)/dismiss")
 def dismiss_proposal(service, user_id, body, query, proposal_id):
     return 200, service.dismiss_proposal(user_id, proposal_id)
+
+
+@route("POST", r"/v1/profile-proposals/confirm-batch")
+def confirm_proposals_batch(service, user_id, body, query):
+    return 200, service.confirm_proposals(
+        user_id, body.get("proposal_ids") or [],
+        expected_version=body.get("expected_version"),
+        refresh_topics=body.get("refresh_topics") or [])
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/bank-relationships")
+def list_bank_relationships(service, user_id, body, query, profile_id):
+    return 200, service.list_bank_relationships(user_id, profile_id)
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/bank-relationship-proposals")
+def list_bank_relationship_proposals(service, user_id, body, query, profile_id):
+    return 200, service.list_bank_relationship_proposals(user_id, profile_id)
+
+
+@route("POST", r"/v1/bank-relationship-proposals/(?P<proposal_id>[\w-]+)/confirm")
+def confirm_bank_relationship_proposal(service, user_id, body, query, proposal_id):
+    return 200, service.confirm_bank_relationship_proposal(
+        user_id, proposal_id, expected_version=body.get("expected_version"),
+        proposed_status=body.get("status"))
+
+
+@route("POST", r"/v1/bank-relationship-proposals/(?P<proposal_id>[\w-]+)/dismiss")
+def dismiss_bank_relationship_proposal(service, user_id, body, query, proposal_id):
+    return 200, service.dismiss_bank_relationship_proposal(user_id, proposal_id)
 
 
 @route("POST", r"/v1/conversations")  # compatibility alias
@@ -111,6 +239,7 @@ def post_message(service, user_id, body, query, conversation_id):
     return 200, service.post_message(
         user_id, conversation_id, body.get("text"), body.get("client_message_id"),
         confirmed_fields=body.get("confirmed_fields") or {},
+        session_fields=body.get("session_fields") or {},
         expected_profile_version=body.get("expected_profile_version"),
         cleared_fields=body.get("cleared_fields") or [])
 
@@ -125,6 +254,16 @@ def get_advice(service, user_id, body, query, profile_id, topic):
     return 200, service.get_advice(user_id, profile_id, topic)
 
 
+@route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/advice/(?P<topic>[\w-]+)/refresh")
+def refresh_advice(service, user_id, body, query, profile_id, topic):
+    return 200, service.refresh_advice(user_id, profile_id, topic)
+
+
+@route("GET", r"/v1/profiles/(?P<profile_id>[\w-]+)/advice-refresh-jobs")
+def list_advice_refresh_jobs(service, user_id, body, query, profile_id):
+    return 200, service.list_refresh_jobs(user_id, profile_id, query.get("status"))
+
+
 @route("GET", r"/v1/knowledge/snapshots/(?P<revision_id>[\w-]+)")
 def snapshot(service, user_id, body, query, revision_id):
     return 200, service.knowledge_snapshot(revision_id)
@@ -132,7 +271,9 @@ def snapshot(service, user_id, body, query, revision_id):
 
 @route("GET", r"/v1/fields", auth=False)
 def fields(service, user_id, body, query):
-    return 200, {"fields": clarify.field_catalog()}
+    # Return the persistence policy together with the input schema so the UI
+    # can distinguish durable Profile facts from turn/session-only choices.
+    return 200, {"fields": clarify.field_definitions()}
 
 
 @route("GET", r"/v1/schools", auth=False)
@@ -219,10 +360,14 @@ def static_file(path):
 
 
 def dispatch(service, method, path, headers, raw_body):
-    """Pure request handler (also used by tests): returns (status, payload dict)."""
+    """Pure request handler (also used by tests): returns (status, payload, response_headers).
+
+    response_headers is a list of (name, value) pairs (e.g. Set-Cookie).
+    """
     trace_id = str(uuid.uuid4())
     path, _, query_string = path.partition("?")
     query = dict(part.split("=", 1) for part in query_string.split("&") if "=" in part)
+    response_headers = []
     try:
         if len(raw_body) > MAX_BODY_BYTES:
             raise ServiceError("PAYLOAD_TOO_LARGE", "请求体过大", 413)
@@ -232,42 +377,88 @@ def dispatch(service, method, path, headers, raw_body):
             raise ServiceError("INVALID_JSON", "请求体不是合法 JSON", 400)
         if not isinstance(body, dict):
             raise ServiceError("INVALID_JSON", "请求体必须是 JSON 对象", 400)
+        token, auth_via = session_token_from_headers(headers)
         for verb, pattern, handler, auth in ROUTES:
             match = pattern.match(path)
             if match and verb == method:
+                if method in MUTATING and path not in CSRF_EXEMPT_PATHS:
+                    if auth_via == "cookie":
+                        if not origin_allowed(headers):
+                            raise ServiceError("ORIGIN_DENIED", "请求来源不被允许", 403)
+                        session = service.session_for_token(token)
+                        csrf = (_header(headers, "X-CSRF-Token")
+                                or body.get("csrf_token") or "")
+                        if not csrf or csrf != session["csrf_token"]:
+                            raise ServiceError("CSRF_DENIED", "缺少或错误的 CSRF令牌", 403)
+                    elif auth_via is None and auth:
+                        # Will fail auth below; keep order consistent.
+                        pass
                 user_id = None
                 if auth:
-                    token = (headers.get("Authorization") or "").removeprefix("Bearer ").strip()
-                    user_id = service.user_for_token(token)
+                    session = service.session_for_token(token)
+                    user_id = session["user_id"]
+                    body = {**body, "_csrf_token": session["csrf_token"]}
+                if path == "/v1/logout":
+                    body = {**body, "_session_token": token}
                 status, payload = handler(service, user_id, body, query, **match.groupdict())
                 payload = _dump(payload)
                 if isinstance(payload, dict):
+                    set_session = payload.pop("_set_session", None)
+                    clear_session = payload.pop("_clear_session", None)
                     payload.setdefault("trace_id", trace_id)
+                    secure = _is_secure_request(headers)
+                    if set_session:
+                        response_headers.append((
+                            "Set-Cookie",
+                            _session_cookie_value(set_session, secure=secure)))
+                    if clear_session:
+                        response_headers.append((
+                            "Set-Cookie",
+                            _session_cookie_value("", secure=secure, clear=True)))
                 else:
                     payload = {"items": payload, "trace_id": trace_id}
-                return status, payload
+                return status, payload, response_headers
         raise ServiceError("NOT_FOUND", "接口不存在", 404)
     except ServiceError as exc:
-        return exc.http_status, {"code": exc.code, "message": exc.message, "retryable": exc.retryable,
-                                 "trace_id": trace_id}
+        return (exc.http_status,
+                {"code": exc.code, "message": exc.message, "retryable": exc.retryable,
+                 "trace_id": trace_id},
+                response_headers)
     except (ValueError, TypeError):
-        return 400, {"code": "INVALID_INPUT", "message": "请求参数不合法", "retryable": False, "trace_id": trace_id}
+        return (400, {"code": "INVALID_INPUT", "message": "请求参数不合法", "retryable": False,
+                      "trace_id": trace_id}, response_headers)
     except Exception:
-        return 500, {"code": "INTERNAL", "message": "服务内部错误", "retryable": True, "trace_id": trace_id}
+        import logging
+        logging.exception("agent2 dispatch failed trace_id=%s %s %s", trace_id, method, path)
+        return (500, {"code": "INTERNAL", "message": "服务内部错误", "retryable": True,
+                      "trace_id": trace_id}, response_headers)
 
 
 def make_handler(service):
     class Handler(BaseHTTPRequestHandler):
+        def _respond(self, status, data, content_type, extra_headers=()):
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                for name, value in extra_headers:
+                    self.send_header(name, value)
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass  # Client aborted (refresh / fetch timeout); nothing left to deliver.
+
         def _handle(self, method):
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(min(length, MAX_BODY_BYTES + 1)) if length else b""
-            status, payload = dispatch(service, method, self.path, self.headers, raw)
-            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            status, payload, extra = dispatch(service, method, self.path, self.headers, raw)
+            # Keep a final serialization guard even though dispatch already
+            # normalizes payloads.  This protects responses containing a nested
+            # value returned by a custom mapping/model implementation.
+            data = json.dumps(
+                payload, ensure_ascii=False, default=to_jsonable_python
+            ).encode("utf-8")
+            self._respond(status, data, "application/json; charset=utf-8", extra)
 
         def do_GET(self):
             path = self.path.partition("?")[0]
@@ -280,13 +471,7 @@ def make_handler(service):
             if not found:
                 return self._handle("GET")
             data, content_type = found
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
-            for name, value in STATIC_HEADERS.items():
-                self.send_header(name, value)
-            self.end_headers()
-            self.wfile.write(data)
+            self._respond(200, data, content_type, STATIC_HEADERS.items())
 
         def do_POST(self):
             self._handle("POST")

@@ -47,6 +47,37 @@ class ProfileChangeProposal(BaseModel):
     source_message_id: str | None = None
     basis: str
     status: Literal["open", "confirmed", "dismissed"] = "open"
+    affected_advice_topics: list[str] = Field(default_factory=list)
+
+
+class BankRelationship(BaseModel):
+    relationship_id: str
+    profile_id: str
+    institution: str = "HSBC"
+    market: str
+    product_id: str | None = None
+    product_name: str
+    holder_relation: str = "profile_subject"
+    status: Literal["selected", "applying", "open", "blocked", "closed"]
+    opened_on: str | None = None
+    source_message_id: str | None = None
+    confirmed_at: str
+    last_confirmed_at: str
+    version: int = 1
+
+
+class BankRelationshipProposal(BaseModel):
+    proposal_id: str
+    profile_id: str
+    market: str
+    product_id: str | None = None
+    product_name: str
+    holder_relation: str = "profile_subject"
+    proposed_status: Literal["selected", "applying", "open", "blocked", "closed"]
+    existing_relationship_id: str | None = None
+    source_message_id: str | None = None
+    basis: str
+    status: Literal["open", "confirmed", "dismissed"] = "open"
 
 
 # ---------- M07 Knowledge Read envelope ----------
@@ -198,6 +229,7 @@ class AnswerResult(BaseModel):
     notices: list[Notice] = Field(default_factory=list)
     advice_updates: list[str] = Field(default_factory=list)
     profile_change_proposals: list[ProfileChangeProposal] = Field(default_factory=list)
+    bank_relationship_proposals: list[BankRelationshipProposal] = Field(default_factory=list)
     synthetic: bool = False
     trace_id: str
     stage_ms: dict[str, float] = Field(default_factory=dict)

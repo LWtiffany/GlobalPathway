@@ -3,6 +3,7 @@
 import re
 import uuid
 
+from agent2 import clarify
 from agent2.models import AnswerBody, AnswerResult
 from agent2.runner import RunOutput
 
@@ -15,7 +16,9 @@ from .planner import INTENT_DOMAIN
 def _new_message_id():
     return str(uuid.uuid4())
 
-_CARD_ROLES = {"主推荐": "primary", "场景搭配": "supplement", "其他选择": "alternative"}
+_CARD_ROLES = {"主推荐": "primary", "初步选择": "primary",
+               "场景搭配": "supplement", "附加推荐": "supplement",
+               "其他选择": "alternative"}
 _CARD_NETWORK = re.compile(r"^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$")
 
 # Session topic values must match store CHECK (remittance/account/visa/credit_card).
@@ -25,9 +28,10 @@ INTENT_SESSION_TOPIC = {
     "remittance_living": "remittance",
     "overseas_spending": "remittance",
     "hsbc_account": "account",
+    "visa_documents": "visa",
 }
 V2_INTENTS = frozenset(INTENT_SESSION_TOPIC)
-TOPIC_PRIORITY = ("credit_card", "remittance", "account")
+TOPIC_PRIORITY = ("credit_card", "remittance", "account", "visa")
 
 
 def card_summaries_from_steps(steps, groups=()):
@@ -40,12 +44,13 @@ def card_summaries_from_steps(steps, groups=()):
         label, sep, value = line.partition("：")
         network = _CARD_NETWORK.fullmatch(line)
         if sep and label in _CARD_ROLES:
-            cards.append({"product_name": value.strip(), "role": _CARD_ROLES[label]})
+            cards.append({"product_name": value.strip(), "role": _CARD_ROLES[label],
+                          "display_label": label})
         elif network:
             cards.append({"product_name": network.group(1), "role": "candidate"})
-        elif cards and sep and label in {"为什么适合你", "推荐理由", "年费", "主要权益",
+        elif cards and sep and label in {"为什么适合你", "为什么适合您", "推荐理由", "年费", "主要权益",
                                            "申请前提", "申请限制"}:
-            field = {"为什么适合你": "reason_text", "推荐理由": "reason_text",
+            field = {"为什么适合你": "reason_text", "为什么适合您": "reason_text", "推荐理由": "reason_text",
                      "年费": "fee_text", "主要权益": "benefits_text",
                      "申请前提": "application_note", "申请限制": "application_note"}[label]
             cards[-1][field] = value.strip()
@@ -93,6 +98,8 @@ def intents_for_session_topic(topic: str | None, conversation_facts: dict | None
         if purpose == "living":
             return ["remittance_living"]
         return ["overseas_spending"]
+    if topic == "visa":
+        return ["visa_documents"]
     return []
 
 
@@ -121,16 +128,32 @@ def intents_for_confirmed_fields(confirmed_fields: dict, active_intents: list[st
 def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message_id,
            structured_selection=False, conversation_intents=None,
            understood_facts=None, understood_basis=None, understanding_applied=False,
-           llm_intents=None):
+           understanding_model_used=False,
+           llm_intents=None, domain_state=None, llm_topic_switch=False,
+           session_topic=None, session_last_user_text="", session_last_assistant_text="",
+           session_pending_questions=(), expected_profile_version=None):
     """Run Agent2 v2 for any migrated domain intents (card / fx / account)."""
     intents = [intent for intent in dict.fromkeys(conversation_intents or [])
                if intent in INTENT_DOMAIN or intent in V2_INTENTS]
     # Structured follow-ups must keep a domain; free-text may be empty for refusal turns.
     if not intents and structured_selection:
         intents = ["credit_card"]
-    profile_values = {code: field.value for code, field in profile.fields.items()
-                      if field.status == "confirmed" and field.value is not None}
-    profile_values.update(conversation_facts or {})
+    # Legacy profiles may still contain fields that are now explicitly scoped
+    # to a conversation (for example application_region).  Do not let those
+    # stale values silently steer a new account/card question.
+    profile_values = {
+        code: field.value for code, field in profile.fields.items()
+        if field.status == "confirmed" and field.value is not None
+        and clarify.persistence_policy(code)["storage_class"] in {"core_profile", "preference"}
+    }
+    # Durable fields edited or cleared after earlier turns must not be revived
+    # by replayed chat facts. New statements are still extracted from this turn.
+    historical = dict(conversation_facts or {})
+    for code, field in profile.fields.items():
+        if (clarify.persistence_policy(code)["storage_class"] in {"core_profile", "preference"}
+                and (field.status == "confirmed" or field.field_version > 0)):
+            historical.pop(code, None)
+    profile_values.update(historical)
     request = OrchestrationInput(
         text=text,
         profile_id=profile.profile_id,
@@ -142,7 +165,15 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         understood_facts=dict(understood_facts or {}),
         understood_basis=dict(understood_basis or {}),
         understanding_applied=understanding_applied,
+        understanding_model_used=understanding_model_used,
         llm_intents=list(dict.fromkeys(llm_intents or [])),
+        llm_topic_switch=llm_topic_switch,
+        session_topic=session_topic,
+        session_last_user_text=session_last_user_text,
+        session_last_assistant_text=session_last_assistant_text,
+        session_pending_questions=list(session_pending_questions),
+        domain_state=dict(domain_state or {}),
+        expected_profile_version=expected_profile_version,
     )
     orchestrated = workflow.run(request)
     unified = orchestrated.answer
@@ -155,11 +186,19 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         turn_basis[item.field_code] = item.basis
 
     planned_intents = [task.intent for task in orchestrated.snapshot.task_plan.tasks]
-    session_topic = session_topic_for_intents(planned_intents or intents) or "credit_card"
+    session_topic = session_topic_for_intents(planned_intents or intents)
     advice_items = []
     advice_updates = []
     for result in unified.domain_results:
-        if result.status not in {"answered", "needs_verification"}:
+        # Generic explanations, comparisons and troubleshooting are normal chat
+        # answers, not a new recommendation snapshot.  Never let them replace a
+        # saved plan card merely because their status is answered.
+        if result.projection == "chat_only":
+            continue
+        partial_account = (result.domain == "bank_account"
+                           and result.status == "needs_input"
+                           and bool(result.payload.get("candidate_results")))
+        if result.status not in {"answered", "needs_verification"} and not partial_account:
             continue
         topic = INTENT_SESSION_TOPIC.get(
             next((task.intent for task in orchestrated.snapshot.task_plan.tasks
@@ -192,7 +231,16 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
                 "preview": any(group.get("role") == "preview" for group in groups)
                            or any(step.startswith("提前了解：") for step in result.answer.steps),
             })
-        advice_items.append({"topic": topic, "payload": payload})
+        task = next((task for task in orchestrated.snapshot.task_plan.tasks
+                     if task.task_id == result.task_id), None)
+        advice_items.append({
+            "topic": topic,
+            "payload": payload,
+            "source_task_id": result.task_id,
+            "intent": task.intent if task else None,
+            "knowledge_read_id": result.knowledge_read_id,
+            "model_version": result.model_version,
+        })
         if topic not in advice_updates:
             advice_updates.append(topic)
 
@@ -224,6 +272,7 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         active_intents=planned_intents,
         message_parts=message_parts,
         stage_ms=orchestrated.stage_ms,
+        profile_change_candidates=list(orchestrated.lifecycle.profile_change_candidates),
     )
 
 
@@ -239,7 +288,7 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
     ask_need = is_necessity_question(text)
     split = ask_need or len(results) > 1
     if not split or not results:
-        citations, claims = [], []
+        citations, claims, conflicts = [], [], []
         seen = set()
         for domain_result in results:
             for citation in domain_result.citations:
@@ -248,6 +297,10 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
                 seen.add(citation.citation_id)
                 citations.append(citation)
             claims.extend(domain_result.claims)
+            for conflict in domain_result.conflicts:
+                if not any(existing.document_code == conflict.document_code
+                           for existing in conflicts):
+                    conflicts.append(conflict)
         return [AnswerResult(
             message_id=message_id,
             status=unified.status,
@@ -256,12 +309,13 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
             answer=unified.answer,
             claims=claims,
             citations=citations,
+            conflicts=conflicts,
             missing_fields=unified.missing_fields,
             follow_up_questions=unified.follow_up_questions,
             next_actions=unified.next_actions,
             notices=unified.notices,
             advice_updates=advice_updates,
-            synthetic=False,
+            synthetic=any(c.synthetic for c in citations),
             trace_id=trace_id,
             stage_ms=stage_ms,
         )]
@@ -276,6 +330,24 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
             answer=AnswerBody(
                 summary=necessity_summary(domains),
                 steps=necessity_preamble(domains),
+            ),
+            synthetic=False,
+            trace_id=trace_id,
+            stage_ms={},
+        ))
+
+    if unified.journey:
+        parts.append(AnswerResult(
+            message_id=_new_message_id(),
+            status="answered",
+            profile_id=profile.profile_id,
+            profile_version=profile.version,
+            answer=AnswerBody(
+                summary="这些事项可以按下面的顺序推进；标注可并行的事项不必互相等待。",
+                steps=[
+                    f"{step.order}. {step.label}：{step.guidance}"
+                    for step in unified.journey
+                ],
             ),
             synthetic=False,
             trace_id=trace_id,
@@ -303,12 +375,13 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
             ),
             claims=list(domain_result.claims),
             citations=list(domain_result.citations),
+            conflicts=list(domain_result.conflicts),
             missing_fields=list(domain_result.missing_fields) if last else [],
             follow_up_questions=list(unified.follow_up_questions) if last else [],
             next_actions=list(domain_result.next_actions),
             notices=list(unified.notices) if last else list(domain_result.notices),
             advice_updates=list(advice_updates) if last else [],
-            synthetic=False,
+            synthetic=any(c.synthetic for c in domain_result.citations),
             trace_id=trace_id,
             stage_ms=stage_ms if last else {},
         ))

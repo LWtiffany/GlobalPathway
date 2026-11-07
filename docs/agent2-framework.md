@@ -2,7 +2,7 @@
 
 日期：2026-10-16。本文描述仓库里已经跑起来的 Agent2，对照代码，不是需求稿。需求到模块的目标设计仍在 `docs/agent2-module-design.md`（文中写明「不是已经实现的功能」）；英国签证切片的实现说明在 `docs/agent2-s1-uk-student-visa.md`；M06 评测口径在 `docs/agent2-m06-metrics.md`。
 
-Agent2 是一个 Python 单体服务：用户问答、档案、建议、待办和审核后台都由 `agent2.py serve` 同进程提供。模块之间是函数调用，没有消息队列，也没有独立向量库。用户数据在本地 SQLite；事实只从 Agent1 已发布政策或合成夹具读入。回答由规则和模板生成，**问答主路径没有接 LLM**。
+Agent2 是一个 Python 单体服务。模块之间是函数调用；用户、Profile、会话、消息和当前建议沿用共享 PostgreSQL RDS 的 `userinformation` schema，字段审计和建议生命周期扩展写入 `agent2` schema，产品和知识表从 `public` schema 只读。
 
 ## 一次问答怎么走
 
@@ -10,7 +10,7 @@ Agent2 是一个 Python 单体服务：用户问答、档案、建议、待办�
 flowchart LR
   Web["agent2/web"] --> API["api.py"]
   API --> Svc["service.py"]
-  Svc --> Store[("agent2.sqlite3")]
+  Svc --> Store[("RDS: userinformation + agent2 extensions")]
   Svc --> Runner["runner.py"]
   Runner --> Intent["intent.py"]
   Runner --> Clarify["clarify.py"]
@@ -105,11 +105,11 @@ flowchart LR
 
 ## 用户库
 
-`agent2/store.py` 的 `SCHEMA` 在第一次打开时建在 SQLite。默认路径 `data/agent2/agent2.sqlite3`，`serve --db` 可改。表：
+`agent2/store.py` 在 RDS 的独立 `agent2` schema 中幂等建表；服务没有本地数据库回退，RDS 配置缺失时启动直接失败。表包括：
 
 `users`、`sessions`、`profiles`、`profile_fields`、`profile_change_proposals`、`conversations`、`message_index`、`answer_runs`、`answer_citations`、`advice_current`、`advice_history`、`message_reactions`、`feedback_tickets`、`plan_items`。
 
-`answer_runs` 记下当次的档案版本、`knowledge_read_id`、`model_version`、`prompt_version`、`gate_version`、状态和各阶段毫秒。本地把消息正文放在 `body_json`；设计里的 PostgreSQL + OSS 还没接，换存储时要保持同一套读写合同。
+`answer_runs` 记下当次的档案版本、`knowledge_read_id`、`model_version`、`prompt_version`、`gate_version`、状态和各阶段毫秒。消息正文当前存于 RDS 的 `message_index.body_json`；OSS 保存来源原文和快照，不承担事务状态。
 
 管理员账号和 `REVIEW_QUEUE` **不在这张库里**，在 Agent1 环境目录的 `admin.sqlite3`（`ADMIN_USER`、`REVIEW_QUEUE`）。批准走 `formal_pipeline.apply_review`，只写 Agent1 工作表；发布给用户问答仍要 Agent1 的 `publish`。可批准的域表是签证政策、购汇政策、学费，其他域表只能驳回。处理完的队列行删除。管理员 token 只在进程内存，8 小时过期。
 

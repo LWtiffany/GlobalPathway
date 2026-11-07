@@ -1,6 +1,6 @@
 """Agent 2 命令行。
 
-  serve [--host H] [--port P] [--db PATH] [--knowledge agent1|fixture] [--agent1-env ENV]
+  serve [--host H] [--port P] [--knowledge agent1|fixture] [--agent1-env ENV]
                                             启动 S1 HTTP API（默认读 Agent1 已发布政策）
   eval-m06 [--repeat N] [--out PATH]        跑 M06 分模块测试指标，保存逐条记录
 """
@@ -26,10 +26,17 @@ def cmd_serve(args):
     else:
         from .knowledge import FixtureKnowledgeRead
         knowledge = FixtureKnowledgeRead.from_file()
-    db = Path(args.db)
-    db.parent.mkdir(parents=True, exist_ok=True)
-    service = Agent2Service(Store(db), knowledge,
-                            demo_enabled=os.environ.get("AGENT2_DEMO", "1") == "1")
+    accounts = None
+    try:
+        from .accounts import RdsAccountDirectory
+        accounts = RdsAccountDirectory()
+        accounts.ensure_lock_columns()
+    except Exception as exc:  # noqa: BLE001 — serve without password login if RDS unreachable
+        print(f"warning: account directory unavailable ({exc}); /v1/login disabled", flush=True)
+        accounts = None
+    service = Agent2Service(Store(), knowledge,
+                            demo_enabled=os.environ.get("AGENT2_DEMO", "1") == "1",
+                            accounts=accounts)
     serve(service, args.host, args.port)
     return 0
 
@@ -55,7 +62,6 @@ def main(argv=None):
     p = sub.add_parser("serve", help="启动 S1 HTTP API")
     p.add_argument("--host", default=os.environ.get("AGENT2_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(os.environ.get("AGENT2_PORT", "8787")))
-    p.add_argument("--db", default=os.environ.get("AGENT2_DB_PATH", str(DATA / "agent2.sqlite3")))
     p.add_argument("--knowledge", choices=("agent1", "fixture"), default="agent1",
                    help="agent1：读 Agent1 已发布政策；fixture：合成知识夹具")
     p.add_argument("--agent1-env", default=agent1_env)

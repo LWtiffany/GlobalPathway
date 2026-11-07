@@ -1,20 +1,15 @@
-"""Read Agent1 working FX_POLICY / FX_EVIDENCE (unpublished) for remittance answers.
-
-FX policies are not on the publication surface yet; Agent2 reads the working tables
-in the current Agent1 environment SQLite and resolves source names/URLs from sources.json.
-"""
+"""Read Agent1 FX_POLICY / FX_EVIDENCE from PostgreSQL RDS."""
 
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from agent1 import config as agent1_config
-from agent1.environment import paths_for
+from agent1.storage import read_session
 
 from .models import Citation, Material
 from .retrieve import display_url
@@ -143,12 +138,6 @@ def load_source_catalog(path: Path | None = None) -> dict[str, dict[str, Any]]:
     return catalog
 
 
-def _connect(database: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(str(database))
-    con.row_factory = sqlite3.Row
-    return con
-
-
 def _prefer_quote(rows: list[FxEvidenceRow]) -> FxEvidenceRow | None:
     if not rows:
         return None
@@ -165,21 +154,16 @@ class Agent1FxPolicyRead:
     """Load one study-abroad FX policy row plus evidence and documents."""
 
     def __init__(self, *, environment: str | None = None, sources_path: Path | None = None):
-        env = environment or agent1_config.ENVIRONMENT
-        self.paths = paths_for(agent1_config.ROOT, env)
-        self.environment = self.paths.environment
+        self.environment = environment or agent1_config.ENVIRONMENT
         self.sources = load_source_catalog(sources_path)
 
     def get(self, *, purpose_code: str, remitter_country: str = "CN") -> FxPolicyBundle | None:
         if purpose_code not in PURPOSE_LABEL:
             return None
-        database = self.paths.database
-        if not database.exists():
-            return None
-        with _connect(database) as con:
+        with read_session() as con:
             policy = con.execute(
                 """SELECT * FROM FX_POLICY
-                   WHERE country=? AND purpose_code=? AND policy_type='study_abroad'
+                   WHERE country=%s AND purpose_code=%s AND policy_type='study_abroad'
                    LIMIT 1""",
                 (remitter_country, purpose_code),
             ).fetchone()
@@ -195,7 +179,7 @@ class Agent1FxPolicyRead:
                     recorded_at=row["recorded_at"],
                 )
                 for row in con.execute(
-                    "SELECT * FROM FX_EVIDENCE WHERE policy_id=? ORDER BY recorded_at DESC",
+                    "SELECT * FROM FX_EVIDENCE WHERE policy_id=%s ORDER BY recorded_at DESC",
                     (policy["policy_id"],),
                 )
                 if (row["quote"] or "").strip()
@@ -209,7 +193,7 @@ class Agent1FxPolicyRead:
                 """SELECT d.doc_id, d.code, d.name_zh, pd.required, pd."condition" AS condition
                    FROM POLICY_DOCUMENT pd
                    JOIN DOCUMENT d ON d.doc_id = pd.doc_id
-                   WHERE pd.policy_id=? AND pd.policy_domain='fx_policy'
+                   WHERE pd.policy_id=%s AND pd.policy_domain='fx_policy'
                    ORDER BY d.name_zh""",
                 (policy["policy_id"],),
             ):

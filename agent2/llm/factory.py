@@ -5,7 +5,8 @@ import json
 from dataclasses import dataclass
 
 from .answer_writer import LlmAnswerWriter
-from .contracts import AnswerWriterPort, UserUnderstandingPort
+from .conversation_reasoner import LlmConversationReasoner
+from .contracts import AnswerWriterPort, ConversationReasonerPort, UserUnderstandingPort
 from .provider import OpenAICompatibleChatModel
 from .understanding import LlmUserUnderstanding
 
@@ -14,6 +15,7 @@ from .understanding import LlmUserUnderstanding
 class LlmComponents:
     understanding: UserUnderstandingPort | None = None
     writer: AnswerWriterPort | None = None
+    reasoner: ConversationReasonerPort | None = None
 
 
 def build_llm_components(env=None) -> LlmComponents:
@@ -34,6 +36,13 @@ def build_llm_components(env=None) -> LlmComponents:
             base_url = AGENT2_LLM_BASE_URL.strip()
         except (ImportError, AttributeError):
             pass
+    local_model = None
+    if use_local_secrets:
+        try:
+            from local_secrets import AGENT2_LLM_MODEL
+            local_model = AGENT2_LLM_MODEL.strip()
+        except (ImportError, AttributeError):
+            pass
     enabled = bool(api_key) if setting == "auto" else setting in {"1", "true", "yes", "on"}
     if not enabled:
         return LlmComponents()
@@ -41,7 +50,7 @@ def build_llm_components(env=None) -> LlmComponents:
         raise RuntimeError("AGENT2_LLM_ENABLED is on but AGENT2_LLM_API_KEY is missing")
     if not base_url.startswith("https://"):
         raise RuntimeError("AGENT2_LLM_BASE_URL must be an HTTPS URL")
-    model_name = env.get("AGENT2_LLM_MODEL", "qwen3.8-flash")
+    model_name = env.get("AGENT2_LLM_MODEL") or local_model or "deepseek-v4.1-flash"
     structured_mode = env.get("AGENT2_LLM_STRUCTURED_MODE") or \
         ("json_object" if model_name.startswith("deepseek") else "json_schema")
     raw_extra = env.get("AGENT2_LLM_EXTRA_BODY", "")
@@ -52,9 +61,10 @@ def build_llm_components(env=None) -> LlmComponents:
         model_name=model_name,
         api_key=api_key,
         base_url=base_url,
-        timeout_seconds=float(env.get("AGENT2_LLM_TIMEOUT_SECONDS", "60")),
-        max_retries=int(env.get("AGENT2_LLM_MAX_RETRIES", "1")),
+        timeout_seconds=float(env.get("AGENT2_LLM_TIMEOUT_SECONDS", "30")),
+        max_retries=int(env.get("AGENT2_LLM_MAX_RETRIES", "0")),
         structured_mode=structured_mode,
         extra_body=extra_body,
     )
-    return LlmComponents(understanding=LlmUserUnderstanding(model), writer=LlmAnswerWriter(model))
+    return LlmComponents(understanding=LlmUserUnderstanding(model), writer=LlmAnswerWriter(model),
+                         reasoner=LlmConversationReasoner(model))

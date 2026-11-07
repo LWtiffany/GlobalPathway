@@ -1,0 +1,58 @@
+{
+  "entries": [
+    {
+      "knowledge_id": "hk-card-repayment-basics",
+      "market": "CN-HK",
+      "topic": "repayment",
+      "title": "账单与还款",
+      "customer_answer": "如未在还款到期日前缴清最低还款额，银行可收取财务费用。若希望控制借款成本，应优先以全额还清账单结欠为目标；现金透支、分期或个别交易可能适用独立条款，需按您的账单及产品条款核对。",
+      "source_url": "https://www.hsbc.com.hk/content/dam/hsbc/hk/docs/credit-cards/card-agreement.pdf",
+      "verified_at": "2026-11-02T00:00:00+08:00"
+    },
+    {
+      "knowledge_id": "hk-card-rewardcash-basics",
+      "market": "CN-HK",
+      "topic": "rewards",
+      "title": "RewardCash 与里程兑换",
+      "customer_answer": "RewardCash 的累计、使用及兑换须以账户有效且状态正常为前提。不同航空伙伴的里程兑换比率可能不同，并可按条款调整；计划兑换里程前，应先在 Reward+ 或官网确认当期比率、最低兑换额和适用卡种。",
+      "source_url": "https://www.hsbc.com.hk/credit-cards/rewards/terms/",
+      "verified_at": "2026-11-02T00:00:00+08:00"
+    },
+    {
+      "knowledge_id": "hk-card-overseas-conversion",
+      "market": "CN-HK",
+      "topic": "overseas_use",
+      "title": "海外及外币消费",
+      "customer_answer": "如果境外商户让您在当地货币和港币之间选择，我通常建议先选当地货币，再按所持卡种核对外币交易费。选港币属于商户提供的换汇安排，商户决定汇率及手续费，不一定更划算；汇丰也提示，境外以港币结算的香港港币 Visa／Mastercard 信用卡交易，仍可能有 1% 的相关费用。付款前请比较商户展示的汇率、手续费与您这张卡的外币交易费；若持有银联双币卡，需按该卡及交易币种另行核对。",
+      "source_url": "https://www.hsbc.com.hk/zh-cn/help/faq/credit-cards/",
+      "verified_at": "2026-11-03T00:00:00+08:00"
+    },
+    {
+      "knowledge_id": "hk-card-lost-stolen",
+      "market": "CN-HK",
+      "topic": "lost_or_stolen",
+      "title": "遗失、被盗或怀疑被盗用",
+      "customer_answer": "如卡片遗失、被盗或怀疑未经授权使用，应立即在 HSBC HK App 或网上理财临时锁卡／报失，或联系客户服务热线。临时锁卡不会自动停止既有自动转账、定期付款或部分非接触式交易；报失后应继续留意账单和通知。",
+      "source_url": "https://www.hsbc.com.hk/help/card-support/lost-or-stolen/",
+      "verified_at": "2026-11-02T00:00:00+08:00"
+    },
+    {
+      "knowledge_id": "hk-card-transaction-dispute",
+      "market": "CN-HK",
+      "topic": "transaction_dispute",
+      "title": "不认识或有争议的交易",
+      "customer_answer": "交易仍属待处理时，最终金额可能改变；一般可待交易入账后再提出争议。若您不认识待处理交易，应立即联系银行报告。对于已入账的可疑扣款或未收到商品／服务，可按 HSBC HK App 的交易争议流程提交，并保留订单、沟通和退款记录。",
+      "source_url": "https://www.hsbc.com.hk/help/card-support/transaction-dispute/",
+      "verified_at": "2026-11-02T00:00:00+08:00"
+    },
+    {
+      "knowledge_id": "hk-card-instalment-basics",
+      "market": "CN-HK",
+      "topic": "instalment",
+      "title": "分期与借款成本",
+      "customer_answer": "分期不应只比较每月付款额；应一并核对期数、月费率或实际年利率、总还款额、提前结清及逾期条款。若您无法每月全额还款，信用卡回赠通常不应作为主要选卡依据，应优先比较借款成本。",
+      "source_url": "https://www.hsbc.com.hk/credit-cards/forms/",
+      "verified_at": "2026-11-02T00:00:00+08:00"
+    }
+  ]
+}

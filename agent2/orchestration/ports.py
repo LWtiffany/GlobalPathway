@@ -12,6 +12,12 @@ class TaskPlanner(Protocol):
     async def plan(self, request: OrchestrationInput) -> TaskPlan: ...
 
 
+class CapabilityPlanner(Protocol):
+    version: str
+
+    async def enrich(self, plan: TaskPlan, request: OrchestrationInput) -> TaskPlan: ...
+
+
 class DomainWorkflow(Protocol):
     async def run(self, task: DomainTask, request: OrchestrationInput) -> DomainResult: ...
 

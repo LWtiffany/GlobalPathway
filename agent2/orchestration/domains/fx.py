@@ -118,6 +118,28 @@ class FxWorkflow:
     async def run(self, task: DomainTask, request: OrchestrationInput) -> DomainResult:
         facts, basis = merged_facts(task, request)
         intent = task.intent
+        operations = {action.operation for action in task.actions}
+        aspects = {aspect for action in task.actions for aspect in action.aspects}
+        chat_only = bool(operations) and operations <= {
+            "explain", "compare", "assess", "troubleshoot", "focus"
+        }
+        # The policy corpus deliberately does not contain a live price feed or
+        # bank-specific fee table.  Answer that boundary directly instead of
+        # asking unrelated Profile questions or inventing a number.
+        if "fees" in aspects and aspects <= {"fees"}:
+            return DomainResult(
+                task_id=task.task_id, domain="fx", status="needs_verification",
+                answer=AnswerBody(
+                    summary="当前资料不能给出实时汇率或确定手续费。",
+                    steps=["手续费和实际到账金额取决于办理银行、中转行、收款行及当时汇率。"],
+                    limitations=["请在提交汇款前向办理银行获取当次报价和费用明细。"],
+                ),
+                evidence_refs=["fx-capability-boundary:no-live-pricing"],
+                next_actions=["向办理银行确认汇率、手续费和预计到账金额"],
+                projection="chat_only", observed_facts=facts, observed_basis=basis,
+                payload={"capability_boundary": "no_live_pricing"},
+                model_version=MODEL_VERSION_RULES,
+            )
         if intent in _PURPOSE and "remittance_purpose" not in facts:
             facts["remittance_purpose"] = _PURPOSE[intent]
             basis["remittance_purpose"] = PURPOSE_LABEL[_PURPOSE[intent]]
@@ -204,6 +226,15 @@ class FxWorkflow:
             place=place, purpose_zh=purpose_zh, mode=mode,
             facts=policy_facts, materials=materials,
         )
+        if "limits" in aspects and aspects <= {"limits"}:
+            quota_steps = [step for step in verified.steps
+                           if "额度" in step or "超额" in step]
+            verified = verified.model_copy(update={
+                "summary": "关于留学购汇额度，当前政策摘录给出的要点如下。",
+                "steps": quota_steps,
+                "materials": [],
+            })
+            chat_only = True
         body = verified
         model_version = MODEL_VERSION_RULES
         notices: list[Notice] = []
@@ -233,6 +264,7 @@ class FxWorkflow:
                 "按额度内/超额准备对应材料并保留购汇凭证",
             ],
             notices=notices,
+            projection="chat_only" if chat_only else "advice",
             observed_facts=facts,
             observed_basis=basis,
             payload={
@@ -244,7 +276,8 @@ class FxWorkflow:
                 "quotes": quotes,
                 "materials": [m.model_dump(mode="json") for m in materials],
                 "citations": [c.model_dump(mode="json") for c in citations],
+                "capabilities": [action.model_dump(mode="json") for action in task.actions],
             },
-            knowledge_read_id=f"agent1-fx-working:{bundle.environment}",
+            knowledge_read_id=f"agent1-fx-rds:{bundle.environment}",
             model_version=model_version,
         )

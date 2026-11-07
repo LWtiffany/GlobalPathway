@@ -1,15 +1,17 @@
 """Natural-language writer for already verified orchestration results."""
 
 import json
+import re
 
 from agent2.models import AnswerBody
 from agent2.orchestration.contracts import OrchestrationInput, UnifiedAnswer
 
 from .contracts import StructuredModel
 from .prompts import PromptRenderer
-from .schemas import WrittenAnswer
+from .schemas import CreditCardAdvisorDraft, WrittenAnswer
+from .validation import validate_card_advisor
 
-PROMPT_VERSION = "write-answer-v1"
+PROMPT_VERSION = "write-answer-v2"
 
 
 class LlmAnswerWriter:
@@ -22,6 +24,32 @@ class LlmAnswerWriter:
 
     async def write(self, *, request: OrchestrationInput,
                     verified_answer: UnifiedAnswer) -> AnswerBody:
+        card_results = [item for item in verified_answer.domain_results
+                        if item.domain == "credit_card"]
+        if len(card_results) == 1 and len(verified_answer.domain_results) == 1 \
+                and card_results[0].payload.get("capability") in {"product_qa", "general_knowledge"}:
+            # A grounded direct answer is already complete. Rewriting it adds
+            # latency and can turn a short fee answer into another sales pitch.
+            return verified_answer.answer
+        if len(card_results) == 1 and len(verified_answer.domain_results) == 1 \
+                and card_results[0].payload.get("capability") != "general_knowledge" \
+                and verified_answer.answer.steps:
+            source = verified_answer.answer
+            lines = {f"s{index}": step for index, step in enumerate(source.steps, 1)}
+            prompt = self.renderer.render(
+                "credit_card_advisor.jinja2", user_text=request.text,
+                lines_json=json.dumps(lines, ensure_ascii=False),
+                limitations_json=json.dumps(source.limitations, ensure_ascii=False))
+            draft = await self.model.parse(prompt=prompt, output_type=CreditCardAdvisorDraft,
+                                           operation="credit_card_advisor")
+            validate_card_advisor(draft, lines, source)
+            analysis = re.sub(r"\s*[（(]\s*s\d+(?:\s*[,，、;；]\s*s\d+)*\s*[）)]",
+                              "", draft.analysis, flags=re.I).strip()
+            if re.search(r"(?<![A-Za-z0-9])s\d+(?![A-Za-z0-9])", analysis, re.I):
+                raise ValueError("advisor exposed an internal evidence ID")
+            return AnswerBody(summary=source.summary,
+                              steps=[analysis, *source.steps],
+                              materials=source.materials, limitations=source.limitations)
         prompt = self.renderer.render(
             "write_answer.jinja2",
             user_text=request.text,
