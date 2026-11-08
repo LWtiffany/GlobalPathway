@@ -32,15 +32,6 @@ jobs:
           tags: |
             ${{ env.IMAGE_BASE }}/admin:${{ github.sha }}
             ${{ env.IMAGE_BASE }}/admin:latest
-      - name: Build and push agent1
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile.agent1
-          push: true
-          tags: |
-            ${{ env.IMAGE_BASE }}/agent1:${{ github.sha }}
-            ${{ env.IMAGE_BASE }}/agent1:latest
       - name: Build and push user
         uses: docker/build-push-action@v5
         with:
@@ -82,8 +73,6 @@ jobs:
             export USER_IMAGE=${{ env.IMAGE_BASE }}/user:${{ github.sha }}
             docker compose -f docker-compose.prod.yml pull admin user
             docker compose -f docker-compose.prod.yml up -d admin user
-            docker pull ${{ env.IMAGE_BASE }}/agent1:${{ github.sha }}
-            docker tag ${{ env.IMAGE_BASE }}/agent1:${{ github.sha }} ${{ env.IMAGE_BASE }}/agent1:latest
             curl -fsS http://127.0.0.1:8765/healthz
             curl -fsS http://127.0.0.1:8787/healthz
             # 两个应用都健康后，原子切换公网入口：/=user，/admin/=admin。
