@@ -10,7 +10,40 @@ env:
   IMAGE_BASE: ghcr.io/lwtiffany/globalpathway
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      admin: ${{ steps.paths.outputs.admin }}
+      user: ${{ steps.paths.outputs.user }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: paths
+        shell: bash
+        run: |
+          base="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ -z "$base" ] || \
+             [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "admin=true" >> "$GITHUB_OUTPUT"
+            echo "user=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet "$base" "${{ github.sha }}" -- \
+              Dockerfile.admin docker-compose.prod.yml requirements.txt sources.json admin_console; then
+            echo "admin=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "admin=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --quiet "$base" "${{ github.sha }}" -- \
+              Dockerfile.user docker-compose.prod.yml requirements.txt sources.json agent2 agent1 ':!agent1/migrations'; then
+            echo "user=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "user=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: changes
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -24,6 +57,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push admin
+        if: needs.changes.outputs.admin == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -33,6 +67,7 @@ jobs:
             ${{ env.IMAGE_BASE }}/admin:${{ github.sha }}
             ${{ env.IMAGE_BASE }}/admin:latest
       - name: Build and push user
+        if: needs.changes.outputs.user == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -43,7 +78,7 @@ jobs:
             ${{ env.IMAGE_BASE }}/user:latest
 
   deploy:
-    needs: build
+    needs: [changes, build]
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -69,10 +104,16 @@ jobs:
             done
             echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
-            export ADMIN_IMAGE=${{ env.IMAGE_BASE }}/admin:${{ github.sha }}
-            export USER_IMAGE=${{ env.IMAGE_BASE }}/user:${{ github.sha }}
-            docker compose -f docker-compose.prod.yml pull admin user
-            docker compose -f docker-compose.prod.yml up -d admin user
+            if [ "${{ needs.changes.outputs.admin }}" = "true" ]; then
+              export ADMIN_IMAGE=${{ env.IMAGE_BASE }}/admin:${{ github.sha }}
+              docker compose -f docker-compose.prod.yml pull admin
+              docker compose -f docker-compose.prod.yml up -d admin
+            fi
+            if [ "${{ needs.changes.outputs.user }}" = "true" ]; then
+              export USER_IMAGE=${{ env.IMAGE_BASE }}/user:${{ github.sha }}
+              docker compose -f docker-compose.prod.yml pull user
+              docker compose -f docker-compose.prod.yml up -d user
+            fi
             curl -fsS http://127.0.0.1:8765/healthz
             curl -fsS http://127.0.0.1:8787/healthz
             # 两个应用都健康后，原子切换公网入口：/=user，/admin/=admin。
