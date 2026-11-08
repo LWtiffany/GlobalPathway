@@ -341,6 +341,9 @@ class Agent2Service:
             # them before messages; other profiles' records never enter the subquery.
             for table in ("answer_citations", "answer_runs", "message_reactions", "feedback_tickets"):
                 db.execute(f"DELETE FROM {table} WHERE message_id IN ({message_ids})", (profile_id,))
+            # Self-FK on reply_to blocks message deletion until cleared.
+            db.execute(f"UPDATE message_index SET reply_to=NULL WHERE message_id IN ({message_ids})",
+                       (profile_id,))
             db.execute("DELETE FROM message_index WHERE conversation_id IN "
                        "(SELECT session_id FROM sessions WHERE profile_id=?)", (profile_id,))
             db.execute("DELETE FROM sessions WHERE profile_id=?", (profile_id,))

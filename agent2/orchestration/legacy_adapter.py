@@ -285,7 +285,12 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
     """
     results = list(unified.domain_results)
     domains = [item.domain for item in results]
-    ask_need = is_necessity_question(text)
+    # Skip「先说要不要」when we are only clarifying missing facts for materials.
+    ask_need = (
+        is_necessity_question(text)
+        and unified.status in {"answered", "needs_verification"}
+        and not unified.follow_up_questions
+    )
     split = ask_need or len(results) > 1
     if not split or not results:
         citations, claims, conflicts = [], [], []
