@@ -180,5 +180,6 @@ class CreditCardRecommendationSet(CardModel):
     primary: CardRecommendation | None = None
     supplements: list[CardRecommendation] = Field(default_factory=list)
     alternatives: list[CardRecommendation] = Field(default_factory=list)
+    conditional_alternatives: list[CardRecommendation] = Field(default_factory=list)
     ranked_candidates: list[CardRecommendation] = Field(default_factory=list)
     excluded: dict[str, list[str]] = Field(default_factory=dict)

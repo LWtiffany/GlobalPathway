@@ -15,7 +15,7 @@ import psycopg
 from . import clarify
 from .models import (AnswerResult, BankRelationship, BankRelationshipProposal, Profile,
                      ProfileChangeProposal, ProfileField)
-from .intent import classify
+from .intent import classify, is_card_usage_followup_answer
 from .llm import build_llm_components
 from .llm.validation import validate_understanding
 from .orchestration import build_default_workflow
@@ -341,6 +341,9 @@ class Agent2Service:
             # them before messages; other profiles' records never enter the subquery.
             for table in ("answer_citations", "answer_runs", "message_reactions", "feedback_tickets"):
                 db.execute(f"DELETE FROM {table} WHERE message_id IN ({message_ids})", (profile_id,))
+            # Self-FK on reply_to blocks message deletion until cleared.
+            db.execute(f"UPDATE message_index SET reply_to=NULL WHERE message_id IN ({message_ids})",
+                       (profile_id,))
             db.execute("DELETE FROM message_index WHERE conversation_id IN "
                        "(SELECT session_id FROM sessions WHERE profile_id=?)", (profile_id,))
             db.execute("DELETE FROM sessions WHERE profile_id=?", (profile_id,))
@@ -723,6 +726,19 @@ class Agent2Service:
         # contain the pre-edit value.  Only the immutable recipe's session inputs
         # and the current confirmed Profile are allowed to influence the result.
         session_inputs = dict(recipe.get("session_inputs") or {})
+        if "credit_card" in intents and not session_inputs.get("application_region"):
+            # Older advice recipes did not always retain the requested card market.
+            # Reuse the saved advice's market rather than asking the customer again.
+            saved = self.store.one(
+                "SELECT payload_json FROM advice_current WHERE profile_id=? AND topic='credit_card'",
+                (profile_id,))
+            saved_payload = self._json_object(saved["payload_json"]) if saved else {}
+            market = (saved_payload.get("market") or
+                      (saved_payload.get("domain_payload") or {}).get("market"))
+            market = {"Hong Kong": "CN-HK", "United Kingdom": "UK",
+                      "United States": "US"}.get(market, market)
+            if market in {"CN-HK", "HK", "UK", "US"}:
+                session_inputs["application_region"] = market
         # The recipe is frozen at write time, so a field it captured may since
         # have been confirmed (possibly with a new value).  The Profile is
         # authoritative once confirmed; drop those keys or run_v2's
@@ -734,6 +750,7 @@ class Agent2Service:
         output = run_v2(self.v2_workflow, profile=profile, text="",
                         conversation_facts=session_inputs, asked_fields=[],
                         message_id=_new_id(), structured_selection=True,
+                        refresh_mode=True,
                         conversation_intents=intents, understanding_applied=True,
                         session_topic=None, session_last_user_text="",
                         session_last_assistant_text="", session_pending_questions=[],
@@ -786,7 +803,7 @@ class Agent2Service:
             with self.store.transaction() as db:
                 job = db.execute("SELECT * FROM advice_refresh_jobs WHERE job_id=? FOR UPDATE",
                                  (job_id,)).fetchone()
-                if not job or job["status"] not in {"queued", "failed"}:
+                if not job or job["status"] not in {"queued", "failed", "needs_input"}:
                     continue
                 current = db.execute("SELECT version FROM profiles WHERE profile_id=?",
                                      (job["profile_id"],)).fetchone()
@@ -1202,6 +1219,8 @@ class Agent2Service:
         field_answers = {**session_fields, **confirmed_fields}
         switches_domain = (
             asked and topic and not field_answers
+            and not (topic == "credit_card"
+                     and is_card_usage_followup_answer(text, asked))
             and classified.intent not in ("follow_up", "other")
             and classified.intent not in followup_intents
             and classified.intent not in topic_intents

@@ -15,12 +15,41 @@ no longer on the page are kept (older academic years stay as history). Verbatim
 quotes land in TUITION_EVIDENCE. Nothing is published.
 """
 import json
+import re
 import uuid
 
 from . import config, crawl, formal_pipeline as fp, gate, review_text, storage, tuition_extract
 from .models import LEVELS
 
 DOMAIN = "tuition"
+_PAREN_SUFFIX = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _canonical_school_name(name):
+    """Strip trailing parenthetical aliases: 'HKU (HKU)' / '… (CUHK)' → base name."""
+    return _PAREN_SUFFIX.sub("", name or "").strip()
+
+
+def resolve_school_id(connection, school):
+    """Prefer an already-loaded SCHOOL row (IPEDS / directory) over a fresh uuid5 key.
+
+    Tuition sources key schools as ``harvard`` / ``hku``; the catalog already has
+    Harvard / HKU under different ids. Matching by canonical name keeps official
+    tuition on the same school Agent2 and profiles already use.
+    """
+    key_id = school_id(school["key"])
+    if fp._row(connection, "SELECT school_id FROM SCHOOL WHERE school_id=%s", (key_id,)):
+        return key_id
+    canon = _canonical_school_name(school["name"]).casefold()
+    if not canon:
+        return key_id
+    for row in connection.execute("SELECT school_id, name FROM SCHOOL").fetchall():
+        existing = row["name"] or ""
+        if existing.casefold() == (school["name"] or "").casefold():
+            return row["school_id"]
+        if _canonical_school_name(existing).casefold() == canon:
+            return row["school_id"]
+    return key_id
 
 
 def _members(sources):
@@ -93,10 +122,19 @@ def _upsert_program(connection, sid, school_key, key, name, level, scope):
 def _upsert_registry(connection, members, merged):
     """SCHOOL from the registry; PROGRAM from registered programmes and catalog rows."""
     school = members[0]["school"]
-    sid = school_id(school["key"])
-    connection.execute("""INSERT INTO SCHOOL (school_id, name, country, city) VALUES (%s,%s,%s,%s)
-        ON CONFLICT(school_id) DO UPDATE SET name=excluded.name, country=excluded.country,
-        city=excluded.city""", (sid, school["name"], school["country"], school.get("city")))
+    sid = resolve_school_id(connection, school)
+    if not fp._row(connection, "SELECT school_id FROM SCHOOL WHERE school_id=%s", (sid,)):
+        connection.execute("""INSERT INTO SCHOOL (school_id, name, country, city) VALUES (%s,%s,%s,%s)
+            ON CONFLICT(school_id) DO UPDATE SET name=excluded.name, country=excluded.country,
+            city=excluded.city""",
+            (sid, _canonical_school_name(school["name"]) or school["name"],
+             school["country"], school.get("city")))
+    else:
+        # Keep the established display name; only fill blank country/city.
+        connection.execute("""UPDATE SCHOOL SET
+            country=COALESCE(NULLIF(country,''), %s),
+            city=COALESCE(NULLIF(city,''), %s)
+            WHERE school_id=%s""", (school["country"], school.get("city"), sid))
     for source in members:
         for program in source.get("programs") or []:
             _upsert_program(connection, sid, school["key"], program["key"], program["name"],
@@ -165,10 +203,19 @@ def _apply_school(connection, school_key, merged, sources):
         pid = program_id(school_key, program_key)
         tid = tuition_id(pid, academic_year, fee_status, fee_basis, study_mode, rate)
         rate_label = entry["support"][0].rate_label
+        source_url = next((r.source_url for r in entry["support"] if getattr(r, "source_url", None)),
+                          None)
+        if source_url is None:
+            for r in entry["support"]:
+                src = sources.get(getattr(r, "source_id", None) or "") or {}
+                if src.get("url"):
+                    source_url = src["url"]
+                    break
         row = {"tuition_id": tid, "program_id": pid, "academic_year": academic_year,
                "fee_status": fee_status, "fee_basis": fee_basis, "study_mode": study_mode,
                "rate_label": rate_label, "amount": entry["amount"], "currency": entry["currency"],
-               "remark": _remark(entry["support"], sources)}
+               "remark": _remark(entry["support"], sources), "is_estimate": 0,
+               "source_url": source_url}
         support = [r.model_dump() for r in entry["support"]]
         result = {"program": entry["support"][0].program_name or program_key,
                   "academic_year": academic_year, "fee_status": fee_status, "fee_basis": fee_basis,
@@ -190,12 +237,17 @@ def _apply_school(connection, school_key, merged, sources):
             _reject_stale_reviews(connection, tid)
             result["result"] = "inserted"
         elif _same_amount(existing, entry["amount"], entry["currency"]):
+            connection.execute(
+                "UPDATE TUITION SET is_estimate=0, source_url=COALESCE(%s, source_url), remark=%s "
+                "WHERE tuition_id=%s", (source_url, row["remark"], tid))
             _replace_evidence(connection, tid, support)
             _reject_stale_reviews(connection, tid)
             result["result"] = "no_change"
         elif existing["amount"] is None:
-            connection.execute("UPDATE TUITION SET amount=%s, currency=%s, remark=%s WHERE tuition_id=%s",
-                               (row["amount"], row["currency"], row["remark"], tid))
+            connection.execute(
+                "UPDATE TUITION SET amount=%s, currency=%s, remark=%s, is_estimate=0, source_url=%s "
+                "WHERE tuition_id=%s",
+                (row["amount"], row["currency"], row["remark"], source_url, tid))
             _replace_evidence(connection, tid, support)
             _reject_stale_reviews(connection, tid)
             result["result"] = "updated"

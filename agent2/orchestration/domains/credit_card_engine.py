@@ -571,6 +571,8 @@ def _estimated_annual_fx_cost(product: CreditCardProduct, scenarios: list[str],
         elif scenario in {"overseas", "travel"}:
             # Foreign currencies other than RMB/MOP pay the card's fx rate,
             # including on dual-currency cards (1% for non-RMB/MOP currencies).
+            # Tuition-only spend does not auto-apply FX; callers add "overseas"
+            # when the tuition currency is foreign.
             pass
         else:
             continue
@@ -672,8 +674,11 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
                 excluded[product.card_id] = [
                     "已确认的可证明资产低于该卡公开资产门槛；通用个案审批路径不作为推荐依据。"]
                 continue
-        monthly_spend = MONTHLY_SPEND_ESTIMATES.get(
-            facts.get("monthly_card_spend_band_hkd"), Decimal("5000"))
+        if facts.get("estimated_monthly_spend_hkd") is not None:
+            monthly_spend = Decimal(str(facts["estimated_monthly_spend_hkd"]))
+        else:
+            monthly_spend = MONTHLY_SPEND_ESTIMATES.get(
+                facts.get("monthly_card_spend_band_hkd"), Decimal("5000"))
         scored.append(score_product(
             product, eligibility, scenarios, preference, monthly_spend, facts=facts, now=now))
     if not scored:
@@ -805,6 +810,35 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
             alternatives.append(item.model_copy(update={"role": "alternative"}))
         if len(alternatives) == 3:
             break
+    # Missing application facts and an income range crossing a threshold are
+    # undecided, not rejection. Keep viable ordinary cards visible.
+    conditional_alternatives = []
+    band = facts.get("annual_income_band_hkd")
+    parts = str(band).split("_") if band else []
+    lower = (Decimal(parts[1]) if len(parts) >= 3 and parts[0] == "range"
+             else None)
+    upper = (Decimal(parts[2]) if lower is not None else None)
+    exact = facts.get("annual_income_hkd")
+    income_ceiling = Decimal(str(exact)) if exact is not None else upper
+    if income_ceiling is not None:
+        candidates = [item for item in scored[1:]
+                      if item.card_id not in selected
+                      and item.eligibility.status == "unknown"
+                      and not _student_preview(by_id[item.card_id], item.eligibility, facts)
+                      and (floor := income_floor(item.card_id)) is not None
+                      and floor <= income_ceiling]
+        # A card whose published income floor is met by the whole stated band
+        # is a stronger alternative than one that only fits the band ceiling.
+        # Within each group, preserve the main reward/fee ranking.
+        rank = {item.card_id: index for index, item in enumerate(scored)}
+        candidates.sort(key=lambda item: (
+            lower is not None and income_floor(item.card_id) > lower,
+            rank[item.card_id],
+        ))
+        conditional_alternatives = [item.model_copy(update={"role": "alternative"})
+                                    for item in candidates[:max(0, 2 - len(supplements))]]
     return CreditCardRecommendationSet(primary=primary, supplements=supplements,
-                                       alternatives=alternatives, ranked_candidates=ranked_candidates,
+                                       alternatives=alternatives,
+                                       conditional_alternatives=conditional_alternatives,
+                                       ranked_candidates=ranked_candidates,
                                        excluded=excluded)
