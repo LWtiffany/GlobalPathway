@@ -80,6 +80,13 @@ _RESIDENCE = _by_value("applicant_residence", {
     "Taiwan": ("eq", "TW", "申请人是台湾居民"),
     "Mainland": ("eq", "CN", "申请人是中国内地居民"),
     "Mainland China": ("eq", "CN", "申请人是中国内地居民")})
+_UK_DEGREE = _by_value("degree_from_uk_institution", {
+    True: ("is_true", None, "学位由英国院校授予"),
+    False: ("is_false", None, "学位不是由英国院校授予")})
+_RQF = _by_value("rqf_level", {
+    "7 or above": ("eq", "7_or_above", "课程 RQF 等级为 7 或以上"),
+    "below 7": ("eq", "below_7", "课程 RQF 等级低于 7"),
+})
 
 CONDITION_MAP = {
     "under_18": _UNDER_18,
@@ -99,6 +106,20 @@ CONDITION_MAP = {
     "residence_in_listed_country_6_months_or_more": _TB_RESIDENT,
     "living_there_within_last_6_months": _TB_RESIDENT,
     "living_in_listed_country_within_last_6_months": _TB_RESIDENT,
+    # UK Student visa condition keys previously fell through to「待核实」.
+    "no_english_qualification": _when_true(
+        "needs_english_proof", "is_true", "申请人没有可豁免的英语资格证明"),
+    "degree_awarded_by_uk_institution": _UK_DEGREE,
+    "degree_taught_in_english": _when_true(
+        "degree_taught_in_english", "is_true", "学位以英语授课"),
+    "rqf_level": _RQF,
+    "studying_or_researching_sensitive_topics": _when_true(
+        "sensitive_subject_research", "is_true", "课程涉及敏感学科或研究"),
+    "course_and_nationality_require_atas": _when_true(
+        "atas_required_by_course_nationality", "is_true", "课程与国籍组合要求 ATAS"),
+    # US Student visa
+    "visa_fee_paid_before_interview": _when_true(
+        "us_visa_fee_paid_before_interview", "is_true", "已在面签前缴纳签证申请费"),
 }
 
 
@@ -107,20 +128,33 @@ def _key(condition):
 
 
 def map_condition(condition):
-    """Agent1 condition -> OR-list of AND-groups of Profile conditions, or None if any key is unknown."""
-    groups = condition["any_of"] if set(condition) == {"any_of"} else [condition]
+    """Agent1 condition -> OR-list of AND-groups of Profile conditions.
+
+    A single AND-group fails if any key is unknown. For ``any_of``, only fully
+    mapped alternatives are kept; the whole condition is unknown only when no
+    alternative can be mapped (so one bad branch does not poison siblings).
+    """
+    any_of = set(condition) == {"any_of"}
+    groups = condition["any_of"] if any_of else [condition]
     mapped = []
     for group in groups:
         conditions = []
+        ok = True
         for name, raw in group.items():
             build = CONDITION_MAP.get(name)
             result = build(raw) if build else None
             if not result:
-                return None
+                ok = False
+                break
             conditions += [c for c in result if all(_key(c) != _key(x) for x in conditions)]
-        if all([_key(c) for c in conditions] != [_key(c) for c in other] for other in mapped):
+        if not ok:
+            if any_of:
+                continue
+            return None
+        if conditions and all(
+                [_key(c) for c in conditions] != [_key(c) for c in other] for other in mapped):
             mapped.append(conditions)
-    return mapped
+    return mapped or None
 
 
 def _source(source_id, sources):
@@ -148,10 +182,13 @@ def _requirement(document, sources, country):
         condition_quote=" | ".join(e["quote"] for e in conditions) or None,
         source=_source(evidence["source_id"], sources),
     )
-    groups = map_condition(document["condition"]) if document["required"] and document["condition"] else None
+    # Map whenever a condition exists — including Agent1 rows with required=False
+    # but a non-empty condition (e.g. UK ATAS "you may also need…"). Skipping the
+    # map for required=False used to force applicability unknown → UI「待核实」.
+    groups = map_condition(document["condition"]) if document["condition"] else None
     if document["required"] and not document["condition"]:
         return Requirement(**fields, applicability_status="unconditional")
-    if groups is None:
+    if document["condition"] and groups is None:
         return Requirement(**fields, applicability_status="unknown")
     if len(groups) == 1:
         return Requirement(**fields, applicability_status="conditional", condition=groups[0])

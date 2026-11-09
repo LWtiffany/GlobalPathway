@@ -721,13 +721,154 @@
       {
         "key": "rpg",
         "name": "Research Postgraduate Programmes (MPhil / PhD)",
-        "level": "research_postgraduate",
+        "level": "postgraduate_research",
         "aliases": [
           "Research Postgraduate Programmes"
         ]
       }
     ],
     "notes": "研究型研究生（MPhil/PhD）学费；授课型研究生见各项目页（未登记）"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "cuhk_ug_fees_res",
+    "name": "CUHK Registry tuition and other fees (undergraduate)",
+    "url": "https://www.res.cuhk.edu.hk/general-information/tuition-and-other-fees/",
+    "allowed_host": "www.res.cuhk.edu.hk",
+    "region": "CN-HK",
+    "access_basis": "公开官方网页（中大教务处）；服务端渲染",
+    "catalog": true,
+    "school": {
+      "key": "cuhk",
+      "name": "The Chinese University of Hong Kong (CUHK)",
+      "country": "CN-HK",
+      "city": "Hong Kong"
+    },
+    "defaults": {
+      "currency": "HKD",
+      "fee_basis": "per_year",
+      "academic_year": "2026/27"
+    },
+    "defaults_note": "页面标题为 academic year 2026-27；金额表按本地/非本地与入学届别列示",
+    "level": "undergraduate",
+    "extraction_notes": "Official CUHK Registry undergraduate tuition table: local per annum, non-local by intake cohort (2017-18 to 2024-25 / 2025-26 / 2026-27), plus double-degree variants.",
+    "notes": "中大本科本地/非本地学费（按入学届）"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "hkust_ug_fees_registry",
+    "name": "HKUST Academic Registry tuition rates (undergraduate)",
+    "url": "https://registry.hkust.edu.hk/resource-library/tuition-rates-ug",
+    "allowed_host": "registry.hkust.edu.hk",
+    "region": "CN-HK",
+    "access_basis": "公开官方网页（科大教务处）；服务端渲染",
+    "catalog": true,
+    "school": {
+      "key": "hkust",
+      "name": "The Hong Kong University of Science and Technology (HKUST)",
+      "country": "CN-HK",
+      "city": "Clear Water Bay"
+    },
+    "defaults": {
+      "currency": "HKD",
+      "fee_basis": "per_year"
+    },
+    "defaults_note": "本地学费为现行年费；非本地按 admitted cohort 列示（含 2026-27）",
+    "level": "undergraduate",
+    "extraction_notes": "Official HKUST Registry UG tuition: local per annum and non-local per admitted cohort; ignore visiting/per-credit beyond-normal rates unless labelled as standard tuition.",
+    "notes": "科大本科本地/非本地学费"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "hkust_rpg_fees_registry",
+    "name": "HKUST Academic Registry tuition rates (research postgraduate)",
+    "url": "https://registry.hkust.edu.hk/resource-library/tuition-rates-research-pg",
+    "allowed_host": "registry.hkust.edu.hk",
+    "region": "CN-HK",
+    "access_basis": "公开官方网页（科大教务处）；服务端渲染",
+    "catalog": true,
+    "school": {
+      "key": "hkust",
+      "name": "The Hong Kong University of Science and Technology (HKUST)",
+      "country": "CN-HK",
+      "city": "Clear Water Bay"
+    },
+    "defaults": {
+      "currency": "HKD",
+      "fee_basis": "per_year",
+      "academic_year": "2026/27"
+    },
+    "defaults_note": "页面注明 2026-27 Continuing Student 费率；全日制/兼读 RPg 年费同页",
+    "level": "postgraduate_research",
+    "extraction_notes": "Official HKUST Registry research PG tuition: full-time and part-time per annum; continuing-student and beyond-normal term rates as rate_label variants.",
+    "notes": "科大研究型研究生学费"
+  },
+  {
+    "category": "school",
+    "authority": "official",
+    "language": "en",
+    "owner": "待指定",
+    "review_status": "approved",
+    "enabled": true,
+    "approved_for_demo": true,
+    "check_interval_minutes": 1440,
+    "freshness_sla_hours": 168,
+    "dynamic": false,
+    "schema_type": "tuition",
+    "max_retries": 2,
+    "id": "hkust_ug_fees_admissions",
+    "name": "HKUST Undergraduate Admissions fees and scholarships",
+    "url": "https://join.hkust.edu.hk/fees-and-scholarships",
+    "allowed_host": "join.hkust.edu.hk",
+    "region": "CN-HK",
+    "access_basis": "公开官方网页（科大本科招生）；服务端渲染",
+    "catalog": true,
+    "school": {
+      "key": "hkust",
+      "name": "The Hong Kong University of Science and Technology (HKUST)",
+      "country": "CN-HK",
+      "city": "Clear Water Bay"
+    },
+    "defaults": {
+      "currency": "HKD",
+      "fee_basis": "per_year"
+    },
+    "level": "undergraduate",
+    "extraction_notes": "Admissions page local vs non-local undergraduate tuition for the published academic year (e.g. 2027/28).",
+    "notes": "科大本科招生页本地/非本地学费"
   },
   {
     "category": "school",

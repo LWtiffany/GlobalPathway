@@ -571,6 +571,8 @@ def _estimated_annual_fx_cost(product: CreditCardProduct, scenarios: list[str],
         elif scenario in {"overseas", "travel"}:
             # Foreign currencies other than RMB/MOP pay the card's fx rate,
             # including on dual-currency cards (1% for non-RMB/MOP currencies).
+            # Tuition-only spend does not auto-apply FX; callers add "overseas"
+            # when the tuition currency is foreign.
             pass
         else:
             continue
@@ -672,8 +674,11 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
                 excluded[product.card_id] = [
                     "已确认的可证明资产低于该卡公开资产门槛；通用个案审批路径不作为推荐依据。"]
                 continue
-        monthly_spend = MONTHLY_SPEND_ESTIMATES.get(
-            facts.get("monthly_card_spend_band_hkd"), Decimal("5000"))
+        if facts.get("estimated_monthly_spend_hkd") is not None:
+            monthly_spend = Decimal(str(facts["estimated_monthly_spend_hkd"]))
+        else:
+            monthly_spend = MONTHLY_SPEND_ESTIMATES.get(
+                facts.get("monthly_card_spend_band_hkd"), Decimal("5000"))
         scored.append(score_product(
             product, eligibility, scenarios, preference, monthly_spend, facts=facts, now=now))
     if not scored:

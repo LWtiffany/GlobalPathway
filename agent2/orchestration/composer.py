@@ -29,11 +29,17 @@ INVESTMENT_ACCOUNT_SCOPE = (
 )
 # Routing audit stays on TaskPlan.routing_audit / answer snapshot — never in user notices.
 
-# 「需不需要 / 要不要 / …吗」先给结论，再展开产品建议。避开「需要什么材料」。
+# 「需不需要 / 要不要 / …吗」先给结论，再展开产品建议。
+# Materials asks like「是否需要准备什么材料」must NOT match（含「是否需要」子串）。
 _NEED_QUESTION = re.compile(
     r"需不需要|要不要|有没有必要|是否需要|有必要(?:吗|么)?"
     r"|我?需要(?:开|办).{0,20}吗"
     r"|(?:要(?:开|办)|开|办)(?:银行账户|银行开户|开户|信用卡|汇丰卡).{0,6}吗",
+    re.I,
+)
+_MATERIALS_ASK = re.compile(
+    r"(?:准备|需要).{0,12}(?:什么|哪些)?(?:材料|文件|证件|清单)"
+    r"|(?:材料|文件|证件|清单).{0,8}(?:准备|需要)",
     re.I,
 )
 
@@ -48,7 +54,7 @@ _NECESSITY_VERDICT = {
     ),
     "fx": (
         "若学费或生活费要从境内汇出，一般需要按购汇/汇款要求办理；"
-        "具体要看您的付款方式。"
+        "有学校与项目后可对照目录学费与额度，再按银行材料要求汇出。"
     ),
     "visa": (
         "留学通常需要办理相应学生签证；是否已持有有效签证以您的行程和官方要求为准。"
@@ -59,7 +65,7 @@ _JOURNEY_ORDER = {"visa": 10, "bank_account": 20, "fx": 30, "credit_card": 40}
 _JOURNEY_GUIDANCE = {
     "visa": "先确认签证类别与材料；它会影响后续时间安排。",
     "bank_account": "确认可开户地区与账户条件，为收付款和后续办卡做准备。",
-    "fx": "核对收款信息、购汇额度和材料；可与签证、开户准备并行。",
+    "fx": "核对学校缴费通知、目录学费、购汇额度与材料；可与签证、开户准备并行。",
     "credit_card": "在申请地区、收入与银行关系明确后再选卡，减少无效申请。",
 }
 
@@ -84,7 +90,9 @@ def compose_journey(plan: TaskPlan, report: QualityReport) -> list[JourneyStep]:
 
 
 def is_necessity_question(text: str) -> bool:
-    return bool(text and _NEED_QUESTION.search(text))
+    if not text or _MATERIALS_ASK.search(text):
+        return False
+    return bool(_NEED_QUESTION.search(text))
 
 
 def necessity_summary(domains: list[str]) -> str:
@@ -178,7 +186,10 @@ class DefaultResponseComposer:
                 )
             answer = result.answer if not limitations else result.answer.model_copy(
                 update={"limitations": limitations})
-            if ask_need and result.status in {"answered", "needs_verification", "needs_input"}:
+            # Only wrap finished answers. Asking follow-ups under a「先说要不要」
+            # shell makes materials clarification look like a nonsense verdict.
+            if (ask_need and result.status in {"answered", "needs_verification"}
+                    and not result.follow_up_questions):
                 # Single-bubble path keeps necessity inline; multi-intent chat
                 # splits into separate messages in the legacy adapter instead.
                 preamble = necessity_preamble(domains)
@@ -210,7 +221,10 @@ class DefaultResponseComposer:
         # truncating steps/materials (side-panel advice uses the same DomainResult).
         sections: list[str] = []
         labels = []
-        if ask_need:
+        pending_followups = any(item.follow_up_questions for item in report.results)
+        show_need = (
+            ask_need and status in {"answered", "needs_verification"} and not pending_followups)
+        if show_need:
             sections.extend(necessity_preamble(domains))
         if journey:
             sections.append("## 建议推进顺序")
@@ -234,7 +248,7 @@ class DefaultResponseComposer:
                     line += f"；条件：{material.condition_text}"
                 sections.append(line)
 
-        if ask_need:
+        if show_need:
             summary = necessity_summary(domains)
         elif len(labels) == 2:
             summary = f"{labels[0]}和{labels[1]}我分开说。"
