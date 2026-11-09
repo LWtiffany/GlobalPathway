@@ -18,7 +18,7 @@ def _new_message_id():
 
 _CARD_ROLES = {"主推荐": "primary", "初步选择": "primary",
                "场景搭配": "supplement", "附加推荐": "supplement",
-               "其他选择": "alternative"}
+               "其他选择": "alternative", "待核对选择": "alternative"}
 _CARD_NETWORK = re.compile(r"^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$")
 
 # Session topic values must match store CHECK (remittance/account/visa/credit_card).
@@ -127,6 +127,7 @@ def intents_for_confirmed_fields(confirmed_fields: dict, active_intents: list[st
 
 def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message_id,
            structured_selection=False, conversation_intents=None,
+           refresh_mode=False,
            understood_facts=None, understood_basis=None, understanding_applied=False,
            understanding_model_used=False,
            llm_intents=None, domain_state=None, llm_topic_switch=False,
@@ -162,6 +163,7 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         conversation_intents=intents,
         asked_fields=list(asked_fields),
         input_mode="structured_selection" if structured_selection else "free_text",
+        refresh_mode=refresh_mode,
         understood_facts=dict(understood_facts or {}),
         understood_basis=dict(understood_basis or {}),
         understanding_applied=understanding_applied,

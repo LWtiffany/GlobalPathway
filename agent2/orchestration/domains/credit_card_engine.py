@@ -810,6 +810,35 @@ def recommend(products: list[CreditCardProduct], facts: dict, scenarios: list[st
             alternatives.append(item.model_copy(update={"role": "alternative"}))
         if len(alternatives) == 3:
             break
+    # Missing application facts and an income range crossing a threshold are
+    # undecided, not rejection. Keep viable ordinary cards visible.
+    conditional_alternatives = []
+    band = facts.get("annual_income_band_hkd")
+    parts = str(band).split("_") if band else []
+    lower = (Decimal(parts[1]) if len(parts) >= 3 and parts[0] == "range"
+             else None)
+    upper = (Decimal(parts[2]) if lower is not None else None)
+    exact = facts.get("annual_income_hkd")
+    income_ceiling = Decimal(str(exact)) if exact is not None else upper
+    if income_ceiling is not None:
+        candidates = [item for item in scored[1:]
+                      if item.card_id not in selected
+                      and item.eligibility.status == "unknown"
+                      and not _student_preview(by_id[item.card_id], item.eligibility, facts)
+                      and (floor := income_floor(item.card_id)) is not None
+                      and floor <= income_ceiling]
+        # A card whose published income floor is met by the whole stated band
+        # is a stronger alternative than one that only fits the band ceiling.
+        # Within each group, preserve the main reward/fee ranking.
+        rank = {item.card_id: index for index, item in enumerate(scored)}
+        candidates.sort(key=lambda item: (
+            lower is not None and income_floor(item.card_id) > lower,
+            rank[item.card_id],
+        ))
+        conditional_alternatives = [item.model_copy(update={"role": "alternative"})
+                                    for item in candidates[:max(0, 2 - len(supplements))]]
     return CreditCardRecommendationSet(primary=primary, supplements=supplements,
-                                       alternatives=alternatives, ranked_candidates=ranked_candidates,
+                                       alternatives=alternatives,
+                                       conditional_alternatives=conditional_alternatives,
+                                       ranked_candidates=ranked_candidates,
                                        excluded=excluded)
