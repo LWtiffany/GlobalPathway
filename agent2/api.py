@@ -337,7 +337,8 @@ def delete_plan_item(service, user_id, body, query, item_id):
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-                ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
+                ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml",
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 STATIC_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
                                "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
