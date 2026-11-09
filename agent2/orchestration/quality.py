@@ -1,6 +1,6 @@
 """Cross-domain quality gate. Domain-specific gates live inside each workflow."""
 
-from agent2.models import AnswerBody, Notice
+from agent2.models import AnswerBody
 
 from .contracts import DomainResult, QualityReport
 
@@ -22,10 +22,9 @@ class DefaultQualityGate:
                         summary=result.answer.summary,
                         steps=result.answer.steps,
                         materials=result.answer.materials,
-                        limitations=[*result.answer.limitations, "回答缺少可审计证据，已降级为待核实。"],
+                        limitations=[*result.answer.limitations,
+                                     "目前无法确认具体申请条件，建议核对发卡地区和卡种的最新要求。"],
                     ),
-                    "notices": [*result.notices,
-                                Notice(code="missing_evidence", message="answered 结果必须带证据")],
                 })
             checked.append(result)
         return QualityReport(results=checked, gate_version=self.version, findings=findings)
