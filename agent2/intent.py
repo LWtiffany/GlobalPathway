@@ -59,6 +59,41 @@ _GENERIC_CARD_REQUEST = re.compile(
     r"|哪张卡|什么卡|卡推荐|推荐.+?卡|留学生卡",
     re.I,
 )
+
+_CARD_USAGE_FIELD = re.compile(
+    r"消费场景|用卡场景|刷卡场景|消费习惯|"
+    r"(?:主要|平时|日常|经常|以后).{0,8}(?:消费|刷卡|用卡)"
+)
+_CARD_USAGE_VALUE = re.compile(
+    r"境外|海外|外币|网购|线上|餐饮|吃饭|内地|大陆|旅行|旅游|学费|超市|零售",
+    re.I,
+)
+_CARD_USAGE_EDIT = re.compile(r"改(?:成|为)|调整(?:成|为)|换(?:成|为)|更新|设(?:置|为)")
+_CARD_USAGE_QUESTION = re.compile(
+    r"[?？]|怎么|如何|多少|哪个好|哪张|推荐|比较|手续费|"
+    r"换汇|购汇|结汇|汇款|汇率|外汇"
+)
+
+
+def is_card_usage_profile_statement(text: str) -> bool:
+    """A declared card-use preference is a Profile update, not an FX query."""
+    if not (_CARD_USAGE_FIELD.search(text) and _CARD_USAGE_VALUE.search(text)):
+        return False
+    if re.search(r"换汇|购汇|结汇|汇款|汇率|外汇", text):
+        return False
+    if _CARD_USAGE_EDIT.search(text):
+        return True
+    return bool(re.search(r"我|我们|本人|平时|经常|主要|通常|以后", text)
+                and not _CARD_USAGE_QUESTION.search(text))
+
+
+def is_card_usage_followup_answer(text: str, asked_fields=()) -> bool:
+    """Keep a free-text spending choice attached to its pending card question."""
+    return bool("spending_scenarios" in asked_fields
+                and _CARD_USAGE_VALUE.search(text)
+                and not _CARD_USAGE_QUESTION.search(text))
+
+
 _INVESTMENT_ACCOUNT = re.compile(
     r"股票账户|证券账户|证券交易账户|炒股账户|股票交易账户|券商账户|"
     r"brokerage\s+account|securities\s+account|stock\s+trading\s+account",
@@ -106,8 +141,12 @@ INTENTS = [
 
 def find_intent_matches(text: str) -> list[tuple[int, str]]:
     """Return (start, intent) for every INTENTS hit, in first-occurrence order within each pattern."""
-    matches: list[tuple[int, str]] = []
+    card_usage_update = is_card_usage_profile_statement(text)
+    matches: list[tuple[int, str]] = [(0, "credit_card")] if card_usage_update else []
     for intent, pattern in INTENTS:
+        if card_usage_update and intent in {
+                "credit_card", "overseas_spending", "remittance_tuition", "remittance_living"}:
+            continue
         match = pattern.search(text)
         if match:
             if intent == "hsbc_account" and is_investment_account(text):
@@ -179,6 +218,10 @@ def classify(text, *, asked_fields=()):
     intent = next((name for name, pattern in INTENTS if pattern.search(text)
                    and not (name == "credit_card" and
                             (is_ambiguous_bank_card(text) or is_account_only_card_mention(text)))), None)
+    if intent in (None, "overseas_spending", "remittance_tuition", "remittance_living") \
+            and (is_card_usage_profile_statement(text)
+                 or is_card_usage_followup_answer(text, asked_fields)):
+        intent = "credit_card"
     turn = Turn(intent=intent or "other")
     for code, patterns in (("destination_country", _COUNTRY), ("visa_category", _VISA),
                            ("funding_source", _FUNDING)):

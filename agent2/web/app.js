@@ -576,6 +576,21 @@ function viewProfile(profile) {
   go("#/chat/" + profile.profile_id);
 }
 
+function selectProfile(profile) {
+  if (!profile) return;
+  if (profile.profile_id === S.pid) {
+    if (!S.collapsed) closeCurrentProfile();
+    return;
+  }
+  if (S.busy) {
+    toast("当前操作还在处理中，完成后即可切换档案。", true);
+    return;
+  }
+  // Selecting a profile opens its conversation; the eye icon opens its plan.
+  S.collapsed = true;
+  go("#/chat/" + profile.profile_id);
+}
+
 function closeCurrentProfile() {
   if (!S.el.sheet) return;
   S.collapsed = true;
@@ -769,7 +784,14 @@ function drawSide() {
     ...S.profiles.map((p) => {
       const name = val(p, "beneficiary") || "未命名档案";
       const summary = profileSub(p);
-      return h("div", { class: "pf" + (p.profile_id === S.pid ? " on2" : "") + (S.busy ? " busy" : "") },
+      return h("div", { class: "pf" + (p.profile_id === S.pid ? " on2" : "") + (S.busy ? " busy" : ""),
+        tabindex: "0", role: "group", title: `切换到${name}的会话`,
+        onclick: () => selectProfile(p),
+        onkeydown: (event) => {
+          if (event.target !== event.currentTarget || !["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
+          selectProfile(p);
+        } },
         h("div", { class: "av2 sf" }, name.slice(-1)),
         h("div", { class: "pf-body" },
           h("b", { class: "sf", title: name }, name),
@@ -1017,7 +1039,7 @@ async function refreshAdviceTopics(topics) {
     drawChat({ keep: true });
     const completed = results.filter((result) => result.refreshed).map((result) => adviceTopicLabel(result.topic));
     toast(completed.length ? `${completed.join("、")}已重新生成`
-      : "还缺少必要信息，建议暂时保持待更新");
+      : "建议暂未更新，请稍后重试。", !completed.length);
   } catch (e) {
     toast(userFacingError(e, "建议暂未更新，请稍后重试。"), true);
   } finally {
@@ -1059,7 +1081,7 @@ function cardsFromAnswerSteps(steps) {
     const label = colon >= 0 ? line.slice(0, colon) : "";
     const value = colon >= 0 ? line.slice(colon + 1).trim() : "";
     const roles = { 主推荐: "primary", 初步选择: "primary", 场景搭配: "supplement",
-      附加推荐: "supplement", 其他选择: "alternative" };
+      附加推荐: "supplement", 其他选择: "alternative", 待核对选择: "alternative" };
     const network = line.match(/^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$/);
     if (roles[label]) cards.push({ product_name: value, role: roles[label], display_label: label });
     else if (network) cards.push({ product_name: network[1], role: "candidate" });
@@ -1149,8 +1171,8 @@ function creditCardCard(t) {
       others.length ? h("div", { class: "cc-others" },
         h("div", { class: "cc-section" }, hasPrimary ? "其他选择" : "一起比较"),
         others.slice(0, 2).map((card, index) => h("div", { class: "cc-secondary" },
-          cardAdviceOption(card, card.role === "supplement" ? (card.display_label || "场景搭配") :
-            hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`, false))),
+          cardAdviceOption(card, card.display_label ||
+            (card.role === "supplement" ? "场景搭配" : hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`), false))),
         others.length > 2 ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`) : null) : null,
       h("div", { class: "cc-apply" }, h("b", null, "申请前请确认"), h("span", null, condition)),
     ] : h("p", { class: "cc-empty" }, customerText(pl.summary, "目前还没有可展示的具体卡片。")));
@@ -1406,7 +1428,7 @@ function renderAnswerSteps(steps) {
         h("span", { class: "market-tag" }, "申请地区"),
         h("span", null, `${market}发行的卡`)));
     }
-    else if (/^(主推荐|初步选择|场景搭配|附加推荐|其他选择)：/.test(s)) {
+    else if (/^(主推荐|初步选择|场景搭配|附加推荐|其他选择|待核对选择)：/.test(s)) {
       const i = s.indexOf("：");
       box.append(h("div", { class: "card-name" },
         h("span", { class: "role-tag" }, s.slice(0, i)),

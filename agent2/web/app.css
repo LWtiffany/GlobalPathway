@@ -438,7 +438,8 @@ a{color:#8b7140}
 .side .pf-delete:hover,.side .pf-delete:focus-visible{opacity:1;background:rgba(142,27,36,.24);border-color:#b64d56;color:#f0b8b8}
 .side .pf-view:active,.side .pf-delete:active{transform:scale(.94)}
 .side .new{margin-top:12px;letter-spacing:.2px;font-weight:500}
-.side .pf{cursor:default}
+.side .pf{cursor:pointer}
+.side .pf:focus-visible{outline:2px solid #d6bd95;outline-offset:2px}
 .sheet .profile-sheet-close{white-space:nowrap}
 /* Size the plan cards to the profile drawer, not the browser viewport. */
 @container (max-width:800px){

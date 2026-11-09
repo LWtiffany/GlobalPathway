@@ -3,7 +3,9 @@
 import re
 
 from agent2.intent import (INTENTS, classify, is_account_only_card_mention,
-                           is_ambiguous_bank_card, is_investment_account)
+                           is_ambiguous_bank_card, is_card_usage_followup_answer,
+                           is_card_usage_profile_statement,
+                           is_investment_account)
 
 from .contracts import (Domain, DomainTask, IntentHit, OrchestrationInput, RoutingAudit,
                         TaskPlan)
@@ -59,6 +61,9 @@ class RuleTaskPlanner:
             )
 
         classified = classify(request.text, asked_fields=request.asked_fields)
+        card_usage_update = (is_card_usage_profile_statement(request.text)
+                             or is_card_usage_followup_answer(request.text,
+                                                              request.asked_fields))
         ambiguous_card = is_ambiguous_bank_card(request.text)
         account_only_card = is_account_only_card_mention(request.text)
         investment_account = is_investment_account(request.text)
@@ -78,6 +83,9 @@ class RuleTaskPlanner:
         unsupported: list[str] = []
 
         for intent, pattern in INTENTS:
+            if card_usage_update and intent in {
+                    "overseas_spending", "remittance_tuition", "remittance_living"}:
+                continue
             match = pattern.search(request.text)
             if not match:
                 continue
@@ -100,12 +108,21 @@ class RuleTaskPlanner:
                 intent=intent, source="rules", confidence=RULES_CONFIDENCE, evidence=evidence))
             matches.append((match.start(), intent, "rules", RULES_CONFIDENCE, evidence))
 
+        if card_usage_update and "credit_card" not in {item[1] for item in matches}:
+            rules_hits.append(IntentHit(
+                intent="credit_card", source="rules", confidence=RULES_CONFIDENCE,
+                evidence="消费场景"))
+            matches.append((0, "credit_card", "rules", RULES_CONFIDENCE, "消费场景"))
+
         # Only intents explicitly returned by understanding count as llm recoveries.
         ruled = {item[1] for item in matches}
         ruled_banking = ruled & banking_intents
         dropped_llm: list[str] = []
         llm_hits: list[IntentHit] = []
         for intent in dict.fromkeys(request.llm_intents):
+            if card_usage_update and intent in {
+                    "overseas_spending", "remittance_tuition", "remittance_living"}:
+                continue
             if intent not in INTENT_DOMAIN or intent in ruled:
                 continue
             # Account and credit-card are sibling domains. A model recovery may

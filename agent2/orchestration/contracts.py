@@ -191,6 +191,8 @@ class OrchestrationInput(FrozenModel):
     conversation_intents: list[str] = Field(default_factory=list)
     asked_fields: list[str] = Field(default_factory=list)
     input_mode: Literal["free_text", "structured_selection"] = "free_text"
+    # Recompute saved advice from the current Profile without starting another interview.
+    refresh_mode: bool = False
     understood_facts: dict[str, Any] = Field(default_factory=dict)
     understood_basis: dict[str, str] = Field(default_factory=dict)
     # Service may run understanding once for routing; workflow skips a second call.
