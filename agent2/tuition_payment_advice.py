@@ -132,7 +132,7 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
 
     result["eligible_for_card_pitch"] = True
     if accepts_card:
-        result["reason"] = "学校接受信用卡缴学费；按目录学费/应付额测算办卡净收益。"
+        result["reason"] = "学校接受信用卡缴学费；可以比较适用卡片的回馈、年费和支付成本。"
     else:
         result["reason"] = (
             "学校学生账户通常不收信用卡，但提供多币种/本地币通道（如 Flywire）。"
@@ -147,14 +147,21 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
     monthly = _monthly_spend_from_tuition(rate, payment, invoice_amount)
     scenarios = ["tuition"]
     # Foreign-currency tuition → also score overseas FX drag.
-    currency = (invoice_currency or (rate.currency if rate else "") or "").upper()
+    # Use the currency of the amount we actually normalised. An invoice
+    # currency without an invoice amount must not relabel the catalogue rate.
+    currency = ((invoice_currency or "") if invoice_amount is not None
+                else ((rate.currency or "") if rate else "")).upper()
     if currency and currency not in {"HKD", "CNY", "RMB"}:
         scenarios.append("overseas")
     result["scenarios"] = scenarios
 
     facts = dict(profile_facts or {})
-    if monthly is not None:
+    value_estimate_available = (monthly is not None and currency == "HKD"
+                                and tuition.school_country not in {"US", "UK"})
+    if value_estimate_available:
         facts["estimated_monthly_spend_hkd"] = str(monthly)
+    else:
+        facts.pop("estimated_monthly_spend_hkd", None)
     # Soft student hint improves student-card eligibility when profile is sparse.
     facts.setdefault("applicant_identity", "student")
     facts.setdefault("role", "student")
@@ -196,10 +203,14 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
             "issuing_bank": item.issuing_bank,
             "role": item.role,
             "matched_scenarios": list(item.matched_scenarios or []),
-            "estimated_annual_reward": float(item.estimated_annual_reward_hkd or 0),
-            "estimated_annual_fee": float(item.estimated_annual_fee_hkd or 0),
-            "estimated_annual_fx_cost": float(item.estimated_annual_fx_cost_hkd or 0),
-            "estimated_annual_net_value": float(item.estimated_annual_net_value_hkd or 0),
+            "estimated_annual_reward": (float(item.estimated_annual_reward_hkd or 0)
+                                        if value_estimate_available else None),
+            "estimated_annual_fee": (float(item.estimated_annual_fee_hkd or 0)
+                                     if value_estimate_available else None),
+            "estimated_annual_fx_cost": (float(item.estimated_annual_fx_cost_hkd or 0)
+                                        if value_estimate_available else None),
+            "estimated_annual_net_value": (float(item.estimated_annual_net_value_hkd or 0)
+                                          if value_estimate_available else None),
             "foreign_transaction_fee_rate": (
                 float(item.foreign_transaction_fee_rate)
                 if item.foreign_transaction_fee_rate is not None else None),
@@ -210,11 +221,12 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
             "currency_note": currency or None,
         })
     result["recommendations"] = picks
+    result["value_estimate_available"] = value_estimate_available
     if monthly is not None:
         result["limitations"].append(
-            f"测算月均刷卡基数约 {monthly}（由目录学费折算到月，"
-            f"{'币种 ' + currency + '，' if currency else ''}未做汇率换算）。"
-        )
+            f"目录学费折算月均约 {monthly} {currency or '（币种未确认）'}；"
+            + ("仅在港币学费场景用于港币回馈估算。" if value_estimate_available else
+               "没有可靠汇率，本次不展示港币净收益估算。"))
     if not picks:
         result["limitations"].append("有产品目录但无符合当前资格过滤的卡片。")
     return result
@@ -233,19 +245,17 @@ def card_steps(card_payload: dict[str, Any]) -> list[str]:
     recs = card_payload.get("recommendations") or []
     if not recs:
         return steps
-    steps.append(
-        "按库内回馈/年费/外币手续费测算，与学费场景较匹配的卡（仅供参考，申请以银行审批为准）："
-    )
+    steps.append("与学费支付场景相关的卡片供比较；申请仍以银行审批为准：")
     for rec in recs:
         fx = rec.get("foreign_transaction_fee_rate")
         fx_txt = f"外币手续费约 {float(fx)*100:.2f}%" if fx is not None else "外币手续费未收录"
-        matched = "、".join(rec.get("matched_scenarios") or []) or "general"
+        matched = "、".join(rec.get("matched_scenarios") or []) or "一般消费"
+        value = (f"年净收益约 {rec.get('estimated_annual_net_value')} 港元；"
+                 if card_payload.get("value_estimate_available") else "")
         steps.append(
-            f"· [{rec.get('role')}] {rec.get('product_name')}（{rec.get('issuing_bank')}）："
-            f"年净收益约 {rec.get('estimated_annual_net_value')} "
-            f"（回馈 {rec.get('estimated_annual_reward')} − 年费 {rec.get('estimated_annual_fee')} "
-            f"− 外币成本 {rec.get('estimated_annual_fx_cost')}；匹配 {matched}；{fx_txt}）"
-            + (f"。官网：{rec['official_url']}" if rec.get("official_url") else "")
+            f"· {rec.get('product_name')}（{rec.get('issuing_bank')}）："
+            f"{value}适用场景 {matched}；{fx_txt}。"
+            + (f"官网：{rec['official_url']}" if rec.get("official_url") else "")
         )
     return steps
 
