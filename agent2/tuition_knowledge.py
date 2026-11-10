@@ -24,14 +24,54 @@ def _looks_like_id(value: str | None) -> bool:
 # fee_status values allowed by TUITION check constraint → Chinese label for display.
 # Keys are schema enums, not school-specific rates.
 FEE_STATUS_ZH = {
-    "home": "Home",
-    "international": "International / Overseas",
-    "local": "Local",
-    "non_local": "Non-local",
-    "in_state": "In-state",
-    "out_of_state": "Out-of-state",
-    "all": "All fee statuses",
+    "home": "本地生",
+    "international": "国际生",
+    "local": "本地生",
+    "non_local": "非本地生",
+    "in_state": "州内",
+    "out_of_state": "州外",
+    "all": "统一费率",
 }
+
+FEE_BASIS_ZH = {
+    "per_year": "全年",
+    "per_term": "每学期",
+    "per_quarter": "每学季",
+    "monthly": "每月",
+    "total": "整个项目",
+    "per_credit": "每学分",
+    "other": "",
+}
+
+STUDY_MODE_ZH = {
+    "full_time": "全日制",
+    "part_time": "兼读制",
+    "full-time": "全日制",
+    "part-time": "兼读制",
+}
+
+
+def _format_money(amount, currency: str | None) -> str:
+    try:
+        value = Decimal(str(amount))
+    except Exception:
+        return f"{amount} {currency or ''}".strip()
+    if value == value.to_integral_value():
+        rendered = f"{int(value):,}"
+    else:
+        rendered = f"{value:,.2f}"
+    cur = (currency or "").upper()
+    if cur == "USD":
+        return f"{rendered} 美元"
+    if cur == "GBP":
+        return f"{rendered} 英镑"
+    if cur == "HKD":
+        return f"{rendered} 港元"
+    if cur in {"CNY", "RMB"}:
+        return f"{rendered} 人民币"
+    if cur == "EUR":
+        return f"{rendered} 欧元"
+    return f"{rendered} {cur}".strip()
 
 
 @dataclass(frozen=True)
@@ -517,25 +557,29 @@ def resolve_tuition(*, school: str | None, course: str | None = None,
 
 def format_rate_line(rate: TuitionRate, *, school: str | None = None,
                      program: str | None = None) -> str:
-    """One human-readable line from a DB rate row (no invented numbers)."""
+    """One human-readable tuition line (no invented numbers, no raw DB enums)."""
     bits = []
     if school:
         bits.append(school)
     if program:
         bits.append(program)
     if rate.academic_year:
-        bits.append(rate.academic_year)
+        bits.append(f"{rate.academic_year} 学年")
     status = FEE_STATUS_ZH.get(rate.fee_status or "", rate.fee_status)
     if status:
         bits.append(status)
-    if rate.rate_label:
+    mode = STUDY_MODE_ZH.get((rate.study_mode or "").lower(), rate.study_mode)
+    if mode:
+        bits.append(mode)
+    if rate.rate_label and str(rate.rate_label) not in bits:
         bits.append(str(rate.rate_label))
-    if rate.study_mode:
-        bits.append(str(rate.study_mode))
-    head = " · ".join(bits) if bits else "公布学费"
-    basis = rate.fee_basis or "fee"
-    est = "（目录估算，待核对官方）" if rate.is_estimate else ""
-    return f"{head}：{rate.amount} {rate.currency}（{basis}）{est}"
+    head = " · ".join(bits) if bits else "学费参考"
+    basis = FEE_BASIS_ZH.get(rate.fee_basis or "", rate.fee_basis or "")
+    money = _format_money(rate.amount, rate.currency)
+    if basis:
+        money = f"{basis} {money}"
+    est = "（估算，请以缴费通知为准）" if rate.is_estimate else ""
+    return f"{head}：{money}{est}"
 
 
 def compare_to_quota(rates: list[TuitionRate], *, quota_amount, quota_currency: str | None
@@ -552,16 +596,18 @@ def compare_to_quota(rates: list[TuitionRate], *, quota_amount, quota_currency: 
     if not same:
         currencies = sorted({r.currency for r in rates if r.currency})
         if currencies:
-            return (f"目录学费币种为 {'/'.join(currencies)}，与便利化额度币种 {quota_currency} 不同；"
-                    "是否超额需按购汇当日折算后与银行确认，本回答不估算汇率。")
+            return (f"学费参考币种为 {'/'.join(currencies)}，与便利化额度币种 {quota_currency} 不同；"
+                    "是否超额请按购汇当日折算后向银行确认（此处不做汇率估算）。")
         return None
     # Use the largest same-currency official amount as the conservative remittance planning figure.
     top = max(same, key=lambda r: r.amount)
+    money = _format_money(top.amount, top.currency)
+    quota_txt = _format_money(quota, quota_currency)
     if top.amount > quota:
-        return (f"按目录金额 {top.amount} {top.currency}，已高于年度便利化额度 "
-                f"{quota} {quota_currency}；超额度办理需按银行要求准备学费证明等材料。")
-    return (f"按目录金额 {top.amount} {top.currency}，未超过年度便利化额度 "
-            f"{quota} {quota_currency}（仍以银行审核与缴费通知书为准）。")
+        return (f"参考学费约 {money}，已高于年度便利化额度约 {quota_txt}；"
+                "超额度办理时请按银行要求准备学费证明等材料。")
+    return (f"参考学费约 {money}，未超过年度便利化额度约 {quota_txt}"
+            "（仍以银行审核与缴费通知书为准）。")
 
 
 TuitionResolver = Callable[..., TuitionContext]

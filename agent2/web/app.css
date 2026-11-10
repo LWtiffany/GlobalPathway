@@ -103,6 +103,8 @@ a{color:#8b7140}
 .cc-meta{font-size:10px;color:#a59c8a;line-height:1.5;margin-top:11px;border-top:1px solid #f1ece3;padding-top:8px}
 @media(max-width:1600px){.plan{grid-template-columns:repeat(3,minmax(0,1fr))}.credit-advice{grid-column:1/-1;border-top:1px solid #ece6db}}
 @media(max-width:900px){.plan{grid-template-columns:1fr}.p{border-right:0;border-bottom:1px solid #ece6db}.p:last-child{border-bottom:0}.credit-advice{grid-column:auto}}
+.text-link{color:#3d5a80;text-decoration:underline;text-underline-offset:2px;word-break:break-all}
+.text-link:hover{color:#1a3a7a}
 .cite-mark{font-size:10px;line-height:1;color:#5b6b8c;text-decoration:none;margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(91,107,140,.1);vertical-align:super;font-variant-numeric:tabular-nums}
 .cite-mark:hover{color:#1a3a7a;background:rgba(26,58,122,.12)}
 .cite-ref{font-size:12px;line-height:1.45;color:#3d5a80;text-decoration:underline;text-underline-offset:2px}

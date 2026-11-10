@@ -1,4 +1,4 @@
-"""Compose tuition payment + multi-currency + card-value steps for remittance advice.
+"""Compose tuition payment + multi-currency + card-value advice for remittance.
 
 Uses TUITION_PAYMENT_DETAIL and CREDIT_CARD catalog only — no invented FX/school fees.
 """
@@ -12,16 +12,39 @@ from typing import Any
 from agent2.orchestration.domains.credit_card_engine import recommend
 from agent2.orchestration.domains.credit_card_repository import (
     CreditCardRepositoryError, RdsCreditCardRepository)
-from agent2.tuition_knowledge import PaymentDetail, TuitionContext, TuitionRate
+from agent2.tuition_knowledge import (PaymentDetail, TuitionContext, TuitionRate,
+                                      _format_money)
 
 BILLING_CYCLE_ZH = {
-    "per_year_advance": "按学年预付（通常一次付清全年）",
-    "per_term": "按学期/学期账单",
-    "per_quarter": "按学季账单",
-    "monthly": "按月账单",
-    "installment": "分期缴纳",
-    "other": "按学校/项目另行规定",
+    "per_year_advance": "通常按学年预付（一次缴清全年）",
+    "per_term": "通常按学期账单缴费",
+    "per_quarter": "通常按学季账单缴费",
+    "monthly": "通常按月账单缴费",
+    "installment": "通常可分期缴纳",
+    "other": "以学校/项目缴费安排为准",
 }
+
+PAYMENT_METHOD_ZH = {
+    "axess_echeck": "Axess 电子支票",
+    "wire_flywire": "Flywire 国际汇款",
+    "wire_convera": "Convera 国际汇款",
+    "online_bank": "网上银行转账",
+    "check_usd": "美元支票",
+    "wire_bank": "银行电汇",
+    "payroll_deduction": "工资代扣",
+    "529": "529 教育储蓄计划",
+    "flywire": "Flywire",
+    "convera": "Convera",
+    "credit_card": "信用卡",
+    "debit_card": "借记卡",
+    "ach": "ACH 转账",
+    "bank_transfer": "银行转账",
+}
+
+
+def _method_label(code: str) -> str:
+    key = (code or "").strip()
+    return PAYMENT_METHOD_ZH.get(key, PAYMENT_METHOD_ZH.get(key.lower(), key.replace("_", " ")))
 
 
 def _primary_rate(rates: list[TuitionRate]) -> TuitionRate | None:
@@ -40,30 +63,35 @@ def _primary_rate(rates: list[TuitionRate]) -> TuitionRate | None:
 def payment_steps(payment: PaymentDetail | None) -> list[str]:
     if payment is None:
         return []
-    steps = [
-        f"缴费节奏：{BILLING_CYCLE_ZH.get(payment.billing_cycle, payment.billing_cycle)}。"
-        + (f"分期约 {payment.installment_count} 次（{payment.installment_period}）。"
-           if payment.installment_count else ""),
-    ]
+    steps: list[str] = []
+    cycle = BILLING_CYCLE_ZH.get(payment.billing_cycle, payment.billing_cycle)
+    if payment.installment_count:
+        period = {"month": "按月", "term": "按学期", "year": "按年"}.get(
+            (payment.installment_period or "").lower(), payment.installment_period or "")
+        suffix = f"（{period}）" if period else ""
+        steps.append(f"{cycle}；通常约分 {payment.installment_count} 次缴纳{suffix}。")
+    else:
+        steps.append(f"{cycle}。")
     if payment.due_rule:
-        steps.append(f"截止日期规则：{payment.due_rule}")
+        steps.append(f"账单截止：{payment.due_rule}")
     if payment.payee:
         steps.append(f"收款方：{payment.payee}。")
     if payment.portal_name or payment.portal_url:
         portal = payment.portal_name or "学校缴费门户"
         if payment.portal_url:
-            steps.append(f"办理入口：{portal}（{payment.portal_url}）。")
+            steps.append(f"缴费入口：{portal}（{payment.portal_url}）。")
         else:
-            steps.append(f"办理入口：{portal}。")
+            steps.append(f"缴费入口：{portal}。")
     if payment.payment_methods:
-        steps.append("官方列出的支付方式：" + "、".join(payment.payment_methods) + "。")
+        labels = [_method_label(m) for m in payment.payment_methods]
+        steps.append("可选支付方式：" + "、".join(labels) + "。")
     if payment.accepts_credit_card == 0:
-        steps.append("学校说明：学生账户学费支付不接受信用卡/借记卡。")
+        steps.append("学生账户通常不接受信用卡/借记卡直接缴费。")
     elif payment.accepts_credit_card == 1:
-        steps.append("学校说明：可用信用卡支付学费（以缴费页面当日选项为准）。")
+        steps.append("学生账户可用信用卡缴费（以缴费页当日选项为准）。")
     if payment.supports_multi_currency == 1:
-        channels = "、".join(payment.multi_currency_channels) or "国际支付通道"
-        steps.append(f"支持多币种/本地币支付通道：{channels}。")
+        channels = "、".join(_method_label(c) for c in payment.multi_currency_channels) or "国际支付通道"
+        steps.append(f"如需本地币/多币种支付，可走：{channels}。")
         if payment.multi_currency_note:
             steps.append(payment.multi_currency_note)
     if payment.summary:
@@ -121,26 +149,25 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
         "limitations": [],
     }
     if payment is None:
-        result["reason"] = "无缴费方式资料，暂不测算信用卡。"
+        result["reason"] = "暂无学校缴费方式资料，先按学校账单上的汇款/转账路径办理。"
         return result
 
     multi = payment.supports_multi_currency == 1
     accepts_card = payment.accepts_credit_card == 1
     if not multi and not accepts_card:
-        result["reason"] = "当前资料未显示多币种通道或信用卡缴费，学费路径以学校列出的银行/电汇等方式为准。"
+        result["reason"] = "学校当前资料未显示信用卡或多币种刷卡通道，建议优先按账单上的电汇/银行转账办理。"
         return result
 
     result["eligible_for_card_pitch"] = True
     if accepts_card:
-        result["reason"] = "学校接受信用卡缴学费；按目录学费/应付额测算办卡净收益。"
+        result["reason"] = "学校接受信用卡缴学费时，可参考下列卡片的回馈与费用测算。"
     else:
         result["reason"] = (
-            "学校学生账户通常不收信用卡，但提供多币种/本地币通道（如 Flywire）。"
-            "下列测算适用于：通道内可用卡支付的情形，或境外日常消费；"
-            "Flywire 本地银行转账本身不经过信用卡。"
+            "学生账户一般不直接收信用卡；若走 Flywire 等通道且当日可选刷卡，"
+            "或用于境外日常消费，可参考下列测算。本地银行转账通常不经信用卡。"
         )
         result["limitations"].append(
-            "未计入 Flywire/Convera 平台加点或学校额外刷卡手续费（目录中无该费率则不估算）。"
+            "未计入支付平台加点或学校额外刷卡费（资料未收录则不做估算）。"
         )
 
     rate = _primary_rate(tuition.rates)
@@ -211,9 +238,9 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
         })
     result["recommendations"] = picks
     if monthly is not None:
+        money = _format_money(monthly, currency or None)
         result["limitations"].append(
-            f"测算月均刷卡基数约 {monthly}（由目录学费折算到月，"
-            f"{'币种 ' + currency + '，' if currency else ''}未做汇率换算）。"
+            f"测算假设月均刷卡约 {money}（由参考学费折算到月，未做汇率换算）。"
         )
     if not picks:
         result["limitations"].append("有产品目录但无符合当前资格过滤的卡片。")
@@ -233,27 +260,30 @@ def card_steps(card_payload: dict[str, Any]) -> list[str]:
     recs = card_payload.get("recommendations") or []
     if not recs:
         return steps
-    steps.append(
-        "按库内回馈/年费/外币手续费测算，与学费场景较匹配的卡（仅供参考，申请以银行审批为准）："
-    )
+    steps.append("可参考的卡片（测算仅供参考，申请以银行审批为准）：")
+    role_zh = {"primary": "首选", "alternative": "备选", "supplement": "补充"}
     for rec in recs:
         fx = rec.get("foreign_transaction_fee_rate")
         fx_txt = f"外币手续费约 {float(fx)*100:.2f}%" if fx is not None else "外币手续费未收录"
-        matched = "、".join(rec.get("matched_scenarios") or []) or "general"
-        steps.append(
-            f"· [{rec.get('role')}] {rec.get('product_name')}（{rec.get('issuing_bank')}）："
-            f"年净收益约 {rec.get('estimated_annual_net_value')} "
-            f"（回馈 {rec.get('estimated_annual_reward')} − 年费 {rec.get('estimated_annual_fee')} "
-            f"− 外币成本 {rec.get('estimated_annual_fx_cost')}；匹配 {matched}；{fx_txt}）"
-            + (f"。官网：{rec['official_url']}" if rec.get("official_url") else "")
+        label = role_zh.get(rec.get("role") or "", rec.get("role") or "")
+        net = rec.get("estimated_annual_net_value")
+        reward = rec.get("estimated_annual_reward")
+        fee = rec.get("estimated_annual_fee")
+        fx_cost = rec.get("estimated_annual_fx_cost")
+        line = (
+            f"· {label} {rec.get('product_name')}（{rec.get('issuing_bank')}）："
+            f"年净收益约 {net}（回馈 {reward} − 年费 {fee} − 外币成本 {fx_cost}；{fx_txt}）"
         )
+        if rec.get("official_url"):
+            line += f"。详情：{rec['official_url']}"
+        steps.append(line)
     return steps
 
 
 def enrich_tuition_advice_steps(tuition: TuitionContext, *, invoice_amount=None,
                                 invoice_currency: str | None = None,
                                 profile_facts: dict | None = None) -> tuple[list[str], dict]:
-    """Return extra answer steps + payload for payment/card enrichment."""
+    """Return school-payment action steps + payload (payment/card enrichment)."""
     steps: list[str] = []
     steps.extend(payment_steps(tuition.payment))
     cards = recommend_tuition_cards(

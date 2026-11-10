@@ -650,12 +650,13 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
         state = "field_conflict"
         explanation = "；".join(f"{label(c)}：档案为「{o}」，本次消息为「{n}」" for c, o, n in conflicts)
     elif missing:
+        # Customer-facing ask lives in follow_up_questions only — no status preamble.
         state = "needs_input"
-        explanation = "作确定结论前还需确认：" + "、".join(label(c) for c in missing)
+        explanation = ""
     else:
         state = "ready"
-        explanation = ("主题必需条件已齐全" + (
-            "；部分材料取决于：" + "、".join(label(c) for c in pending) if pending else ""))
+        # Pending requirement conditions are asked via questions; keep explanation empty.
+        explanation = ""
     missing_fields = list(dict.fromkeys(
         missing + [c for c, _, _ in invalid if c in rule.must_have]))
     return Assessment(

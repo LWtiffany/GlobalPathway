@@ -195,7 +195,37 @@ function val(profile, code) {
 }
 
 function safeLink(url) {
-  return /^https?:\/\//i.test(url || "") ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, url) : "—";
+  return /^https?:\/\//i.test(url || "") ? h("a", { class: "text-link", href: url, target: "_blank", rel: "noopener noreferrer" }, url) : "—";
+}
+
+/** Turn http(s) URLs inside plain text into clickable anchors (keeps surrounding copy). */
+function linkify(text) {
+  const s = String(text ?? "");
+  if (!s) return [""];
+  // Stop before whitespace, quotes, and CJK / full-width punctuation so
+  // 「https://a.com；https://b.com」and 「（https://a.com）。」split correctly.
+  const re = /https?:\/\/[^\s<>"'`\u3000-\u303F\u4E00-\u9FFF\uFF00-\uFFEF）】》」』]+/gi;
+  const out = [];
+  let last = 0;
+  let match;
+  while ((match = re.exec(s))) {
+    let raw = match[0];
+    let trail = "";
+    const trailMatch = raw.match(/[),.;:!?]+$/);
+    if (trailMatch) {
+      trail = trailMatch[0];
+      raw = raw.slice(0, -trail.length);
+    }
+    if (!/^https?:\/\//i.test(raw)) continue;
+    if (match.index > last) out.push(s.slice(last, match.index));
+    out.push(h("a", {
+      class: "text-link", href: raw, target: "_blank", rel: "noopener noreferrer",
+    }, raw));
+    if (trail) out.push(trail);
+    last = match.index + match[0].length;
+  }
+  if (last < s.length) out.push(s.slice(last));
+  return out.length ? out : [s];
 }
 
 function toast(msg, bad) {
@@ -1119,11 +1149,11 @@ function renderAnswerSteps(steps) {
   if (multi.length && steps.some((s) => String(s).startsWith("## "))) {
     return multi.map((sec) => h("div", { class: "multi-sec" },
       h("div", { class: "sub-h" }, sec.title),
-      ...sec.lines.map((line) => h("p", null, line))));
+      ...sec.lines.map((line) => h("p", null, ...linkify(line)))));
   }
   if (!isCardRecommendationSteps(steps)) {
     return [h("div", { class: "sub-h" }, "给您的建议"),
-      h("ol", { class: "lim" }, steps.map((s) => h("li", null, s)))];
+      h("ol", { class: "lim" }, steps.map((s) => h("li", null, ...linkify(s))))];
   }
   // Card copy is not a procedure — do not number section titles as 1. 2. 3.
   const box = h("div", { class: "card-rec" });
@@ -1138,16 +1168,16 @@ function renderAnswerSteps(steps) {
       const i = s.indexOf("：");
       box.append(h("div", { class: "card-name" },
         h("span", { class: "role-tag" }, s.slice(0, i)),
-        h("span", null, s.slice(i + 1))));
+        h("span", null, ...linkify(s.slice(i + 1)))));
     }
     else if (/^(推荐理由|为什么适合你|为什么适合您|年费|主要权益|您可享|你可享|申请限制|申请前提)：/.test(s)) {
       const i = s.indexOf("：");
       box.append(h("div", { class: `card-detail ${/^(?:推荐理由|为什么适合你|为什么适合您)/.test(s) ? "reason" : ""}` },
-        h("span", { class: "k" }, s.slice(0, i + 1)), s.slice(i + 1)));
-    } else if (s.startsWith("免年费选择：")) box.append(h("div", { class: "card-alt" }, s));
+        h("span", { class: "k" }, s.slice(0, i + 1)), ...linkify(s.slice(i + 1))));
+    } else if (s.startsWith("免年费选择：")) box.append(h("div", { class: "card-alt" }, ...linkify(s)));
     else if (/（(?:Visa|Mastercard|UnionPay|银联卡|威士卡|万事达卡)/.test(s) || /（[A-Za-z]+）$/.test(s)) {
-      box.append(h("div", { class: "card-name" }, s));
-    } else box.append(h("div", { class: "card-note" }, s));
+      box.append(h("div", { class: "card-name" }, ...linkify(s)));
+    } else box.append(h("div", { class: "card-note" }, ...linkify(s)));
   }
   const preview = steps.some((s) => s.startsWith("提前了解："));
   const compare = steps.some((s) => s.startsWith("对比参考："));
@@ -1177,7 +1207,7 @@ function answerBubble(b, latest) {
     // Multi-intent: show each domain's short summary before the first follow-up.
     const safeSteps = visibleOutputLines(b.answer?.steps || []);
     if (b.answer?.summary && !isInternalOutput(b.answer.summary)) {
-      kids.push(h("p", null, b.answer.summary));
+      kids.push(h("p", null, ...linkify(b.answer.summary)));
     }
     if (safeSteps.length) kids.push(...renderAnswerSteps(safeSteps));
     kids.push(followUp({ ...question,
@@ -1214,7 +1244,7 @@ function answerBubble(b, latest) {
   const multi = multiDomainSections(stepList);
   const cardAnswer = isCardRecommendationSteps(stepList);
   if (!cardAnswer) {
-    kids.push(h("p", null, safeSummary));
+    kids.push(h("p", null, ...linkify(safeSummary)));
   }
   // Multi-intent answers already nest domain copy under ## sections; keep materials
   // out of the top so bank docs do not look like a free-floating visa list.
@@ -1234,18 +1264,18 @@ function answerBubble(b, latest) {
   }
   if ((b.answer.limitations || []).length) {
     const limitations = visibleOutputLines(b.answer.limitations);
-    if (limitations.length) kids.push(h("div", { class: "sub-h" }, "温馨提示"), h("ul", { class: "lim" }, limitations.map((s) => h("li", null, s))));
+    if (limitations.length) kids.push(h("div", { class: "sub-h" }, "温馨提示"), h("ul", { class: "lim" }, limitations.map((s) => h("li", null, ...linkify(s)))));
   }
   if (b.status !== "answered" && (b.next_actions || []).length) {
     const nextActions = visibleOutputLines(b.next_actions);
-    if (nextActions.length) kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, nextActions.map((s) => h("li", null, s))));
+    if (nextActions.length) kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, nextActions.map((s) => h("li", null, ...linkify(s)))));
   }
   // Hide internal/debug notices (routing audit JSON, etc.) from the customer UI.
   const HIDDEN_NOTICE = new Set([
     "intent_routing", "llm_routing_low_confidence", "unsupported_intent", "partial_out_of_scope",
   ]);
   (b.notices || []).filter((n) => n && !HIDDEN_NOTICE.has(n.code) && !isInternalOutput(n.message) && !(n.message || "").trim().startsWith("{"))
-    .forEach((n) => kids.push(h("div", { class: "notice" }, n.message)));
+    .forEach((n) => kids.push(h("div", { class: "notice" }, ...linkify(n.message))));
   const open = new Set(S.proposals.map((p) => p.proposal_id));
   // Only propose fields the UI knows how to label (registered profile fields).
   const profileProposals = (b.profile_change_proposals || [])
@@ -1716,7 +1746,7 @@ async function renderReport(pid) {
     if (!visa) return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 未开始`)];
     const pl = visa.payload;
     return [h("h3", { class: "sf" }, `${t.no} ${t.title} · v${visa.version}（${fmtFull(visa.updated_at)}）`),
-      h("p", null, pl.summary),
+      h("p", null, ...linkify(pl.summary || "")),
       h("ol", null, (pl.materials || []).map((m) => h("li", null, m.name_en ? `${m.name_zh}（${m.name_en}）` : m.name_zh,
         h("span", { class: "tagx " + m.applicability }, TAG[m.applicability]),
         cn[m.citation_id] ? ` [${cn[m.citation_id]}]` : "",

@@ -31,79 +31,170 @@ _PURPOSE = {
 }
 
 
-def _limitations(*, mode: str, destination: str, tuition: TuitionContext | None) -> list[str]:
+def _fx_limitations(*, mode: str, destination: str) -> list[str]:
     notes = [
-        "依据为中国内地个人留学购汇工作底稿中的政策摘录，办理以银行/外汇局当时规则为准。",
+        "依据为中国内地个人留学购汇政策摘录，办理以银行/外汇局当时规则为准。",
         "不含实时汇率、手续费或可成交报价。",
         f"收款地按{destination}整理；若汇款人非中国内地居民，规则可能不同。",
     ]
     if mode == "overseas":
         notes.append("境外消费另受发卡行与当地支付网络规则约束，本回答只覆盖购汇额度与用途材料要点。")
-    if tuition and tuition.rates:
+    return notes
+
+
+def _payment_limitations(tuition: TuitionContext | None) -> list[str]:
+    notes: list[str] = []
+    if not tuition:
+        return notes
+    if tuition.rates:
+        notes.append("学费金额请以学校缴费通知书/账单为准；下列为学校公布的参考数字。")
         urls = sorted({r.source_url for r in tuition.rates if r.source_url})
-        notes.append("学费数字来自工作库中的学校公布学费目录；实际应缴以学校缴费通知书/账单为准。")
         if urls:
-            notes.append("学费目录来源：" + "；".join(urls[:3]))
-        if tuition.note:
-            notes.append(tuition.note)
-    elif tuition and tuition.note:
+            notes.append("参考来源：" + "；".join(urls[:3]))
+    if tuition.note and "未找到" not in tuition.note and "工作库" not in tuition.note:
+        # Keep useful programme cautions; drop agent/meta wording.
         notes.append(tuition.note)
     return notes
 
 
-def _tuition_steps(tuition: TuitionContext, *, invoice_amount, invoice_currency: str | None,
-                   quota_amount, quota_currency: str | None) -> list[str]:
+def _tuition_reference_steps(tuition: TuitionContext, *, invoice_amount,
+                             invoice_currency: str | None) -> list[str]:
+    """School-facing tuition figures and invoice check — no FX/quota wording."""
     steps: list[str] = []
     if tuition.match in {"ambiguous_school", "ambiguous_program", "not_found", "none"}:
         return steps
     if tuition.school_name and tuition.rates:
         where = tuition.school_name
         if tuition.program_name:
-            where = f"{tuition.school_name} / {tuition.program_name}"
-        # Prefer distinct latest academic_year rows; keep all fee_status variants for that year.
+            where = f"{tuition.school_name}（{tuition.program_name}）"
         years = [r.academic_year for r in tuition.rates if r.academic_year]
         focus_year = years[0] if years else None
         shown = [r for r in tuition.rates
                  if focus_year is None or r.academic_year == focus_year][:6]
-        steps.append(
-            f"工作库中「{where}」公布学费如下（请与缴费通知书核对）："
-        )
+        steps.append(f"{where} 学费参考（请与缴费通知核对）：")
         for rate in shown:
-            steps.append("· " + format_rate_line(rate))
+            steps.append(format_rate_line(rate))
     if invoice_amount is not None:
+        from agent2.tuition_knowledge import _format_money
         cur = invoice_currency or (tuition.rates[0].currency if tuition.rates else "")
         steps.append(
-            f"您已提供的应付金额为 {invoice_amount} {cur}；汇款金额以学校缴费通知书为准，"
-            "目录价仅作对照。"
+            f"您提供的应付金额为 {_format_money(invoice_amount, cur)}；"
+            "实际汇出请以缴费通知书为准。"
         )
-    # Prefer invoice amount when currency aligns with FX quota; else catalog rates.
+    return steps
+
+
+def _quota_steps(*, tuition: TuitionContext | None, invoice_amount, invoice_currency,
+                 quota_amount, quota_currency: str | None) -> list[str]:
+    steps: list[str] = []
     compared = False
     if invoice_amount is not None and invoice_currency and quota_currency \
             and str(invoice_currency).upper() == str(quota_currency).upper() \
             and quota_amount is not None:
         try:
             from decimal import Decimal
+            from agent2.tuition_knowledge import _format_money
             inv = Decimal(str(invoice_amount))
             quota = Decimal(str(quota_amount))
+            inv_txt = _format_money(inv, invoice_currency)
+            quota_txt = _format_money(quota, quota_currency)
             if inv > quota:
                 steps.append(
-                    f"您提供的应付金额 {inv} {invoice_currency} 高于年度便利化额度 "
-                    f"{quota} {quota_currency}，超额度需按银行要求补充学费证明等材料。"
+                    f"应付金额约 {inv_txt}，高于年度便利化额度约 {quota_txt}；"
+                    "超额度请按银行要求补充学费证明等材料。"
                 )
             else:
                 steps.append(
-                    f"您提供的应付金额 {inv} {invoice_currency} 未超过年度便利化额度 "
-                    f"{quota} {quota_currency}（仍以银行审核为准）。"
+                    f"应付金额约 {inv_txt}，未超过年度便利化额度约 {quota_txt}"
+                    "（仍以银行审核为准）。"
                 )
             compared = True
         except Exception:
             compared = False
-    if not compared and tuition.rates:
+    if not compared and tuition and tuition.rates:
         cmp = compare_to_quota(
             tuition.rates, quota_amount=quota_amount, quota_currency=quota_currency)
         if cmp:
             steps.append(cmp)
     return steps
+
+
+def _school_payment_body(*, place: str, tuition: TuitionContext,
+                         invoice_amount=None, invoice_currency: str | None = None,
+                         profile_facts: dict | None = None
+                         ) -> tuple[AnswerBody | None, dict]:
+    """Action-oriented school billing / payment bubble (no FX policy text)."""
+    if not tuition.school_name:
+        return None, {}
+    target = tuition.school_name
+    if tuition.program_name and tuition.match in {"exact_program", "school_wide", "school_only"}:
+        target = f"{tuition.school_name}（{tuition.program_name}）"
+    steps = [
+        f"向{target}（{place}）缴学费前，先核对缴费通知书金额与学校收款账户。",
+        *_tuition_reference_steps(
+            tuition, invoice_amount=invoice_amount, invoice_currency=invoice_currency),
+    ]
+    pay_steps, enrich_payload = enrich_tuition_advice_steps(
+        tuition, invoice_amount=invoice_amount, invoice_currency=invoice_currency,
+        profile_facts=profile_facts or {})
+    steps.extend(pay_steps)
+    steps.append("缴费完成后按学校要求回传付款证明，并自行留存凭证。")
+    body = AnswerBody(
+        summary=f"缴{target}学费：按学校账单与官方缴费入口办理。",
+        steps=[s for s in steps if s],
+        limitations=_payment_limitations(tuition),
+    )
+    return body, enrich_payload
+
+
+def _fx_remittance_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
+                        materials: list[Material],
+                        tuition: TuitionContext | None = None,
+                        invoice_amount=None, invoice_currency: str | None = None
+                        ) -> AnswerBody:
+    """China mainland FX / remittance action items only."""
+    amount = facts.get("annual_quota_amount")
+    currency = facts.get("annual_quota_currency") or "USD"
+    remitter = facts.get("remitter_relation")
+    over = facts.get("over_quota_allowed")
+    from agent2.tuition_knowledge import _format_money
+    if amount is not None:
+        quota_line = f"中国内地个人年度便利化购汇额度约为等值 {_format_money(amount, currency)}。"
+    else:
+        quota_line = "请按银行公示的年度便利化购汇额度办理。"
+
+    steps = [
+        f"从中国内地购汇并汇往{place}支付{purpose_zh}时，先确认汇款用途与收款信息。",
+        quota_line + (f"汇款人关系要求：{remitter}。" if remitter else ""),
+        *_quota_steps(
+            tuition=tuition, invoice_amount=invoice_amount,
+            invoice_currency=invoice_currency,
+            quota_amount=amount, quota_currency=currency),
+    ]
+    if over:
+        steps.append("若超过年度便利化额度，按超额度要求补充学费/在读/护照签证等证明后再办理。")
+    elif over is False:
+        steps.append("额度内购汇按便利化流程办理；超额度政策未在当前资料中确认，请向办理银行核实。")
+    else:
+        steps.append("是否允许超额购汇以办理银行当时审核要求为准。")
+    required = [m.name_zh for m in materials if m.applicability == "required"][:4]
+    if required:
+        steps.append("常用材料：" + "、".join(required) + "。")
+    steps.append("办妥后保留购汇/汇款凭证，便于学校核验与后续查账。")
+
+    if tuition and tuition.school_name and purpose_zh == "学费" and mode != "overseas":
+        summary = f"汇往{place}支付{tuition.school_name}学费：购汇额度、材料与超额办理要点。"
+    elif mode == "overseas":
+        summary = f"赴{place}留学相关的购汇与境外消费准备要点。"
+    else:
+        summary = f"汇往{place}的{purpose_zh}：购汇额度与材料准备要点。"
+
+    return AnswerBody(
+        summary=summary,
+        steps=[s for s in steps if s],
+        materials=materials,
+        limitations=_fx_limitations(mode=mode, destination=place),
+    )
 
 
 def _deterministic_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
@@ -112,74 +203,28 @@ def _deterministic_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
                         invoice_amount=None, invoice_currency: str | None = None,
                         profile_facts: dict | None = None
                         ) -> tuple[AnswerBody, dict]:
-    amount = facts.get("annual_quota_amount")
-    currency = facts.get("annual_quota_currency") or "USD"
-    remitter = facts.get("remitter_relation") or "按规定的汇款人关系"
-    over = facts.get("over_quota_allowed")
-    quota_line = (
-        f"中国内地个人年度便利化购汇额度约为等值 {amount} {currency}。"
-        if amount is not None else
-        "请按银行公示的年度便利化购汇额度办理。"
-    )
-
-    tuition_bits = _tuition_steps(
-        tuition or TuitionContext(),
-        invoice_amount=invoice_amount,
-        invoice_currency=invoice_currency,
-        quota_amount=amount,
-        quota_currency=currency,
-    ) if tuition else []
-
-    if tuition and tuition.school_name and mode != "overseas" and purpose_zh == "学费":
-        target = tuition.school_name
-        if tuition.program_name and tuition.match in {"exact_program", "school_wide"}:
-            target = f"{tuition.school_name}（{tuition.program_name}）"
-        steps = [
-            f"确认向{target}（{place}）支付{purpose_zh}，并核对学校收款账户与缴费通知书。",
-            *tuition_bits,
-            quota_line + (f"汇款人关系要求：{remitter}。" if remitter else ""),
-        ]
-        summary = (
-            f"已结合「{tuition.school_name}」目录学费与中国内地留学购汇政策，"
-            f"整理汇往{place}的{purpose_zh}准备要点。"
-        )
-    else:
-        steps = [
-            f"确认向{place}支付{purpose_zh}，并准备收款方账户信息。",
-            *tuition_bits,
-            quota_line + (f"汇款人关系要求：{remitter}。" if remitter else ""),
-        ]
-        if mode == "overseas":
-            summary = f"已结合中国内地购汇政策，整理赴{place}留学相关的换汇与境外消费准备要点。"
-        else:
-            summary = f"已结合中国内地留学购汇政策，整理汇往{place}的{purpose_zh}准备要点。"
-
+    """Return FX remittance body + payload (may include a school-payment companion bubble)."""
     enrich_payload: dict = {}
+    companions: list[dict] = []
     if tuition is not None and purpose_zh == "学费" and mode != "overseas":
-        pay_steps, enrich_payload = enrich_tuition_advice_steps(
-            tuition, invoice_amount=invoice_amount, invoice_currency=invoice_currency,
+        payment_body, enrich_payload = _school_payment_body(
+            place=place, tuition=tuition,
+            invoice_amount=invoice_amount, invoice_currency=invoice_currency,
             profile_facts=profile_facts or facts)
-        steps.extend(pay_steps)
+        if payment_body is not None:
+            companions.append({
+                "kind": "school_payment",
+                "summary": payment_body.summary,
+                "steps": list(payment_body.steps),
+                "limitations": list(payment_body.limitations),
+            })
 
-    if over:
-        steps.append("若超过年度便利化额度，需按超额度要求补充学费/在读/护照签证等证明材料后办理。")
-    elif over is False:
-        steps.append("额度内购汇按便利化流程办理；超额度政策未在当前资料中确认，需向办理银行核实。")
-    else:
-        steps.append("是否允许超额购汇以办理银行当时审核要求为准。")
-    required = [m.name_zh for m in materials if m.applicability == "required"][:4]
-    if required:
-        steps.append("常用材料包括：" + "、".join(required) + "。")
-    if tuition and tuition.rates:
-        steps.append("到账后保留购汇/汇款凭证，并按学校要求回传付款证明。")
-
-    body = AnswerBody(
-        summary=summary,
-        steps=[s for s in steps if s],
-        materials=materials,
-        limitations=_limitations(mode=mode, destination=place, tuition=tuition),
-    )
-    return body, enrich_payload
+    fx_body = _fx_remittance_body(
+        place=place, purpose_zh=purpose_zh, mode=mode, facts=facts,
+        materials=materials, tuition=tuition,
+        invoice_amount=invoice_amount, invoice_currency=invoice_currency)
+    enrich_payload["companion_bubbles"] = companions
+    return fx_body, enrich_payload
 
 
 def _claims_from_citations(citations: list[Citation], materials: list[Material]) -> list[Claim]:
@@ -417,6 +462,8 @@ class FxWorkflow:
         if tuition is not None:
             policy_facts["payment"] = enrich_payload.get("payment")
             policy_facts["card_advice"] = enrich_payload.get("card_advice")
+            # LLM rewrite is for the FX bubble only; keep school-payment wording deterministic.
+            policy_facts.pop("tuition", None)
         if "limits" in aspects and aspects <= {"limits"}:
             quota_steps = [step for step in verified.steps
                            if "额度" in step or "超额" in step]
@@ -477,6 +524,7 @@ class FxWorkflow:
                 "tuition": tuition.as_dict() if tuition else None,
                 "payment": enrich_payload.get("payment"),
                 "card_advice": enrich_payload.get("card_advice"),
+                "companion_bubbles": enrich_payload.get("companion_bubbles") or [],
             },
             knowledge_read_id=f"agent1-fx-rds:{bundle.environment}",
             model_version=model_version,
