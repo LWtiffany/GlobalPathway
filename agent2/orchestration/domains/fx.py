@@ -16,7 +16,6 @@ from agent2.llm.validation import validate_written_answer
 from agent2.models import AnswerBody, Claim, Citation, Material, Notice
 from agent2.tuition_knowledge import (TuitionContext, TuitionResolver, compare_to_quota,
                                       format_rate_line, resolve_tuition)
-from agent2.tuition_payment_advice import enrich_tuition_advice_steps
 
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
 from .minimal import COUNTRY_LABEL, merged_facts, needs_input
@@ -47,7 +46,6 @@ def _payment_limitations(tuition: TuitionContext | None) -> list[str]:
     if not tuition:
         return notes
     if tuition.rates:
-        notes.append("学费金额请以学校缴费通知书/账单为准；下列为学校公布的参考数字。")
         urls = sorted({r.source_url for r in tuition.rates if r.source_url})
         if urls:
             notes.append("参考来源：" + "；".join(urls[:3]))
@@ -122,10 +120,10 @@ def _quota_steps(*, tuition: TuitionContext | None, invoice_amount, invoice_curr
 def _school_payment_body(*, place: str, tuition: TuitionContext,
                          invoice_amount=None, invoice_currency: str | None = None,
                          profile_facts: dict | None = None
-                         ) -> tuple[AnswerBody | None, dict]:
-    """Action-oriented school billing / payment bubble (no FX policy text)."""
+                         ) -> tuple[list[dict], dict]:
+    """School billing bubble + optional separate card-advice bubble."""
     if not tuition.school_name:
-        return None, {}
+        return [], {}
     target = tuition.school_name
     if tuition.program_name and tuition.match in {"exact_program", "school_wide", "school_only"}:
         target = f"{tuition.school_name}（{tuition.program_name}）"
@@ -134,17 +132,28 @@ def _school_payment_body(*, place: str, tuition: TuitionContext,
         *_tuition_reference_steps(
             tuition, invoice_amount=invoice_amount, invoice_currency=invoice_currency),
     ]
+    from agent2.tuition_payment_advice import enrich_tuition_advice_steps
     pay_steps, enrich_payload = enrich_tuition_advice_steps(
         tuition, invoice_amount=invoice_amount, invoice_currency=invoice_currency,
         profile_facts=profile_facts or {})
     steps.extend(pay_steps)
-    steps.append("缴费完成后按学校要求回传付款证明，并自行留存凭证。")
-    body = AnswerBody(
-        summary=f"缴{target}学费：按学校账单与官方缴费入口办理。",
-        steps=[s for s in steps if s],
-        limitations=_payment_limitations(tuition),
-    )
-    return body, enrich_payload
+    companions = [{
+        "kind": "school_payment",
+        "summary": f"缴{target}学费：按学校账单与官方缴费入口办理。",
+        "steps": [s for s in steps if s],
+        "limitations": _payment_limitations(tuition),
+    }]
+    cards = enrich_payload.get("card_advice") or {}
+    card_lines = list(cards.get("steps") or [])
+    if card_lines:
+        card_limits = list(cards.get("limitations") or [])
+        companions.append({
+            "kind": "card_advice",
+            "summary": cards.get("reason") or "可参考的卡片",
+            "steps": card_lines,
+            "limitations": card_limits,
+        })
+    return companions, enrich_payload
 
 
 def _fx_remittance_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
@@ -177,9 +186,7 @@ def _fx_remittance_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
         steps.append("额度内购汇按便利化流程办理；超额度政策未在当前资料中确认，请向办理银行核实。")
     else:
         steps.append("是否允许超额购汇以办理银行当时审核要求为准。")
-    required = [m.name_zh for m in materials if m.applicability == "required"][:4]
-    if required:
-        steps.append("常用材料：" + "、".join(required) + "。")
+    # Materials already render via AnswerBody.materials — do not restate in steps.
     steps.append("办妥后保留购汇/汇款凭证，便于学校核验与后续查账。")
 
     if tuition and tuition.school_name and purpose_zh == "学费" and mode != "overseas":
@@ -207,17 +214,11 @@ def _deterministic_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
     enrich_payload: dict = {}
     companions: list[dict] = []
     if tuition is not None and purpose_zh == "学费" and mode != "overseas":
-        payment_body, enrich_payload = _school_payment_body(
+        payment_companions, enrich_payload = _school_payment_body(
             place=place, tuition=tuition,
             invoice_amount=invoice_amount, invoice_currency=invoice_currency,
             profile_facts=profile_facts or facts)
-        if payment_body is not None:
-            companions.append({
-                "kind": "school_payment",
-                "summary": payment_body.summary,
-                "steps": list(payment_body.steps),
-                "limitations": list(payment_body.limitations),
-            })
+        companions.extend(payment_companions)
 
     fx_body = _fx_remittance_body(
         place=place, purpose_zh=purpose_zh, mode=mode, facts=facts,

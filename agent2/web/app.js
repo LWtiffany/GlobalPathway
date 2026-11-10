@@ -1118,6 +1118,27 @@ function isCardRecommendationSteps(steps) {
     && steps.some((s) => /(?:主推荐|初步选择)：|汇丰.+发行的卡/.test(s));
 }
 
+/** Tuition remittance card picks: "首选 Foo（Bank）：年净收益约 …" */
+function isTuitionCardSteps(steps) {
+  return (steps || []).some((s) => /^(首选|备选|补充)\s+.+\s*（.+）\s*：\s*年净收益约/.test(String(s)));
+}
+
+function renderTuitionCardSteps(steps) {
+  const box = h("div", { class: "card-rec tuition-cards" });
+  for (const s of steps || []) {
+    const m = String(s).match(/^(首选|备选|补充)\s+(.+)$/);
+    if (m) {
+      box.append(h("div", { class: "card-name" },
+        h("span", { class: "role-tag" }, m[1]),
+        h("span", null, ...linkify(m[2]))));
+    } else {
+      box.append(h("div", { class: "card-note" }, ...linkify(s)));
+    }
+  }
+  // Summary already carries the intro; no second "可参考的卡片" heading.
+  return [box];
+}
+
 function cardStepForDisplay(step) {
   return String(step)
     .replace(/\s*[（(]\s*s\d+(?:\s*[,，、;；]\s*s\d+)*\s*[）)]/gi, "")
@@ -1150,6 +1171,9 @@ function renderAnswerSteps(steps) {
     return multi.map((sec) => h("div", { class: "multi-sec" },
       h("div", { class: "sub-h" }, sec.title),
       ...sec.lines.map((line) => h("p", null, ...linkify(line)))));
+  }
+  if (isTuitionCardSteps(steps)) {
+    return renderTuitionCardSteps(steps);
   }
   if (!isCardRecommendationSteps(steps)) {
     return [h("div", { class: "sub-h" }, "给您的建议"),

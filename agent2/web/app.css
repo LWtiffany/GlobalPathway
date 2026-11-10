@@ -175,6 +175,8 @@ a{color:#8b7140}
 .rel-proposed{margin-left:8px;color:#8b7140;font-size:11px}
 .lim{margin:2px 0;padding-left:18px;color:#6f675a;font-size:12px}
 .card-rec{margin:6px 0 10px;max-width:760px}
+.card-rec.tuition-cards .card-name{margin:10px 0;padding:12px 14px;border:1px solid #e5ddd0;border-bottom:1px solid #e5ddd0;background:#fff;font-weight:600;font-size:14px;color:#22201c;display:flex;align-items:flex-start;gap:9px;line-height:1.55}
+.card-rec.tuition-cards .card-name>span:last-child{font-weight:400;color:#3f3a32}
 .card-rec .card-sec{margin:14px 0 6px;font-weight:600;font-size:13px;color:#22201c;padding:7px 9px;border-left:3px solid #8e1b24;background:#f8f4ec;display:flex;align-items:center;gap:8px}
 .card-rec .card-sec:first-child{margin-top:4px}
 .card-rec .market-tag{font-size:10px;font-weight:400;letter-spacing:.5px;color:#8e1b24;border:1px solid #d9b4b7;padding:1px 5px;white-space:nowrap}

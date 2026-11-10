@@ -9,9 +9,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from agent2.orchestration.domains.credit_card_engine import recommend
-from agent2.orchestration.domains.credit_card_repository import (
-    CreditCardRepositoryError, RdsCreditCardRepository)
 from agent2.tuition_knowledge import (PaymentDetail, TuitionContext, TuitionRate,
                                       _format_money)
 
@@ -60,6 +57,23 @@ def _primary_rate(rates: list[TuitionRate]) -> TuitionRate | None:
     return max(pool, key=lambda r: r.amount)
 
 
+def _looks_redundant(note: str, already: list[str]) -> bool:
+    """Skip catalog notes that mostly restate billing / channel / card facts already listed."""
+    text = (note or "").strip().lower()
+    if not text:
+        return True
+    blob = " ".join(already).lower()
+    tokens = ("flywire", "convera", "credit card", "debit", "信用卡", "借记卡",
+              "monthly", "按月", "多币种", "本地币", "axess", "529")
+    hits = sum(1 for t in tokens if t in text and t in blob)
+    # English summary that repeats monthly billing / preferred channels.
+    if hits >= 2:
+        return True
+    if text.startswith("官方列出") and ("flywire" in blob or "多币种" in blob):
+        return True
+    return False
+
+
 def payment_steps(payment: PaymentDetail | None) -> list[str]:
     if payment is None:
         return []
@@ -68,8 +82,11 @@ def payment_steps(payment: PaymentDetail | None) -> list[str]:
     if payment.installment_count:
         period = {"month": "按月", "term": "按学期", "year": "按年"}.get(
             (payment.installment_period or "").lower(), payment.installment_period or "")
-        suffix = f"（{period}）" if period else ""
-        steps.append(f"{cycle}；通常约分 {payment.installment_count} 次缴纳{suffix}。")
+        if period and period in cycle:
+            steps.append(f"{cycle}，约分 {payment.installment_count} 次。")
+        else:
+            suffix = f"（{period}）" if period else ""
+            steps.append(f"{cycle}，约分 {payment.installment_count} 次缴纳{suffix}。")
     else:
         steps.append(f"{cycle}。")
     if payment.due_rule:
@@ -86,15 +103,15 @@ def payment_steps(payment: PaymentDetail | None) -> list[str]:
         labels = [_method_label(m) for m in payment.payment_methods]
         steps.append("可选支付方式：" + "、".join(labels) + "。")
     if payment.accepts_credit_card == 0:
-        steps.append("学生账户通常不接受信用卡/借记卡直接缴费。")
+        steps.append("学生账户不接受信用卡/借记卡直接缴费。")
     elif payment.accepts_credit_card == 1:
         steps.append("学生账户可用信用卡缴费（以缴费页当日选项为准）。")
     if payment.supports_multi_currency == 1:
         channels = "、".join(_method_label(c) for c in payment.multi_currency_channels) or "国际支付通道"
-        steps.append(f"如需本地币/多币种支付，可走：{channels}。")
-        if payment.multi_currency_note:
-            steps.append(payment.multi_currency_note)
-    if payment.summary:
+        steps.append(f"本地币/多币种可走：{channels}（可选币种与到账规则以通道当日为准）。")
+    if payment.multi_currency_note and not _looks_redundant(payment.multi_currency_note, steps):
+        steps.append(payment.multi_currency_note)
+    if payment.summary and not _looks_redundant(payment.summary, steps):
         steps.append(payment.summary)
     return [s for s in steps if s]
 
@@ -160,14 +177,12 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
 
     result["eligible_for_card_pitch"] = True
     if accepts_card:
-        result["reason"] = "学校接受信用卡缴学费时，可参考下列卡片的回馈与费用测算。"
+        result["reason"] = "学校接受信用卡缴学费时，可参考下列卡片。"
     else:
-        result["reason"] = (
-            "学生账户一般不直接收信用卡；若走 Flywire 等通道且当日可选刷卡，"
-            "或用于境外日常消费，可参考下列测算。本地银行转账通常不经信用卡。"
-        )
+        # Card refusal is already stated in payment_steps; keep this short.
+        result["reason"] = "若 Flywire 等通道当日支持刷卡，或用于境外日常消费，可参考下列卡片。"
         result["limitations"].append(
-            "未计入支付平台加点或学校额外刷卡费（资料未收录则不做估算）。"
+            "未计入支付平台加点或学校额外刷卡费。"
         )
 
     rate = _primary_rate(tuition.rates)
@@ -185,6 +200,11 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
     # Soft student hint improves student-card eligibility when profile is sparse.
     facts.setdefault("applicant_identity", "student")
     facts.setdefault("role", "student")
+
+    # Lazy imports: avoid agent2.orchestration package init ↔ fx ↔ this module cycle.
+    from agent2.orchestration.domains.credit_card_engine import recommend
+    from agent2.orchestration.domains.credit_card_repository import (
+        CreditCardRepositoryError, RdsCreditCardRepository)
 
     repo = RdsCreditCardRepository()
     clock = now or datetime.now(timezone.utc)
@@ -240,7 +260,7 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
     if monthly is not None:
         money = _format_money(monthly, currency or None)
         result["limitations"].append(
-            f"测算假设月均刷卡约 {money}（由参考学费折算到月，未做汇率换算）。"
+            f"测算假设月均刷卡约 {money}。"
         )
     if not picks:
         result["limitations"].append("有产品目录但无符合当前资格过滤的卡片。")
@@ -248,19 +268,13 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
 
 
 def card_steps(card_payload: dict[str, Any]) -> list[str]:
+    """Card pick lines only — no policy restatement, no bullet markers."""
     steps: list[str] = []
-    if not card_payload:
-        return steps
-    if card_payload.get("reason"):
-        steps.append(card_payload["reason"])
-    for lim in card_payload.get("limitations") or []:
-        steps.append(lim)
-    if not card_payload.get("eligible_for_card_pitch"):
+    if not card_payload or not card_payload.get("eligible_for_card_pitch"):
         return steps
     recs = card_payload.get("recommendations") or []
     if not recs:
         return steps
-    steps.append("可参考的卡片（测算仅供参考，申请以银行审批为准）：")
     role_zh = {"primary": "首选", "alternative": "备选", "supplement": "补充"}
     for rec in recs:
         fx = rec.get("foreign_transaction_fee_rate")
@@ -271,7 +285,7 @@ def card_steps(card_payload: dict[str, Any]) -> list[str]:
         fee = rec.get("estimated_annual_fee")
         fx_cost = rec.get("estimated_annual_fx_cost")
         line = (
-            f"· {label} {rec.get('product_name')}（{rec.get('issuing_bank')}）："
+            f"{label} {rec.get('product_name')}（{rec.get('issuing_bank')}）："
             f"年净收益约 {net}（回馈 {reward} − 年费 {fee} − 外币成本 {fx_cost}；{fx_txt}）"
         )
         if rec.get("official_url"):
@@ -283,15 +297,14 @@ def card_steps(card_payload: dict[str, Any]) -> list[str]:
 def enrich_tuition_advice_steps(tuition: TuitionContext, *, invoice_amount=None,
                                 invoice_currency: str | None = None,
                                 profile_facts: dict | None = None) -> tuple[list[str], dict]:
-    """Return school-payment action steps + payload (payment/card enrichment)."""
-    steps: list[str] = []
-    steps.extend(payment_steps(tuition.payment))
+    """Return school-payment steps + payload; card picks live under card_advice.steps."""
+    pay = payment_steps(tuition.payment)
     cards = recommend_tuition_cards(
         tuition=tuition, invoice_amount=invoice_amount,
         invoice_currency=invoice_currency, profile_facts=profile_facts)
-    steps.extend(card_steps(cards))
+    cards["steps"] = card_steps(cards)
     payload = {
         "payment": tuition.payment.as_dict() if tuition.payment else None,
         "card_advice": cards,
     }
-    return steps, payload
+    return pay, payload
