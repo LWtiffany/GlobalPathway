@@ -2302,6 +2302,14 @@ class CreditCardWorkflow:
                 choices = options.get(field) or []
                 if len(choices) >= 2:
                     return field, prompts[field], choices
+        # Consumption scenarios shape the ranking copy ("如果您希望把…用得更
+        # 划算") and the coverage gaps, so ask once even when the simulated
+        # shortlist happens to look stable under every option.
+        if ("spending_scenarios" not in asked
+                and not facts.get("spending_scenarios")
+                and len(options.get("spending_scenarios") or []) >= 2):
+            return ("spending_scenarios", prompts["spending_scenarios"],
+                    options["spending_scenarios"])
         ranking_fields = {"spending_scenarios", "monthly_card_spend_band_hkd",
                           "reward_preference", "mainland_payment_method",
                           "hsbc_premier_path", "asset_band",
