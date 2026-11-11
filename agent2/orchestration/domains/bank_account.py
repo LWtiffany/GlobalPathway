@@ -1156,6 +1156,7 @@ class BankAccountWorkflow:
                     source_extracts_json=json.dumps(
                         verified_payload["source_extracts"], ensure_ascii=False)
                     if source_extracts else "",
+                    profile_name=request.profile_name, profile_role=request.profile_role,
                 )
                 written = await self.model.parse(prompt=prompt, output_type=WrittenAnswer,
                                                  operation="write_bank_answer")
@@ -1167,7 +1168,8 @@ class BankAccountWorkflow:
                 # spells differently. Restating them is grounded, not a new claim;
                 # numbers absent from the fed data are still rejected.
                 validate_written_answer(candidate, verified,
-                                        supported_text=f"{verified_json} {extracts_text}")
+                                        supported_text=f"{verified_json} {extracts_text}",
+                                        profile_name=request.profile_name)
                 _validate_writer_scope(
                     candidate, labels, selection_limited=selection_limited,
                     allowed_product_names=[row["product_name"] for row in catalog["products"]],
