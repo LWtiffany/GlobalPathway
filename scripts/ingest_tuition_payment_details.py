@@ -376,6 +376,89 @@ RECORDS: list[dict] = [
         "quote": "HKUST Registry publishes research postgraduate tuition rates; payment follows University student billing instructions.",
         "source_url": "https://registry.hkust.edu.hk/resource-library/tuition-rates-research-pg",
     },
+    # ---------- UCL (Flywire-only for self-financed fees) ----------
+    {
+        "school": "University College London",
+        "scope": "school_wide",
+        "academic_year": "2026/27",
+        "billing_cycle": "other",
+        "payment_methods": ["flywire_portal", "flywire_bank_transfer", "flywire_card_option", "flywire_local_currency_options"],
+        "accepts_credit_card": 1,
+        "portal_name": "Portico (MyMoney) / Flywire",
+        "portal_url": "https://www.ucl.ac.uk/study/student-finances/tuition-fees/how-pay-your-tuition-fees",
+        "payee": "UCL Student Fees via Flywire",
+        "due_rule": "New students can prepay via the Applicant Portal before enrolment; remaining fees are due by UCL's instalment deadlines as shown on the Portico Student Statement.",
+        "summary": "UCL has partnered with Flywire: for self-financed fees, Flywire's portal is the only payment method. Card payment is available inside Flywire, but UCL strongly recommends international students avoid loading GBP onto a credit card issued outside the UK — prefer international bank transfer or Flywire's local-currency options.",
+        "quote": "UCL has partnered with Flywire and fees must be paid online using Flywire's payment portal. For self-financed fees, UCL has no other method by which fees can be paid. … We strongly recommend that you avoid converting your local currency into GBP and loading it on to a credit card issued outside of the UK.",
+        "source_url": "https://www.ucl.ac.uk/study/student-finances/tuition-fees/how-pay-your-tuition-fees",
+        "alt_source_url": "https://www.ucl.ac.uk/study/news/2023/mar/our-new-payment-partner-flywire-now-live",
+    },
+    # ---------- CUHK school-wide fallback (two equal instalments) ----------
+    {
+        "school": "The Chinese University of Hong Kong",
+        "scope": "school_wide",
+        "academic_year": "2026/27",
+        "billing_cycle": "installment",
+        "installment_count": 2,
+        "installment_period": "term",
+        "payment_methods": ["cusis_online", "internet_banking_bill", "pps", "atm_bill", "bank_counter", "telegraphic_transfer_nonlocal", "wechat_pay_alipay"],
+        "accepts_credit_card": None,
+        "portal_name": "CUSIS / CUHK Finance Office",
+        "portal_url": "https://www.fno.cuhk.edu.hk/student/student-fees",
+        "payee": "The Chinese University of Hong Kong (Hang Seng Bank 293-005005-007 HKD)",
+        "due_rule": "UG Term 1 debit notes issued in September, Term 2 in January, due two weeks after issue; late tuition payment penalty HK$250; telegraphic transfer must add ~HK$300 bank charges and quote the 11-digit Payment Number.",
+        "summary": "CUHK tuition is normally payable in two equal instalments. Non-local students without a Hong Kong account may pay by WeChat Pay / Alipay or telegraphic transfer; HK-issued credit cards can settle fees via bank internet-billing channels.",
+        "quote": "Normally, the annual tuition fees are payable by two equal instalments, but self-financed programmes could determine the number of instalments according to their own schedules. … For credit cards issued by financial institutions in Hong Kong, you can pay your fees via the internet banking or ATM of the financial institutions. For credit cards issued by non-local financial institutions, you may link your credit card to your Wechat Pay / Alipay / UnionPay App account for payment.",
+        "source_url": "https://www.fno.cuhk.edu.hk/student/student-fees",
+        "alt_source_url": "https://www.fno.cuhk.edu.hk?p=6431/",
+        "supports_multi_currency": 1,
+        "multi_currency_channels": ["wechat_pay", "alipay", "unionpay_app"],
+        "multi_currency_note": "非本地学生可用微信支付／支付宝等本地渠道缴费；可选币种与到账规则以该渠道当日选项为准。",
+    },
+    # ---------- HKUST school-wide fallback (Fall/Spring instalments) ----------
+    {
+        "school": "The Hong Kong University of Science and Technology",
+        "scope": "school_wide",
+        "academic_year": "2026/27",
+        "billing_cycle": "installment",
+        "installment_count": 2,
+        "installment_period": "term",
+        "payment_methods": ["sis_online", "internet_banking", "atm", "pps", "cheque_deposit_machine", "hang_seng_counter", "bank_remittance_wire", "wechat_pay_alipay_fps_bocpay_unionpay"],
+        "accepts_credit_card": None,
+        "portal_name": "SIS / HKUST Central Student Financials Unit",
+        "portal_url": "http://csfu.hkust.edu.hk/payment-method",
+        "payee": "HKUST",
+        "due_rule": "Non-local UG tuition payable in two equal instalments before the Fall and Spring term start; local bank payments post in 1-3 working days, overseas remittance may take up to 10 working days — keep the bank receipt.",
+        "summary": "HKUST tuition and hall fees are paid via internet banking, ATM, PPS, bank counter or remittance; SIS also accepts WeChat Pay / Alipay / FPS / BoC Pay / UnionPay App. The CSFU FAQ confirms credit-card settlement is possible through internet banking / ATM / PPS channels.",
+        "quote": "Payment will be made in two equal installments before the commencement of the Fall and Spring Term respectively. … Can students pay tuition / hall fee, caution money, & compulsory medical insurance by credit card? Yes, but payment has to be made via one of the following channels: Internet Banking, Automated Teller Machine (\"ATM\"), PPS by Phone or Internet.",
+        "source_url": "http://csfu.hkust.edu.hk/payment-method",
+        "alt_source_url": "https://join.hkust.edu.hk/zh-hans/node/835",
+        "supports_multi_currency": 1,
+        "multi_currency_channels": ["wechat_pay", "alipay", "fps", "boc_pay", "unionpay_app"],
+        "multi_currency_note": "SIS 内可用微信支付／支付宝／转数快等本地渠道；境外汇款以港元电汇为主。",
+    },
+    # ---------- HKU school-wide fallback (two instalments, HSBC wire) ----------
+    {
+        "school": "The University of Hong Kong",
+        "scope": "school_wide",
+        "academic_year": "2026/27",
+        "billing_cycle": "installment",
+        "installment_count": 2,
+        "installment_period": "term",
+        "payment_methods": ["internet_banking_bill", "bank_counter_atm", "bank_draft", "telegraphic_transfer_hsbc_hk", "wechat_pay_alipay_alipayhk"],
+        "accepts_credit_card": None,
+        "portal_name": "SIS invoice / HKU Finance Office",
+        "portal_url": "https://handbook.hku.hk/ug/full-time-2026-27/fees-awards-and-financial-assistance/payment-of-fees",
+        "payee": "The University of Hong Kong (HSBC 002-222834-002, SWIFT HSBCHKHHHKH)",
+        "due_rule": "First composition-fee instalment payable upon registration; balance invoice issued ~mid-September, due by the invoice due date. Fees unpaid 30 days after due date lead to de-registration and a 10% / HK$500 (lesser) reinstatement surcharge.",
+        "summary": "HKU composition fee is billed by student invoice and paid via Hong Kong bank bill channels (internet banking / ATM / counter), bank draft, telegraphic transfer to HKU's HSBC account, or WeChat Pay / Alipay / AlipayHK. All bank charges are borne by the payer.",
+        "quote": "The composition fee … shall be payable in the following manner unless otherwise stated in the schedule of fees: (i) by a candidate registered for a Bachelor's degree or a Master's degree by coursework or diploma or certificate: annually by two instalments by dates to be prescribed by the Registrar, the first during August to October and the second in January. … 所有銀行費用,包括學生在其國家以外所產生之付款相關銀行費用,將由匯款人或付款人承擔。",
+        "source_url": "https://handbook.hku.hk/ug/full-time-2026-27/fees-awards-and-financial-assistance/payment-of-fees",
+        "alt_source_url": "https://jockeyv3.hku.hk/wp-content/uploads/2022/06/hku_feo_full_payment_instructions.pdf",
+        "supports_multi_currency": 1,
+        "multi_currency_channels": ["flywire", "wechat_pay", "alipay"],
+        "multi_currency_note": "国际学生付款以 Flywire（延续现行 level 行收录）及微信支付／支付宝渠道为准；电汇为港元到账。",
+    },
 ]
 
 
@@ -478,8 +561,8 @@ def _run_sql_file(con, path: Path) -> None:
 
 
 def apply_migration(con) -> None:
-    _run_sql_file(con, ROOT / "agent1/migrations/020_tuition_payment_detail.sql")
-    _run_sql_file(con, ROOT / "agent1/migrations/021_tuition_payment_multicurrency.sql")
+    _run_sql_file(con, ROOT / "agent1/migrations/022_tuition_payment_detail.sql")
+    _run_sql_file(con, ROOT / "agent1/migrations/023_tuition_payment_multicurrency.sql")
 
 
 _MULTI_CURRENCY_METHOD_TOKENS = (
