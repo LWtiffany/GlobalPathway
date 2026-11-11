@@ -146,6 +146,10 @@ _FUNDING = [
     (re.compile(r"资助|赞助|sponsor", re.I), "sponsor"),
     (re.compile(r"自费|父母(?:出钱|支付|的存款)|家里出钱|自己的存款", re.I), "own_or_parents"),
 ]
+_PAYER = [
+    (re.compile(r"父母|家长|爸爸|妈妈|代汇|代办"), "parent"),
+    (re.compile(r"本人|自己(?:汇|付|交)|学生本人|我来(?:汇|付|交)"), "self"),
+]
 _AGE = re.compile(r"(\d{1,3})\s*(?:岁|周岁)")
 _SCHOOL = re.compile(r"(?:学校(?:改成|换成|改为|是|为)|被)\s*([^\s，。,.!！?？]+?)(?:\s*录取|[，。,.!！?？]|$)")
 _YES = re.compile(r"^\s*(?:是|是的|对|对的|有|需要|yes|y)\s*[。.!！]?\s*$", re.I)
@@ -192,7 +196,7 @@ def classify(text, *, asked_fields=()):
                             (is_ambiguous_bank_card(text) or is_account_only_card_mention(text)))), None)
     turn = Turn(intent=intent or "other")
     for code, patterns in (("destination_country", _COUNTRY), ("visa_category", _VISA),
-                           ("funding_source", _FUNDING)):
+                           ("funding_source", _FUNDING), ("payer", _PAYER)):
         value, basis = _first(patterns, text)
         if value:
             turn.facts[code], turn.basis[code] = value, basis
@@ -202,6 +206,11 @@ def classify(text, *, asked_fields=()):
     school = _SCHOOL.search(text)
     if school:
         turn.facts["school"], turn.basis["school"] = school.group(1), school.group(0)
+    # Free-text may already include a tuition deadline date.
+    deadline, deadline_basis = _parse_date(text)
+    if deadline and re.search(r"截止|付款日|缴费日|deadline", text, re.I):
+        turn.facts["payment_deadline"] = deadline
+        turn.basis["payment_deadline"] = deadline_basis
     boolean_asked = [f for f in asked_fields if f in BOOLEAN_FIELDS]
     if len(boolean_asked) == 1 and (_YES.match(text) or _NO.match(text)):
         turn.facts[boolean_asked[0]] = bool(_YES.match(text))

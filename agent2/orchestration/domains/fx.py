@@ -240,6 +240,9 @@ def _fx_remittance_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
         quota_line = "请按银行公示的年度便利化购汇额度办理。"
 
     steps: list[str] = []
+    deadline = facts.get("payment_deadline")
+    if deadline and purpose_zh == "学费" and mode != "overseas":
+        steps.append(f"学校缴费截止日按您提供的信息为 {deadline}；请按此倒排购汇与汇出时间。")
     if want_beneficiary or _BENEFICIARY.search(user_text or ""):
         steps.extend(_beneficiary_steps(tuition=tuition))
 
@@ -323,19 +326,26 @@ def _deterministic_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
     enrich_payload: dict = {}
     companions: list[dict] = []
     text = user_text or ""
+    profile = profile_facts or {}
     has_invoice = bool(_HAS_INVOICE.search(text))
-    by_proxy = bool(_PROXY.search(text) or (profile_facts or {}).get("payer") in {
+    payer = profile.get("payer") or facts.get("payer")
+    by_proxy = bool(_PROXY.search(text) or payer in {
         "parent", "parents", "family", "proxy"})
     want_beneficiary = bool(_BENEFICIARY.search(text))
+    # Carry deadline/payer into FX body facts for wording.
+    merged_facts_for_body = {
+        **facts,
+        **({k: profile[k] for k in ("payment_deadline", "payer") if profile.get(k)}),
+    }
     if tuition is not None and purpose_zh == "学费" and mode != "overseas":
         payment_companions, enrich_payload = _school_payment_body(
             place=place, tuition=tuition,
             invoice_amount=invoice_amount, invoice_currency=invoice_currency,
-            profile_facts=profile_facts or facts)
+            profile_facts=profile)
         companions.extend(payment_companions)
 
     fx_body = _fx_remittance_body(
-        place=place, purpose_zh=purpose_zh, mode=mode, facts=facts,
+        place=place, purpose_zh=purpose_zh, mode=mode, facts=merged_facts_for_body,
         materials=materials, tuition=tuition,
         invoice_amount=invoice_amount, invoice_currency=invoice_currency,
         aspects=aspects, user_text=text, has_invoice=has_invoice,
@@ -512,6 +522,13 @@ class FxWorkflow:
         # Quota / over-quota / beneficiary-field FAQs can answer without school.
         skip_school = limits_only or beneficiary_only or bool(
             re.search(r"购汇额度|超额|便利化|年度额度|超年度", user_text))
+        # Infer payer from this turn when user already said 父母/本人.
+        if not facts.get("payer") and _PROXY.search(user_text):
+            facts["payer"] = "parent"
+            basis.setdefault("payer", "代汇/父母语境")
+        elif not facts.get("payer") and re.search(r"本人|自己(?:汇|付|交)|我来(?:汇|付|交)", user_text):
+            facts["payer"] = "self"
+            basis.setdefault("payer", "本人汇款语境")
         if not facts.get("destination_country") and not skip_school:
             missing.append("destination_country")
         if intent in _PURPOSE and not facts.get("remittance_purpose"):
@@ -520,6 +537,13 @@ class FxWorkflow:
         if (intent == "remittance_tuition" and not facts.get("school")
                 and not skip_school and not _HAS_INVOICE.search(user_text)):
             missing.append("school")
+        # Align with clarify CONDITION_TABLE: ask deadline after destination/school.
+        if (intent == "remittance_tuition" and not facts.get("payment_deadline")
+                and not skip_school and not limits_only):
+            missing.append("payment_deadline")
+        # Living remittance: always confirm who remits when not already known.
+        if intent == "remittance_living" and not facts.get("payer") and not limits_only:
+            missing.append("payer")
         # Default destination for pure quota FAQs when unspecified.
         if skip_school and not facts.get("destination_country"):
             facts["destination_country"] = "US"
@@ -612,6 +636,10 @@ class FxWorkflow:
             citations = list(citations) + _tuition_citations(tuition)
 
         purpose_zh = PURPOSE_LABEL.get(purpose_code, purpose_code)
+        # Keep deadline/payer from the conversation on the FX body.
+        for key in ("payment_deadline", "payer"):
+            if facts.get(key) is not None:
+                policy_facts[key] = facts[key]
         verified, enrich_payload = _deterministic_body(
             place=place, purpose_zh=purpose_zh, mode=mode,
             facts=policy_facts, materials=materials,

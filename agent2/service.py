@@ -106,12 +106,16 @@ class Agent2Service:
         self.accounts = accounts
         self.runner = Agent2Runner(knowledge, clock, generator=generator, suggest=suggest)
         llm = llm_components if llm_components is not None else build_llm_components()
+        shared_model = getattr(llm.writer, "model", None) if llm.writer is not None else None
+        fx_model = getattr(llm, "fx_answer_model", None) or shared_model
         self.v2_workflow = build_default_workflow(
             credit_card_repository=credit_card_repository,
             bank_repository=bank_account_repository,
             understanding=llm.understanding,
             writer=llm.writer,
             reasoner=getattr(llm, "reasoner", None),
+            fx_model=fx_model,
+            bank_model=shared_model,
             visa_knowledge=knowledge,
             clock=clock,
             visa_generator=generator,
