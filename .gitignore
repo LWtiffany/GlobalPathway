@@ -27,6 +27,8 @@ tests/
 test_*.py
 *_test.py
 conftest.py
+agent2/eval_m06.py
+agent2/fixtures/m06_cases.json
 *.test.js
 *.spec.js
 *.test.ts

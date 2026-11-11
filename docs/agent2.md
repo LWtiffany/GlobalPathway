@@ -13,7 +13,7 @@ LLM 边界见 [agent2-llm.md](agent2-llm.md)；架构决策与迁移计划见
 agent2/
 ├── api.py            标准库 HTTP API（demo login、对话、档案、提案）
 ├── web/              极简前端（index.html / app.js / app.css）
-├── cli.py            命令行：serve 启动 API、eval-m06 跑评测指标
+├── cli.py            命令行：serve 启动 API
 ├── service.py        应用服务层：会话、档案、消息幂等、领域路由、事务持久化
 ├── runner.py         Legacy Runner：签证等旧流程 + 未接入领域的诚实 cannot_answer
 ├── clarify.py        Profile 字段注册表（类型/选项/时效/敏感级/领域）+ 追问合约
