@@ -261,6 +261,40 @@ def extract_credit_card_facts(text: str):
     return facts, basis
 
 
+# Situation-referencing honorifics swap for the profile name; conversational
+# politeness ("您提到", "您想", "您可以", "如果您愿意") keeps addressing the
+# person typing. Longest patterns first so 您会更喜欢 wins over 您的.
+_ADDRESS_PATTERNS = (
+    "您会更喜欢", "您比较喜欢", "您愿意考虑", "您在汇丰的", "您通常",
+    "您的", "您是否", "您每月", "您每年", "您平时", "您最常", "您属于",
+)
+
+
+_NO_SPACE_BEFORE = set("，。？！；：、（([【")
+
+
+def _addressed(text: str, profile_name: str) -> str:
+    """Rewrite situation-specific 您 into the profile's display name.
+
+    The profile is often prepared by a parent for a child (role=parent), so
+    questions about age, income or habits should address the applicant on
+    file, not the person typing. Polite/interactive copy keeps 您. Empty or
+    missing names keep the original text.
+    """
+    name = (profile_name or "").strip()[:30]
+    if not name:
+        return text
+    pattern = "|".join(_ADDRESS_PATTERNS)
+
+    def substitute(match):
+        # Latin names next to Chinese read better with separating spaces,
+        # except right after punctuation.
+        prefix = "" if match.start() == 0 or text[match.start() - 1] in _NO_SPACE_BEFORE else " "
+        return f"{prefix}{name} {match.group()[1:]}"
+
+    return re.sub(pattern, substitute, text)
+
+
 def _question(field, text, version, *, options, input_type="single_select", max_selections=None):
     policy = clarify.persistence_policy(field)
     persist_mode = "session_only" if policy["confirmation_mode"] == "never" else \
@@ -574,6 +608,7 @@ class CreditCardWorkflow:
             return DomainResult(
                 task_id=task.task_id, domain="credit_card", status="needs_input",
                 answer=AnswerBody(
+                    # Polite conversational copy addresses the person typing: keep 您.
                     summary="信用卡不是硬性必需，您可以按自己的需要决定。如果您愿意，我可以陪您看看有哪些合适的选择。",
                     steps=[
                         "若选择了解，我会按留学地优先推荐当地汇丰卡，香港卡仅作备用。",
@@ -2088,13 +2123,16 @@ class CreditCardWorkflow:
     @staticmethod
     def _needs_input(task, request, extracted, basis, missing, prompts, options):
         selected = missing[:1]
+        name = request.profile_name
         return DomainResult(
             task_id=task.task_id, domain="credit_card", status="needs_input",
-            answer=AnswerBody(summary="我再了解一点您的情况，就能把选择缩小到更合适的卡。",
+            answer=AnswerBody(summary=_addressed(
+                                  "我再了解一点您的情况，就能把选择缩小到更合适的卡。", name),
+                              # Steps address the person typing: keep the polite 您.
                               steps=["您可以按方便的程度选择，不确定的地方我们也可以先保留。"]),
             missing_fields=missing,
             follow_up_questions=[_question(
-                field, prompts[field], request.profile_version, options=options[field],
+                field, _addressed(prompts[field], name), request.profile_version, options=options[field],
                 input_type="multi_select" if field == "spending_scenarios" else "single_select",
                 max_selections=3 if field == "spending_scenarios" else None)
                                  for field in selected],
