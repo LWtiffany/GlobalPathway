@@ -215,6 +215,10 @@ def assess_eligibility(product: CreditCardProduct, facts: dict) -> EligibilityAs
                                 "1m_plus": Decimal("1000000")}
                 if path is not None:
                     value = path
+                    # An unknown path value (legacy data, typo, new option)
+                    # must degrade to "missing" instead of raising.
+                    if path not in path_amounts:
+                        return "missing", field
                     passed = path_amounts[path] >= rule.value_numeric
                 else:
                     passed = band in lower_bounds and lower_bounds[band] >= rule.value_numeric

@@ -2302,6 +2302,15 @@ class CreditCardWorkflow:
                 choices = options.get(field) or []
                 if len(choices) >= 2:
                     return field, prompts[field], choices
+        # Residency is the written basic requirement of every HK card on the
+        # shelf; without it every card stays "unknown / to-verify" and the
+        # answer degrades into a disclaimer list. Ask it with the basics.
+        if ("hk_resident" not in asked and facts.get("hk_resident") is None
+                and any(rule.required and rule.rule_type == "residency"
+                        for product in remaining for rule in product.eligibility_rules)):
+            choices = options.get("hk_resident") or []
+            if len(choices) >= 2:
+                return "hk_resident", prompts["hk_resident"], choices
         # Consumption scenarios shape the ranking copy ("如果您希望把…用得更
         # 划算") and the coverage gaps, so ask once even when the simulated
         # shortlist happens to look stable under every option.
@@ -2310,6 +2319,14 @@ class CreditCardWorkflow:
                 and len(options.get("spending_scenarios") or []) >= 2):
             return ("spending_scenarios", prompts["spending_scenarios"],
                     options["spending_scenarios"])
+        # Without the monthly spend band the answer cannot show reward
+        # estimates at all ("未提供每月消费额，本次不展示回赠金额估算"),
+        # so ask it once instead of disclaiming it away.
+        if ("monthly_card_spend_band_hkd" not in asked
+                and not facts.get("monthly_card_spend_band_hkd")
+                and len(options.get("monthly_card_spend_band_hkd") or []) >= 2):
+            return ("monthly_card_spend_band_hkd", prompts["monthly_card_spend_band_hkd"],
+                    options["monthly_card_spend_band_hkd"])
         ranking_fields = {"spending_scenarios", "monthly_card_spend_band_hkd",
                           "reward_preference", "mainland_payment_method",
                           "hsbc_premier_path", "asset_band",
