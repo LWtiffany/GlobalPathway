@@ -155,11 +155,15 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
                 and (field.status == "confirmed" or field.field_version > 0)):
             historical.pop(code, None)
     profile_values.update(historical)
+    role_field = (profile.fields or {}).get("role")
+    profile_role = str(role_field.value) if role_field and role_field.value else ""
     request = OrchestrationInput(
         text=text,
         profile_id=profile.profile_id,
         profile_version=profile.version,
         profile_values=profile_values,
+        profile_name=(getattr(profile, "display_name", None) or "").strip(),
+        profile_role=profile_role,
         conversation_intents=intents,
         asked_fields=list(asked_fields),
         input_mode="structured_selection" if structured_selection else "free_text",

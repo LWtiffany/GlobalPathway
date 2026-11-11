@@ -201,6 +201,11 @@ class OrchestrationInput(FrozenModel):
     understanding_model_used: bool = False
     # Intents recovered by UserUnderstandingPort (distinct from session conversation_intents).
     llm_intents: list[str] = Field(default_factory=list)
+    # Display name of the profile under advice; used to personalise follow-up copy.
+    profile_name: str = ""
+    # Confirmed role of the profile owner ("student" or "parent"); steers the
+    # writer's point of view (address the parent vs the applicant).
+    profile_role: str = ""
     # Dialogue gist so routing can tell continuations of the open topic from new topics.
     session_topic: str | None = None
     session_last_user_text: str = ""
