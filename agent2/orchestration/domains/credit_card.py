@@ -10,6 +10,7 @@ from agent2 import clarify
 from agent2.intent import (is_card_usage_followup_answer,
                            is_card_usage_profile_statement)
 from agent2.models import AnswerBody, FollowUpQuestion, Notice
+from agent2.tuition_knowledge import resolve_tuition
 
 from ..composer import is_necessity_question
 from ..capabilities import RuleCapabilityPlanner
@@ -848,6 +849,10 @@ class CreditCardWorkflow:
 
         scenarios = facts["spending_scenarios"] if isinstance(facts["spending_scenarios"], list) else \
             [item for item in str(facts["spending_scenarios"]).split(",") if item]
+        # 学费场景 → 核对学校官方缴费通道（见 _tuition_payment_check）。
+        tuition_check = self._tuition_payment_check(facts, scenarios)
+        if tuition_check:
+            scenarios = tuition_check["scenarios"]
         result = recommend(catalog.products, facts, scenarios,
                            facts.get("reward_preference", "no_preference"), now=self.clock())
         if result.primary is None:
@@ -1002,6 +1007,11 @@ class CreditCardWorkflow:
         limitations.append(
             "迎新礼遇（如首年额外现金回赠或飞行里程）属一次性优惠，未计入年度净值估算；"
             "申请前可在官网查看最新迎新条款。")
+        if tuition_check:
+            # The school's payment-channel reality leads the answer, ahead of
+            # any card lines, so a forbidden channel is never buried.
+            steps[:0] = tuition_check["steps"]
+            limitations.extend(tuition_check["limitations"])
         evidence = list(dict.fromkeys(
             [card.official_url for card in recommendations if card.official_url]
             + [source for card in recommendations for source in card.borrowing_sources]
@@ -1023,6 +1033,9 @@ class CreditCardWorkflow:
                      "provisional": bool(provisional_fields),
                      "unconfirmed_fields": eligibility_missing,
                      "optional_inputs": optional_inputs,
+                     "tuition_payment_check": (
+                         {key: tuition_check[key] for key in ("school", "payment", "scenarios")}
+                         if tuition_check else None),
                      "catalog": self._catalog_summary(catalog),
                      "advisor": advisor_brief.audit if advisor_brief else {
                          "policy_version": "credit-card-advisor-v1", "suppressed": "unavailable"}},
@@ -1290,7 +1303,12 @@ class CreditCardWorkflow:
         raw_scenarios = facts.get("spending_scenarios") or []
         scenarios = raw_scenarios if isinstance(raw_scenarios, list) else \
             [item for item in str(raw_scenarios).split(",") if item]
-        return self._study_answer(task, catalogs, facts, scenarios, extracted, basis)
+        # 学费场景 → 核对学校官方缴费通道（见 _tuition_payment_check）。
+        tuition_check = self._tuition_payment_check(facts, scenarios)
+        if tuition_check:
+            scenarios = tuition_check["scenarios"]
+        return self._study_answer(task, catalogs, facts, scenarios, extracted, basis,
+                                  tuition_check=tuition_check)
 
     @staticmethod
     def _us_checking_first(task, facts, extracted, basis):
@@ -1320,6 +1338,77 @@ class CreditCardWorkflow:
                      "checking_url": US_PREMIER_CHECKING_URL},
             observed_facts=extracted, observed_basis=basis,
         )
+
+    @staticmethod
+    def _tuition_payment_check(facts: dict, scenarios: list[str]) -> dict | None:
+        """Verify the 学费 scenario against the bound school's official channels.
+
+        The user declared 学费 as a card usage scenario; TUITION_PAYMENT_DETAIL
+        records how that school actually collects fees. Ranking must not
+        reward a tuition programme the school's channel forbids, and the
+        reality (cards accepted / channel-only / not recorded) is stated
+        outright. Returns adjusted scenarios + steps + limitations, or None
+        when the tuition scenario or the school fact is absent / the catalog
+        is unreachable (deterministic ranking is kept either way).
+        """
+        if "tuition" not in scenarios:
+            return None
+        school = str(facts.get("school") or "").strip()
+        if not school:
+            return None
+        try:
+            ctx = resolve_tuition(
+                school=school,
+                course=(str(facts["course"]) if facts.get("course") else None),
+                destination_country=(str(facts["destination_country"])
+                                    if facts.get("destination_country") else None))
+        except Exception:
+            return None
+        if not ctx.school_name:
+            return None
+        scenarios = list(scenarios)
+        steps: list[str] = []
+        limitations: list[str] = []
+        payment = ctx.payment
+        if payment is None:
+            steps.append(f"已按您登记的学校核对：暂未收录{ctx.school_name}的官方缴费方式；"
+                         "学费能否以信用卡缴纳，请以学校缴费页面为准。")
+            limitations.append("学费场景按一般境外消费估算；如需按学校官方缴费通道核对，可补充学校或课程信息。")
+        elif payment.accepts_credit_card == 0:
+            # The school's channel forbids card tuition, so the tuition reward
+            # scenario is unreachable — rank by overseas daily spend instead.
+            portal = f"（详见{payment.portal_name}）" if payment.portal_name else ""
+            steps.append(f"{ctx.school_name}官方缴费说明：学费支付不接受信用卡/借记卡{portal}。"
+                         "学费本身建议走学校指定通道或汇款办理；卡片更适合境外日常消费。")
+            scenarios = [item for item in scenarios if item != "tuition"]
+            limitations.append("已按学校官方缴费说明将学费场景调整为境外日常消费比较。")
+        elif payment.accepts_credit_card == 1:
+            steps.append(f"{ctx.school_name}缴费通道可用信用卡支付学费（以缴费页面当日选项为准）。")
+            channels = "、".join(payment.multi_currency_channels)
+            if payment.supports_multi_currency == 1 and channels:
+                steps.append(f"学校提供本地币/多币种缴费通道（{channels}）；"
+                             "平台加点或汇率差未计入回赠估算。")
+        else:
+            channels = "、".join(payment.multi_currency_channels)
+            if payment.supports_multi_currency == 1 and channels:
+                steps.append(f"{ctx.school_name}学费经本地币/多币种通道缴纳（{channels}）；"
+                             "通道内是否可用卡支付以当日选项为准，卡片测算适用于通道内可卡支付或境外日常消费的情形。")
+            else:
+                steps.append(f"已核对{ctx.school_name}的官方缴费方式；"
+                             "学费能否用信用卡缴纳未明确收录，请以学校缴费页面为准。")
+        if payment is not None and payment.summary:
+            steps.append(payment.summary)
+        # Foreign-currency tuition (GBP/USD/...) carries FX drag either way.
+        if ctx.rates and (ctx.rates[0].currency or "").upper() not in {"HKD", "CNY", "RMB", ""}:
+            if "overseas" not in scenarios:
+                scenarios.append("overseas")
+        return {
+            "school": ctx.school_name,
+            "scenarios": scenarios,
+            "steps": [item for item in steps if item],
+            "limitations": limitations,
+            "payment": payment.as_dict() if payment else None,
+        }
 
     async def _catalogs(self, region, scope=None):
         markets = (region,) if scope and scope.get("market") == region else \
@@ -1417,9 +1506,14 @@ class CreditCardWorkflow:
             knowledge_read_id=catalog.read_id, observed_facts=extracted, observed_basis=basis,
         )
 
-    def _study_answer(self, task, catalogs, facts, scenarios, extracted, basis):
+    def _study_answer(self, task, catalogs, facts, scenarios, extracted, basis,
+                      tuition_check: dict | None = None):
         """Local HSBC shelf first; Hong Kong only as a low-approval backup."""
         steps, evidence, limitations = [], [], []
+        if tuition_check:
+            # The school's payment-channel reality leads the answer so a
+            # forbidden channel is never buried under card recommendations.
+            steps.extend(tuition_check["steps"])
         groups = []
         local_products = []
         local_shown = []
@@ -1589,6 +1683,8 @@ class CreditCardWorkflow:
         if local_shown:
             limitations.append("申请仍须满足当地条件并通过银行审批。")
             limitations.append("迎新礼遇未计入年度净值，申请前请以官网最新条款为准。")
+        if tuition_check:
+            limitations.extend(tuition_check["limitations"])
 
         now = self.clock()
         ready_products = local_products or hk_products
@@ -1612,7 +1708,10 @@ class CreditCardWorkflow:
             notices=[] if product_data_ready else [Notice(
                 code="card_product_fields_need_verification",
                 message="信用卡奖励和年费字段尚未逐项完成官方核验")],
-            payload={"groups": groups, "market": region},
+            payload={"groups": groups, "market": region,
+                     "tuition_payment_check": (
+                         {key: tuition_check[key] for key in ("school", "payment", "scenarios")}
+                         if tuition_check else None)},
             knowledge_read_id="+".join(catalog.read_id for _, catalog in catalogs),
             observed_facts=extracted, observed_basis=basis,
         )
