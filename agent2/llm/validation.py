@@ -49,6 +49,15 @@ _WORD_NUMBER_PATTERN = re.compile(r"\b(" + "|".join(_WORD_NUMBERS) + r")\b", re.
 def _word_number_values(text: str) -> set[str]:
     return {_WORD_NUMBERS[word.casefold()] for word in _WORD_NUMBER_PATTERN.findall(text)}
 
+# Real numeric claims are multi-char combinations (三万, 二十八, 五千). A lone
+# 一/两 (两件事, 分两步) is a classifier, not a figure, and must not be blocked.
+CHINESE_NUMBER_PATTERN = re.compile(r"[一二两三四五六七八九十百千万亿]{2,}")
+LATIN_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9&.\-']{2,}")
+PROMOTION_RISK_TERMS = (
+    "保证", "包过", "必过", "秒批", "稳过", "免费办", "免年费", "首年免",
+    "终身免", "赠送", "送积分", "送里程", "返现卡", "额外奖励", "100%通过", "无条件批",
+)
+
 
 def validate_understanding(result: UnderstandingResult, request: OrchestrationInput,
                            allowed_fields: set[str], value_validator: Callable[[str, object], str | None],
@@ -90,25 +99,46 @@ def validate_understanding(result: UnderstandingResult, request: OrchestrationIn
         list(dict.fromkeys(result.intents)), result.topic_switch)
 
 
-def validate_written_answer(candidate: AnswerBody, source: AnswerBody,
-                            *, supported_text: str = "") -> None:
-    """Reject new numeric claims and keep locked materials/limitations byte-for-byte.
+def validate_written_answer(candidate: AnswerBody, source: AnswerBody, *,
+                            supported_text: str = "", user_text: str = "",
+                            profile_name: str = "") -> None:
+    """Reject new numeric claims, unverified named entities, promotion-sounding
+    claims, and keep locked materials/limitations byte-for-byte.
 
     A number is supported when it already appears in the deterministic answer,
-    or in ``supported_text`` — the grounded data (rule rows, fees, documents)
-    that was fed to the writer alongside it. English number words in the data
-    ("six months") count as support for their digit form ("6个月"). The writer
-    may restate those numbers in prose; it still may not invent numbers absent
-    from both.
+    in ``supported_text`` (grounded data fed to the writer), or in the user's
+    own words this turn (``user_text``; already gate-checked by understanding).
+    English number words in grounded data ("six months") count as support for
+    their digit form ("6个月"), and Chinese numerals count when the source or
+    the user wrote them. The writer may restate supported numbers in prose;
+    it still may not invent numbers absent from all sources.
     """
     source_text = " ".join([source.summary, *source.steps, *source.limitations])
+    allowed_text = " ".join([source_text, supported_text or "", user_text or ""])
     candidate_text = " ".join([candidate.summary, *candidate.steps])
-    allowed = set(NUMBER_PATTERN.findall(source_text))
+    allowed = (set(NUMBER_PATTERN.findall(allowed_text))
+               | set(CHINESE_NUMBER_PATTERN.findall(allowed_text)))
     if supported_text:
-        allowed |= set(NUMBER_PATTERN.findall(supported_text))
         allowed |= _word_number_values(supported_text)
-    unsupported_numbers = set(NUMBER_PATTERN.findall(candidate_text)) - allowed
+    unsupported_numbers = ((set(NUMBER_PATTERN.findall(candidate_text))
+                            | set(CHINESE_NUMBER_PATTERN.findall(candidate_text)))
+                           - allowed)
     if unsupported_numbers:
         raise ValueError("writer introduced unsupported numeric facts: " + ", ".join(sorted(unsupported_numbers)))
+    # Product names and named entities are Latin tokens in this workspace
+    # (HSBC, Red, Visa, Gold, ...). A token absent from the verified text is
+    # treated as an invented product or provider and rejected outright; the
+    # profile's own name is the one sanctioned extra entity.
+    allowed_tokens = (set(LATIN_TOKEN_PATTERN.findall(source_text))
+                      | set(LATIN_TOKEN_PATTERN.findall(profile_name or "")))
+    unsupported_tokens = sorted(set(LATIN_TOKEN_PATTERN.findall(candidate_text)) - allowed_tokens)
+    if unsupported_tokens:
+        raise ValueError("writer mentioned unverified named entities: " + ", ".join(unsupported_tokens))
+    # Regulatory/promotional claims (guarantees, waivers, giveaways) may only
+    # appear when the verified answer itself states them.
+    unsupported_risks = sorted(
+        term for term in PROMOTION_RISK_TERMS if term in candidate_text and term not in source_text)
+    if unsupported_risks:
+        raise ValueError("writer introduced promotional claims: " + ", ".join(unsupported_risks))
     if candidate.materials != source.materials or candidate.limitations != source.limitations:
         raise ValueError("writer changed locked answer fields")

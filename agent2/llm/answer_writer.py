@@ -39,7 +39,8 @@ class LlmAnswerWriter:
             prompt = self.renderer.render(
                 "credit_card_advisor.jinja2", user_text=request.text,
                 lines_json=json.dumps(lines, ensure_ascii=False),
-                limitations_json=json.dumps(source.limitations, ensure_ascii=False))
+                limitations_json=json.dumps(source.limitations, ensure_ascii=False),
+                profile_name=request.profile_name, profile_role=request.profile_role)
             draft = await self.model.parse(prompt=prompt, output_type=CreditCardAdvisorDraft,
                                            operation="credit_card_advisor")
             validate_card_advisor(draft, lines, source)
@@ -64,6 +65,7 @@ class LlmAnswerWriter:
                     "next_actions": item.next_actions,
                 } for item in verified_answer.domain_results],
             }, ensure_ascii=False, sort_keys=True, default=str),
+            profile_name=request.profile_name, profile_role=request.profile_role,
         )
         # FX / bank_account already draft grounded copy with domain prompts.
         grounded_domains = {
@@ -76,18 +78,13 @@ class LlmAnswerWriter:
 
         written = await self.model.parse(prompt=prompt, output_type=WrittenAnswer,
                                          operation="write_answer")
-        # Eligibility, fees and borrowing costs are deterministic decision facts.
-        # The LLM may refine the summary, but appending near-duplicate prose to
-        # these locked steps produced repeated card recommendations in real runs.
-        steps = list(verified_answer.answer.steps)
-        # Credit-card output contains regulated product terms. A model summary
-        # can sound fluent while adding an unmodelled promotion or condition,
-        # so both its heading and decision steps remain deterministic.
-        credit_card_answer = any(item.domain == "credit_card"
-                                 for item in verified_answer.domain_results)
+        # Eligibility, fees and borrowing costs are deterministic decision facts;
+        # the LLM may only rephrase the summary. The workflow layer runs
+        # validate_written_answer (numbers, named entities, promotional terms,
+        # locked fields) and falls back to this verified answer on any violation.
         candidate = AnswerBody(
-            summary=(verified_answer.answer.summary if credit_card_answer else written.summary),
-            steps=steps,
+            summary=written.summary,
+            steps=list(verified_answer.answer.steps),
             materials=verified_answer.answer.materials,
             limitations=verified_answer.answer.limitations,
         )

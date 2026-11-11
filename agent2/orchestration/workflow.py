@@ -254,7 +254,9 @@ async def write_answer(ctx: StepContext[WorkflowState, WorkflowDependencies, Non
             and ctx.state.answer.status in {"answered", "needs_verification"}):
         try:
             body = await port.write(request=ctx.state.request, verified_answer=ctx.state.answer)
-            validate_written_answer(body, ctx.state.answer.answer)
+            validate_written_answer(body, ctx.state.answer.answer,
+                                    user_text=ctx.state.request.text,
+                                    profile_name=ctx.state.request.profile_name)
             ctx.state.answer = ctx.state.answer.model_copy(update={"answer": body})
             ctx.state.llm_model_versions["writer"] = port.model_version
             ctx.state.llm_prompt_versions["writer"] = port.prompt_version
