@@ -537,6 +537,7 @@ class CreditCardWorkflow:
             # observed facts, otherwise the study destination leaks into a
             # persisted card-application region and the two fields couple.
             facts["application_region"] = destination
+        self._derive_hk_student_facts(facts)
 
         if request.input_mode == "free_text":
             prerequisite = re.search(r"美国|Premier Checking", request.text, re.I) and re.search(
@@ -925,8 +926,16 @@ class CreditCardWorkflow:
             for card in recommendations
         )
         show_estimates = not (adaptive_hk and "monthly_card_spend_band_hkd" in provisional_fields)
+        primary_product = by_id.get(result.primary.card_id)
+        student_card_confirmed = bool(
+            primary_product is not None
+            and any(rule.rule_type == "student_status"
+                    for rule in primary_product.eligibility_rules)
+            and not ({"full_time_student", "student_institution_eligible"}
+                     & set(result.primary.eligibility.missing_fields)))
         steps = self._format_card_lines(result.primary, show_estimates=show_estimates,
-                                        provisional=provisional_choice)
+                                        provisional=provisional_choice,
+                                        student_card_confirmed=student_card_confirmed)
         for card in result.supplements:
             steps.extend(self._format_card_lines(card, show_estimates=show_estimates,
                                                  provisional=provisional_choice,
@@ -2102,7 +2111,8 @@ class CreditCardWorkflow:
         return lines
 
     @staticmethod
-    def _format_card_lines(card, *, show_estimates=True, provisional=False, near_tie=False):
+    def _format_card_lines(card, *, show_estimates=True, provisional=False, near_tie=False,
+                           student_card_confirmed=False):
         """Format a concise, customer-facing recommendation rather than raw DB fields."""
         label = {"primary": "主推荐", "supplement": "场景搭配", "alternative": "其他选择"}[card.role]
         if provisional and card.role == "primary":
@@ -2143,7 +2153,8 @@ class CreditCardWorkflow:
                 "full_time_student", "student_institution_eligible"}:
             opening = ("从您的留学画像看，学生卡值得先了解。全日制身份及学校是否在指定名单内"
                        "尚未核实，所以这只是有条件的初步选择；申请前请按汇丰要求核对。")
-        elif card.role == "primary" and card.eligibility.matched_path == "student":
+        elif card.role == "primary" and (card.eligibility.matched_path == "student"
+                                        or student_card_confirmed):
             opening = ("您已确认全日制学生身份和指定院校资格，这张卡有独立的学生申请路径，"
                        "值得先核对申请条件；最终仍由银行审批。")
         elif card.role == "supplement" and scene_text:
@@ -2220,6 +2231,33 @@ class CreditCardWorkflow:
             "supplements": supplements,
             "alternatives": [card for card in result.alternatives if card.card_id not in selected],
         }), near_tie_ids
+
+    @staticmethod
+    def _derive_hk_student_facts(facts: dict) -> None:
+        """Settle HK student-card facts the Profile already answers, in place.
+
+        Every Hong Kong school the product catalogs is on HSBC's designated
+        institution list (data policy, user-confirmed), so a bound Hong Kong
+        school settles student_institution_eligible; an explicit student
+        identity (role or applicant) at a Hong Kong school settles
+        full_time_student. Only None values are filled — explicit answers,
+        including explicit negatives, are never overridden. The derived
+        values stay out of the observed facts on purpose: they are
+        inference, not something the customer stated this turn.
+        """
+        school = str(facts.get("school") or "").strip()
+        in_hk = (facts.get("application_region") in {"CN-HK", "HK"}
+                 or facts.get("destination_country") in {"CN-HK", "HK", "Hong Kong",
+                                                          "香港", "中国香港"})
+        school_is_hk = bool(school) and in_hk
+        if school_is_hk and facts.get("student_institution_eligible") is None:
+            facts["student_institution_eligible"] = True
+        is_student = (facts.get("applicant_identity") == "student"
+                      or facts.get("role") == "student")
+        is_parent = facts.get("applicant_identity") == "parent"
+        if (is_student and not is_parent and school_is_hk
+                and facts.get("full_time_student") is None):
+            facts["full_time_student"] = True
 
     def _hk_best_question(self, products, facts, scope):
         """Ask only when an answer can change the HK shelf or leading card.
