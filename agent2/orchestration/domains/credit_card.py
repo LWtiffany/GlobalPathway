@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from math import log2
 
+import anyio
+
 from agent2 import clarify
 from agent2.intent import (is_card_usage_followup_answer,
                            is_card_usage_profile_statement)
@@ -35,6 +37,17 @@ REGION_WORDS = {"CN-HK": ("香港", "hong kong", "hk"), "UK": ("英国", "uk"),
                 "US": ("美国", "us"), "CN": ("内地", "大陆", "中国")}
 
 CURRENCY_ZH = {"HKD": "港元", "USD": "美元", "GBP": "英镑"}
+
+
+def _usd_amount_zh(raw: str) -> str:
+    """Render a stored USD amount in Chinese reading style (100000 -> 10 万)."""
+    digits = str(raw).replace(",", "")
+    if not digits.isdigit():
+        return str(raw)
+    value = int(digits)
+    if value >= 10000 and value % 10000 == 0:
+        return f"{value // 10000} 万"
+    return f"{value:,}"
 NETWORK_ZH = {"Visa": "威士卡", "Mastercard": "万事达卡", "UnionPay": "银联卡"}
 WAIVERS_ZH = {
     "First year waived": "首年免年费",
@@ -1231,7 +1244,7 @@ class CreditCardWorkflow:
         region = facts["application_region"]
         if (not request.refresh_mode and region == "US"
                 and facts.get("us_hsbc_account_path") == "need_opening_guidance"):
-            return self._us_checking_first(task, facts, extracted, basis)
+            return await self._us_checking_first(task, facts, extracted, basis)
         try:
             catalogs = await self._catalogs(region, facts.get("card_query_scope"))
         except CreditCardRepositoryError:
@@ -1311,31 +1324,184 @@ class CreditCardWorkflow:
                                   tuition_check=tuition_check)
 
     @staticmethod
-    def _us_checking_first(task, facts, extracted, basis):
+    def _load_us_premier_opening_info() -> dict | None:
+        """Read US Premier Checking opening facts from the shared RDS account tables.
+
+        Returns None (never raises) when the database is unreachable or the
+        core rows are missing, so the customer still gets generic guidance
+        instead of a failed answer. Every number quoted downstream comes from
+        a verified official row, never from memory.
+        """
+        account_id = "acct_us_premier"
+        try:
+            from agent1.storage import read_session
+            with read_session() as db:
+                age = db.execute(
+                    "SELECT value_numeric FROM ACCOUNT_ELIGIBILITY_RULE "
+                    "WHERE account_id=%s AND rule_type='minimum_age'", (account_id,)).fetchone()
+                one_of = db.execute(
+                    "SELECT value_text FROM ACCOUNT_ELIGIBILITY_RULE "
+                    "WHERE account_id=%s AND rule_type='other' AND operator='one_of'",
+                    (account_id,)).fetchone()
+                fee = db.execute(
+                    "SELECT amount, currency, waiver_condition FROM ACCOUNT_FEE "
+                    "WHERE account_id=%s AND fee_type='monthly_fee'", (account_id,)).fetchone()
+                routes = db.execute(
+                    "SELECT application_channel, can_apply_before_arrival, branch_visit_required, "
+                    "additional_notes FROM ACCOUNT_OPENING_ROUTE WHERE account_id=%s",
+                    (account_id,)).fetchall()
+                docs = db.execute(
+                    "SELECT document_type, document_name, required, condition_note "
+                    "FROM ACCOUNT_REQUIRED_DOCUMENT WHERE account_id=%s ORDER BY requirement_id",
+                    (account_id,)).fetchall()
+                verified = db.execute(
+                    "SELECT MAX(last_verified_at) AS verified FROM ACCOUNT_PRODUCT "
+                    "WHERE account_id=%s", (account_id,)).fetchone()
+        except Exception:
+            return None
+        if fee is None or not routes:
+            return None
+
+        def has_cjk(text: str) -> bool:
+            return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+        # The Premier relationship routes that keep the monthly fee waived.
+        waiver_routes = []
+        if one_of and one_of["value_text"]:
+            for part in one_of["value_text"].split(";"):
+                part = part.strip()
+                if not part:
+                    continue
+                low = part.lower()
+                match = re.search(r"USD\s*([\d,]+)", part)
+                if "relationship balance" in low:
+                    waiver_routes.append(
+                        f"合格存款与投资结余达 {_usd_amount_zh(match.group(1))}美元"
+                        if match else "保持官方公布的合格存款与投资结余")
+                elif "direct deposit" in low:
+                    waiver_routes.append(
+                        f"每月合格直接入账达 {_usd_amount_zh(match.group(1))}美元"
+                        if match else "每月合格直接入账达官方规定金额")
+                elif "mortgage" in low:
+                    waiver_routes.append("持有合资格的汇丰美国按揭")
+                elif "private bank" in low:
+                    waiver_routes.append("成为汇丰私人银行客户")
+                else:
+                    waiver_routes.append(part)
+
+        notes = []
+        for route in routes:
+            note = (route["additional_notes"] or "").strip()
+            if not note:
+                continue
+            notes.append("联名申请或超出线上标准的情况，银行可能需要电话回访补充资料。"
+                         if "Joint applications" in note else note)
+
+        # Bilingual rows exist for the same logical document; keep the Chinese
+        # name when both are present, one entry per document type.
+        required_docs: dict[str, str] = {}
+        optional_docs: dict[str, str] = {}
+        passport_validity = False
+        for doc in docs:
+            name = (doc["document_name"] or "").strip()
+            if not name:
+                continue
+            bucket = required_docs if doc["required"] else optional_docs
+            key = doc["document_type"]
+            current = bucket.get(key)
+            if current is None or (has_cjk(name) and not has_cjk(current)):
+                bucket[key] = name
+            if "six months" in (doc["condition_note"] or ""):
+                passport_validity = True
+
+        return {
+            "min_age": (int(age["value_numeric"])
+                        if age and age["value_numeric"] is not None else None),
+            "waiver_routes": waiver_routes,
+            "fee_amount": str(fee["amount"]),
+            "fee_waiver": (fee["waiver_condition"] or "").strip() or None,
+            "channels": sorted({route["application_channel"] for route in routes}),
+            "before_arrival": any(bool(route["can_apply_before_arrival"]) for route in routes),
+            "branch_visit_required": any(bool(route["branch_visit_required"]) for route in routes),
+            "route_notes": [note.rstrip("。") for note in dict.fromkeys(notes)],
+            "required_documents": list(required_docs.values()),
+            "optional_documents": list(optional_docs.values()),
+            "passport_validity": passport_validity,
+            "verified_at": (verified["verified"].strftime("%Y-%m-%d")
+                             if verified and verified["verified"] else None),
+        }
+
+    async def _us_checking_first(self, task, facts, extracted, basis):
         """Guide a customer without Premier Checking through the prerequisite first."""
         underage = facts.get("applicant_age_band") == "under_18" or (
             facts.get("applicant_age") is not None and facts["applicant_age"] < 18)
-        limitations = [
-            "美国汇丰信用卡需要另行申请并由银行审批；开好支票账户不保证信用卡获批。",
-            "Premier Checking 的开户资格、费用和申请方式请以汇丰美国官网最新说明为准。",
-        ]
+        info = await anyio.to_thread.run_sync(self._load_us_premier_opening_info)
+        if info:
+            summary = ("先把美国汇丰 Premier Checking 开好，美国信用卡才有申请基础；"
+                       "我把官方核验过的开户条件、费用和流程一次讲清楚。")
+            eligibility = (f"开户资格：申请人须年满 {info['min_age']} 岁。"
+                           if info["min_age"] else
+                           "开户资格：申请人须达到官方公布的最低开户年龄。")
+            if info["waiver_routes"]:
+                eligibility += ("开户后维持 Premier 关系可免账户月费，满足以下任一条件即可："
+                                + "；".join(info["waiver_routes"]) + "。")
+            steps = [eligibility]
+            fee_text = (f"账户月费：每月 {_usd_amount_zh(info['fee_amount'])} 美元。"
+                        if info["fee_amount"] else "账户月费：以官方公布标准为准。")
+            if info["fee_waiver"]:
+                fee_text += info["fee_waiver"]
+            steps.append(fee_text)
+            route_text = "申请方式：" + "、".join(
+                "线上" if channel == "online" else channel for channel in info["channels"])
+            if not info["branch_visit_required"]:
+                route_text += "申请，无需跑分行"
+            if not info["before_arrival"]:
+                route_text += "；汇丰美国目前不接受抵美前远程开户，请抵美后再提交申请"
+            if info["route_notes"]:
+                route_text += "；" + "；".join(info["route_notes"])
+            steps.append(route_text + "。")
+            if info["required_documents"] or info["optional_documents"]:
+                doc_text = "准备材料：" + "；".join(
+                    info["required_documents"] + info["optional_documents"])
+                if info["passport_validity"]:
+                    doc_text += "；如用护照开户，剩余有效期建议至少 6 个月"
+                steps.append(doc_text + "。")
+            steps.append("账户开好后，告诉我「已开好美国汇丰 Premier Checking」，"
+                         "我马上按您的消费场景比较美国汇丰信用卡的年费、权益和申请条件。")
+            limitations = [
+                "美国汇丰信用卡需要另行申请并由银行审批；开好支票账户不保证信用卡获批。",
+                "以上开户条件与费用整理自汇丰美国官方公布信息"
+                + (f"（{info['verified_at']} 核验）" if info["verified_at"] else "")
+                + "，条款如有更新以官网最新说明为准。",
+            ]
+        else:
+            # RDS unreachable: generic guidance only, no numbers from memory.
+            summary = "我们先看美国汇丰 Premier Checking 怎么开；账户开立后，再为您比较信用卡。"
+            steps = [
+                "先查看汇丰美国 Premier Checking 官方页面，核对年龄、申请所在地、卓越理财资格和账户费用条件。",
+                "符合条件后，按官网指引选择线上申请或联系银行协助，准备银行要求的身份证明、地址及税务资料。",
+                "账户成功开立后，告诉我「已开好美国汇丰 Premier Checking」，我再按您的用途比较当地信用卡的年费、权益和申请条件。",
+            ]
+            limitations = [
+                "美国汇丰信用卡需要另行申请并由银行审批；开好支票账户不保证信用卡获批。",
+                "Premier Checking 的开户资格、费用和申请方式请以汇丰美国官网最新说明为准。",
+            ]
         if underage:
             limitations.insert(0, "您目前未满 18 岁，尚未达到 Premier Checking 官网列出的最低开户年龄。")
         return DomainResult(
             task_id=task.task_id, domain="credit_card", status="answered",
             answer=AnswerBody(
-                summary="我们先看美国汇丰 Premier Checking 怎么开；账户开立后，再为您比较信用卡。",
-                steps=[
-                    "先查看汇丰美国 Premier Checking 官方页面，核对年龄、申请所在地、卓越理财资格和账户费用条件。",
-                    "符合条件后，按官网指引选择线上申请或联系银行协助，准备银行要求的身份证明、地址及税务资料。",
-                    "账户成功开立后，告诉我「已开好美国汇丰 Premier Checking」，我再按您的用途比较当地信用卡的年费、权益和申请条件。",
-                ],
+                summary=summary,
+                steps=steps,
                 limitations=limitations,
             ),
             evidence_refs=[US_PREMIER_CHECKING_URL, US_CARDS_URL],
-            next_actions=["先核对并申请美国汇丰 Premier Checking；开户成功后再比较信用卡。"],
+            next_actions=["按上述条件准备材料，抵美后完成 Premier Checking 开户；"
+                          "开好后再来比较信用卡。"] if info
+            else ["先核对并申请美国汇丰 Premier Checking；开户成功后再比较信用卡。"],
             payload={"groups": [], "market": "US", "journey": "premier_checking_first",
-                     "checking_url": US_PREMIER_CHECKING_URL},
+                     "checking_url": US_PREMIER_CHECKING_URL,
+                     "opening_info_source": "rds_account_tables" if info else "unavailable"},
             observed_facts=extracted, observed_basis=basis,
         )
 
