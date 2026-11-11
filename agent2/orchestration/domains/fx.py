@@ -57,9 +57,9 @@ def _tuition_steps(tuition: TuitionContext, *, invoice_amount, invoice_currency:
     if tuition.match in {"ambiguous_school", "ambiguous_program", "not_found", "none"}:
         return steps
     if tuition.school_name and tuition.rates:
-        where = tuition.school_name
+        where = tuition.school_display or tuition.school_name
         if tuition.program_name:
-            where = f"{tuition.school_name} / {tuition.program_name}"
+            where = f"{tuition.school_display or tuition.school_name} / {tuition.program_name}"
         # Prefer distinct latest academic_year rows; keep all fee_status variants for that year.
         years = [r.academic_year for r in tuition.rates if r.academic_year]
         focus_year = years[0] if years else None
@@ -131,16 +131,16 @@ def _deterministic_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
     ) if tuition else []
 
     if tuition and tuition.school_name and mode != "overseas" and purpose_zh == "学费":
-        target = tuition.school_name
+        target = tuition.school_display or tuition.school_name
         if tuition.program_name and tuition.match in {"exact_program", "school_wide"}:
-            target = f"{tuition.school_name}（{tuition.program_name}）"
+            target = f"{tuition.school_display or tuition.school_name}（{tuition.program_name}）"
         steps = [
             f"确认向{target}（{place}）支付{purpose_zh}，并核对学校收款账户与缴费通知书。",
             *tuition_bits,
             quota_line + (f"汇款人关系要求：{remitter}。" if remitter else ""),
         ]
         summary = (
-            f"已结合「{tuition.school_name}」目录学费与中国内地留学购汇政策，"
+            f"已结合「{tuition.school_display or tuition.school_name}」目录学费与中国内地留学购汇政策，"
             f"整理汇往{place}的{purpose_zh}准备要点。"
         )
     else:
@@ -448,7 +448,7 @@ class FxWorkflow:
         ]
         if tuition and tuition.school_name:
             next_actions.insert(
-                0, f"核对{tuition.school_name}缴费通知书金额与收款账户")
+                0, f"核对{tuition.school_display or tuition.school_name}缴费通知书金额与收款账户")
         if enrich_payload.get("card_advice", {}).get("recommendations"):
             next_actions.append("若走可刷卡/多币种通道，按测算核对办卡与缴费路径")
         return DomainResult(

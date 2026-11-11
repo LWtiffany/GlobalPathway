@@ -1544,21 +1544,22 @@ class CreditCardWorkflow:
         scenarios = list(scenarios)
         steps: list[str] = []
         limitations: list[str] = []
+        school = ctx.school_display or ctx.school_name
         payment = ctx.payment
         if payment is None:
-            steps.append(f"已按您登记的学校核对：暂未收录 {ctx.school_name} 的官方缴费方式；"
+            steps.append(f"已按您登记的学校核对：暂未收录 {school} 的官方缴费方式；"
                          "学费能否以信用卡缴纳，请以学校缴费页面为准。")
             limitations.append("学费场景按一般境外消费估算；如需按学校官方缴费通道核对，可补充学校或课程信息。")
         elif payment.accepts_credit_card == 0:
             # The school's channel forbids card tuition, so the tuition reward
             # scenario is unreachable — rank by overseas daily spend instead.
             portal = f"（详见{payment.portal_name}）" if payment.portal_name else ""
-            steps.append(f"{ctx.school_name} 官方缴费说明：学费支付不接受信用卡/借记卡{portal}。"
+            steps.append(f"{school} 官方缴费说明：学费支付不接受信用卡/借记卡{portal}。"
                          "学费本身建议走学校指定通道或汇款办理；卡片更适合境外日常消费。")
             scenarios = [item for item in scenarios if item != "tuition"]
             limitations.append("已按学校官方缴费说明将学费场景调整为境外日常消费比较。")
         elif payment.accepts_credit_card == 1:
-            steps.append(f"{ctx.school_name} 缴费通道可用信用卡支付学费（以缴费页面当日选项为准）。")
+            steps.append(f"{school} 缴费通道可用信用卡支付学费（以缴费页面当日选项为准）。")
             channels = "、".join(payment.multi_currency_channels)
             if payment.supports_multi_currency == 1 and channels:
                 steps.append(f"学校提供本地币/多币种缴费通道（{channels}）；"
@@ -1566,10 +1567,10 @@ class CreditCardWorkflow:
         else:
             channels = "、".join(payment.multi_currency_channels)
             if payment.supports_multi_currency == 1 and channels:
-                steps.append(f"{ctx.school_name} 学费经本地币/多币种通道缴纳（{channels}）；"
+                steps.append(f"{school} 学费经本地币/多币种通道缴纳（{channels}）；"
                              "通道内是否可用卡支付以当日选项为准，卡片测算适用于通道内可卡支付或境外日常消费的情形。")
             else:
-                steps.append(f"已核对 {ctx.school_name} 的官方缴费方式；"
+                steps.append(f"已核对 {school} 的官方缴费方式；"
                              "学费能否用信用卡缴纳未明确收录，请以学校缴费页面为准。")
         if payment is not None and payment.summary:
             # Only surface summaries already written in Chinese; the English

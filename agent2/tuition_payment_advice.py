@@ -5,6 +5,7 @@ Uses TUITION_PAYMENT_DETAIL and CREDIT_CARD catalog only — no invented FX/scho
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -12,7 +13,8 @@ from typing import Any
 from agent2.orchestration.domains.credit_card_engine import recommend
 from agent2.orchestration.domains.credit_card_repository import (
     CreditCardRepositoryError, RdsCreditCardRepository)
-from agent2.tuition_knowledge import PaymentDetail, TuitionContext, TuitionRate
+from agent2.tuition_knowledge import (SCHOOL_NAME_ZH, PaymentDetail,
+                                      TuitionContext, TuitionRate)
 
 BILLING_CYCLE_ZH = {
     "per_year_advance": "按学年预付（通常一次付清全年）",
@@ -22,6 +24,138 @@ BILLING_CYCLE_ZH = {
     "installment": "分期缴纳",
     "other": "按学校/项目另行规定",
 }
+
+INSTALLMENT_PERIOD_ZH = {
+    "month": "按月",
+    "term": "按学期",
+    "year": "按学年",
+}
+
+# Keep card-advice steps Chinese; engine scenario ids stay English in payloads.
+SCENARIO_LABELS_ZH = {
+    "online": "网购", "dining": "餐饮", "travel": "旅行",
+    "travel_and_transport": "旅行与交通", "travel_and_dining": "旅行与餐饮",
+    "overseas": "境外消费", "mainland_china": "内地消费",
+    "mainland_china_and_macau": "内地及澳门消费",
+    "retail": "零售消费", "groceries": "日常采购", "general": "日常消费",
+    "selected_retail": "指定零售类别", "selected_lifestyle": "指定生活消费类别",
+    "dining_and_lifestyle": "餐饮及生活消费", "gas_and_groceries": "加油及日常采购",
+    "tuition": "学费",
+}
+
+# Catalogue payment-method ids → Chinese labels; unmapped ids fall back to a
+# generic Chinese phrase so snake_case identifiers never reach the answer.
+PAYMENT_METHOD_ZH = {
+    "529": "529 教育储蓄计划",
+    "ach_epayment": "ACH 电子支付",
+    "atm": "ATM",
+    "atm_bill": "ATM 账单缴费",
+    "axess_echeck": "Axess 电子支票",
+    "bank_counter": "银行柜台",
+    "bank_counter_atm": "银行柜台/ATM",
+    "bank_draft": "银行汇票",
+    "bank_remittance_wire": "银行电汇",
+    "cash_in_office": "校内现金缴费",
+    "check_usd": "美元支票",
+    "check_usd_us_bank": "美元支票（美国银行账户）",
+    "cheque_deposit_machine": "支票存款机",
+    "college_arrangements": "按学院安排缴费",
+    "cuhk_fee_payment_channels": "中大官方缴费渠道",
+    "cusis_online": "CUSIS 在线缴费",
+    "department_direct": "院系直接收款",
+    "flywire_bank_transfer": "Flywire 银行转账",
+    "flywire_card_option": "Flywire 卡支付选项",
+    "flywire_local_currency_options": "Flywire 本地币选项",
+    "flywire_overseas": "Flywire 境外通道",
+    "flywire_portal": "Flywire 平台",
+    "flywire_via_college": "经学院办理的 Flywire",
+    "hang_seng_counter": "恒生银行柜台",
+    "hku_portal_instructions": "港大门户站缴费指引",
+    "hkust_registry_payment_channels": "科大教务处缴费渠道",
+    "internet_banking": "网上银行",
+    "internet_banking_bill": "网上银行账单缴费",
+    "mitpay_ach": "MITPay ACH 缴费",
+    "monthly_payment_plan": "按月分期计划",
+    "online_bank": "网上银行",
+    "pay_my_tuition": "PayMyTuition 平台",
+    "payroll_deduction": "工资/津贴代扣",
+    "pps": "缴费灵（PPS）",
+    "programme_catalog_channels": "课程目录列明渠道",
+    "programme_page_channels": "课程页面列明渠道",
+    "programme_specific": "按课程规定",
+    "sis_online": "SIS 在线缴费",
+    "student_invoice_banking": "学生账单银行缴费",
+    "telegraphic_transfer_hsbc_hk": "汇丰香港电汇",
+    "telegraphic_transfer_nonlocal": "非本地电汇",
+    "tigerhub_electronic": "TigerHub 电子缴费",
+    "wechat_pay_alipay": "微信支付/支付宝",
+    "wechat_pay_alipay_alipayhk": "微信支付/支付宝（含 AlipayHK）",
+    "wechat_pay_alipay_fps_bocpay_unionpay": "微信支付/支付宝/转数快/银联等本地渠道",
+    "wire_bank": "银行电汇",
+    "wire_convera": "Convera 电汇",
+    "wire_flywire": "Flywire 电汇",
+    "wire_transfermate": "TransferMate 电汇",
+    "yale_payment_plan": "耶鲁分期缴费计划",
+    "yalepay_ach": "YalePay ACH 缴费",
+}
+
+# Catalogue portal names → Chinese labels (system names like CUSIS stay as-is).
+PORTAL_NAME_ZH = {
+    "HKUST taught PG programme catalog": "科大修课式研究生课程目录",
+    "CUHK Graduate School Fees": "中大研究院费用页",
+    "MITPay": "MITPay",
+    "my.harvard / Student Accounts": "my.harvard 学生账户",
+    "HKUST Registry tuition rates": "科大教务处学费页",
+    "HKU SIS / student invoice": "港大 SIS 学生账单",
+    "Harvard Student Financial Services": "哈佛学生财务服务",
+    "CUSIS / CUHK Finance Office": "中大 CUSIS/财务处",
+    "Portico (MyMoney) / Flywire": "Portico（MyMoney）/ Flywire",
+    "College admissions / college finance": "学院招生/财务办公室",
+    "HKUST Registry research PG tuition": "科大教务处研究型研究生学费页",
+    "Student Financial Center (TigerHub)": "学生财务中心（TigerHub）",
+    "Individual TPg programme pages": "各修课式研究生课程页面",
+    "Saïd Business School / department": "赛德商学院/所在院系",
+    "Axess Bill & Payment System": "Axess 账单与缴费系统",
+    "SIS invoice / HKU Finance Office": "港大 SIS 账单/财务处",
+    "Department for Continuing Education": "继续教育系",
+    "YalePay": "YalePay",
+    "SIS / HKUST Central Student Financials Unit": "科大 SIS/中央学生财务组",
+    "College finance (varies by college)": "各学院财务处（因学院而异）",
+    "Student Financial Center": "学生财务中心",
+    "HKU SIS / programme fee notice": "港大 SIS/课程费用通知",
+    "CUHK RES tuition pages": "中大教务处学费页",
+}
+
+CHANNEL_ZH = {
+    "flywire": "Flywire",
+    "convera": "Convera",
+    "transfermate": "TransferMate",
+    "pay_my_tuition": "PayMyTuition",
+    "fps": "转数快（FPS）",
+    "alipay": "支付宝",
+    "wechat_pay": "微信支付",
+    "unionpay_app": "银联 App 支付",
+    "boc_pay": "中银智慧付（BoC Pay）",
+}
+
+_SCHOOL_NAME_PAIRS = sorted(SCHOOL_NAME_ZH.items(), key=lambda kv: -len(kv[0]))
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _zh_payee(payee: str) -> str | None:
+    """Localise school names inside the payee line; keep bank details intact.
+
+    Returns None when the result still has no Chinese content — callers then
+    drop the English line and rely on a generic Chinese sentence instead.
+    """
+    text = payee
+    for en, zh in _SCHOOL_NAME_PAIRS:
+        if en in text.casefold():
+            text = re.sub(re.escape(en), zh, text, flags=re.IGNORECASE)
+    return text if _has_cjk(text) else None
 
 
 def _primary_rate(rates: list[TuitionRate]) -> TuitionRate | None:
@@ -42,31 +176,48 @@ def payment_steps(payment: PaymentDetail | None) -> list[str]:
         return []
     steps = [
         f"缴费节奏：{BILLING_CYCLE_ZH.get(payment.billing_cycle, payment.billing_cycle)}。"
-        + (f"分期约 {payment.installment_count} 次（{payment.installment_period}）。"
+        + (f"分期约 {payment.installment_count} 次"
+           f"（{INSTALLMENT_PERIOD_ZH.get(payment.installment_period, '按学校安排')}）。"
            if payment.installment_count else ""),
     ]
     if payment.due_rule:
-        steps.append(f"截止日期规则：{payment.due_rule}")
+        if _has_cjk(payment.due_rule):
+            steps.append(f"截止日期规则：{payment.due_rule}")
+        else:
+            # English source rules stay out of the chat; keep a Chinese summary.
+            steps.append("截止日期规则：以学校缴费通知书和缴费平台公布的截止日期为准。")
     if payment.payee:
-        steps.append(f"收款方：{payment.payee}。")
+        payee_zh = _zh_payee(payment.payee)
+        steps.append(
+            f"收款方：{payee_zh}。"
+            if payee_zh
+            else "收款方：以学校缴费通知书列明的收款账户为准。")
     if payment.portal_name or payment.portal_url:
-        portal = payment.portal_name or "学校缴费门户"
+        portal = PORTAL_NAME_ZH.get(payment.portal_name or "", "学校缴费门户")
         if payment.portal_url:
             steps.append(f"办理入口：{portal}（{payment.portal_url}）。")
         else:
             steps.append(f"办理入口：{portal}。")
     if payment.payment_methods:
-        steps.append("官方列出的支付方式：" + "、".join(payment.payment_methods) + "。")
+        methods = [PAYMENT_METHOD_ZH.get(m, "") for m in payment.payment_methods]
+        methods = [m for m in methods if m]
+        if methods:
+            steps.append("官方列出的支付方式：" + "、".join(methods) + "。")
     if payment.accepts_credit_card == 0:
         steps.append("学校说明：学生账户学费支付不接受信用卡/借记卡。")
     elif payment.accepts_credit_card == 1:
         steps.append("学校说明：可用信用卡支付学费（以缴费页面当日选项为准）。")
     if payment.supports_multi_currency == 1:
-        channels = "、".join(payment.multi_currency_channels) or "国际支付通道"
-        steps.append(f"支持多币种/本地币支付通道：{channels}。")
-        if payment.multi_currency_note:
+        channels = [CHANNEL_ZH.get(c, "") for c in payment.multi_currency_channels]
+        channels = [c for c in channels if c]
+        channels_txt = "、".join(channels) or "国际支付通道"
+        steps.append(f"支持多币种/本地币支付通道：{channels_txt}。")
+        if payment.multi_currency_note and _has_cjk(payment.multi_currency_note):
+            # English source notes stay out of customer-facing Chinese steps.
             steps.append(payment.multi_currency_note)
-    if payment.summary:
+    if payment.summary and _has_cjk(payment.summary):
+        # English source quotes stay out of customer-facing Chinese steps;
+        # they remain available in the payload for evidence.
         steps.append(payment.summary)
     return [s for s in steps if s]
 
@@ -249,7 +400,9 @@ def card_steps(card_payload: dict[str, Any]) -> list[str]:
     for rec in recs:
         fx = rec.get("foreign_transaction_fee_rate")
         fx_txt = f"外币手续费约 {float(fx)*100:.2f}%" if fx is not None else "外币手续费未收录"
-        matched = "、".join(rec.get("matched_scenarios") or []) or "一般消费"
+        matched = "、".join(
+            SCENARIO_LABELS_ZH.get(s, s) for s in (rec.get("matched_scenarios") or [])
+        ) or "一般消费"
         value = (f"年净收益约 {rec.get('estimated_annual_net_value')} 港元；"
                  if card_payload.get("value_estimate_available") else "")
         steps.append(
