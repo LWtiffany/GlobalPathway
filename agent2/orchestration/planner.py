@@ -20,6 +20,7 @@ INTENT_DOMAIN: dict[str, Domain] = {
 
 # 「信用卡开户/开卡」整段只算信用卡，避免再拆出 bank_account（不含单独「办卡+开户」并列）。
 _CARD_ACCOUNT = re.compile(r"(?:信用卡|credit\s*card)\s*(?:开户|开卡)", re.I)
+_ORDER_FLOW = re.compile(r"先后|顺序|先办|再办|先做|下一步", re.I)
 
 RULES_CONFIDENCE = 0.95
 LLM_CONFIDENCE = 0.80
@@ -91,8 +92,11 @@ class RuleTaskPlanner:
                 continue
             if intent == "hsbc_account" and investment_account:
                 continue
+            order_flow = bool(_ORDER_FLOW.search(request.text))
             if intent == "credit_card" and (ambiguous_card or account_only_card):
-                continue
+                # 交学费/开户/办卡先后：允许办卡进入信用卡域做顺序建议。
+                if not (order_flow and re.search(r"办卡|信用卡", request.text)):
+                    continue
             if intent == "hsbc_account" and any(left <= match.start() < right
                                                  for left, right in card_account_spans):
                 continue

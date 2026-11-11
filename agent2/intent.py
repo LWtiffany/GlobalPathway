@@ -91,22 +91,31 @@ INTENTS = [
     ("visa_documents", re.compile(
         r"签证|学签|(?<![a-z])visa(?!\s*卡)(?![a-z])|(?<![a-z])cas(?![a-z])", re.I)),
     ("remittance_tuition", re.compile(
-        r"学费|tuition(?:\s*fees?)?|缴学费|交学费|学费汇", re.I)),
+        r"学费|tuition(?:\s*fees?)?|缴学费|交学费|学费汇"
+        r"|缴费通知|学费账单|录取通知"
+        r"|收款(?:人|信息|账户|账号)|SWIFT|汇款信息"
+        r"|代汇|父母.{0,16}(?:汇|交|付).{0,12}学费"
+        r"|留学购汇|购汇额度|超额购汇|便利化额度|年度(?:购汇)?额度|超年度", re.I)),
     ("remittance_living", re.compile(
         r"生活费|生活开支|生活费汇|living\s*(?:cost|expense|fee)s?"
+        r"|生活费.{0,8}(?:购汇|额度|安全)|孩子.{0,12}生活费"
         r"|(?<!学费)汇款", re.I)),
     ("hsbc_account", _BANK_ACCOUNT),
     ("credit_card", _CREDIT_CARD),
-    # 裸「刷卡」仅在境外/海外语境；换汇/购汇/汇率归外汇咨询
+    # 境外刷卡/换汇；裸「购汇/额度」已由学费/生活费意图优先承接
     ("overseas_spending", re.compile(
         r"境外消费|海外消费|(?:境外|海外).{0,8}刷卡|怎么刷卡"
-        r"|换汇|购汇|结汇|外汇|汇率|foreign\s*exchange|\bfx\b", re.I)),
+        r"|换汇|结汇|外汇|汇率|foreign\s*exchange|\bfx\b|购汇", re.I)),
 ]
+
+
+_ORDER_FLOW = re.compile(r"先后|顺序|先办|再办|先做|下一步", re.I)
 
 
 def find_intent_matches(text: str) -> list[tuple[int, str]]:
     """Return (start, intent) for every INTENTS hit, in first-occurrence order within each pattern."""
     matches: list[tuple[int, str]] = []
+    order_flow = bool(_ORDER_FLOW.search(text))
     for intent, pattern in INTENTS:
         match = pattern.search(text)
         if match:
@@ -114,7 +123,9 @@ def find_intent_matches(text: str) -> list[tuple[int, str]]:
                 continue
             if intent == "credit_card" and (is_ambiguous_bank_card(text)
                                            or is_account_only_card_mention(text)):
-                continue
+                # 「交学费 / 开户 / 办卡先后」允许把办卡算作信用卡域，用于顺序建议。
+                if not (order_flow and re.search(r"办卡|信用卡", text)):
+                    continue
             matches.append((match.start(), intent))
     return matches
 

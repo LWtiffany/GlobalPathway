@@ -35,13 +35,15 @@ _OPERATION_PATTERNS: tuple[tuple[CapabilityOperation, re.Pattern], ...] = (
 )
 
 _ASPECT_PATTERNS = {
-    "fees": re.compile(r"年费|费用|手续费|利率|APR|借款成本", re.I),
+    "fees": re.compile(
+        r"年费|费用|手续费|利率|APR|借款成本|汇率|牌价|到账(?:金额|多少)|实时汇率|哪家.*便宜|最便宜",
+        re.I),
     "rewards": re.compile(r"权益|回赠|返现|积分|里程|奖赏|优惠", re.I),
     "eligibility": re.compile(r"资格|条件|能申请|可以申请|获批|居民|收入|年龄", re.I),
-    "documents": re.compile(r"材料|文件|证明|证件", re.I),
+    "documents": re.compile(r"材料|文件|证明|证件|还缺|缺什么|缴费通知", re.I),
     "process": re.compile(r"流程|步骤|怎么|如何", re.I),
-    "timeline": re.compile(r"多久|时间|截止|什么时候", re.I),
-    "limits": re.compile(r"额度|限额|上限", re.I),
+    "timeline": re.compile(r"多久|时间|截止|什么时候|先做|先什么|赶紧|来不及", re.I),
+    "limits": re.compile(r"额度|限额|上限|超额|超年度|便利化", re.I),
     "necessity": re.compile(r"要不要|需不需要|是否需要|有必要|必须", re.I),
     "alternatives": re.compile(r"别的|其他|另外|换一个|下一个|之外", re.I),
 }

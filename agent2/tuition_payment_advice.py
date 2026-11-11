@@ -142,21 +142,81 @@ def _monthly_spend_from_tuition(rate: TuitionRate | None, payment: PaymentDetail
     return (amount / Decimal("12")).quantize(Decimal("0.01"))
 
 
-def _card_markets(school_country: str | None) -> list[str]:
-    # Always include Hong Kong shelf (tuition reward + dual-currency data).
-    markets = ["Hong Kong"]
-    if school_country == "US":
-        markets.append("US")
-    elif school_country == "UK":
-        markets.append("UK")
-    return markets
+def _normalize_school_country(school_country: str | None) -> str | None:
+    raw = (school_country or "").strip()
+    if not raw:
+        return None
+    key = raw.upper().replace(".", "")
+    if key in {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA", "美国"}:
+        return "US"
+    if key in {"UK", "GB", "GBR", "UNITED KINGDOM", "GREAT BRITAIN", "英国"}:
+        return "UK"
+    if key in {"HK", "CN-HK", "HONG KONG", "香港", "中国香港"}:
+        return "Hong Kong"
+    return raw
+
+
+def _local_card_market(school_country: str | None) -> str | None:
+    """Study destination shelf for tuition cards — prefer local issuance to avoid FX."""
+    country = _normalize_school_country(school_country)
+    if country in {"US", "UK"}:
+        return country
+    if country == "Hong Kong":
+        return "Hong Kong"
+    return None
+
+
+def _pick_ordered(ranked, *, limit: int = 3) -> list:
+    """Primary → supplements → alternatives → ranked_candidates, de-duplicated."""
+    ordered = []
+    if ranked.primary:
+        ordered.append(ranked.primary)
+    ordered.extend(list(ranked.supplements or [])[:2])
+    ordered.extend(list(ranked.alternatives or [])[:2])
+    if len(ordered) < limit:
+        for item in ranked.ranked_candidates or []:
+            if item.card_id in {p.card_id for p in ordered}:
+                continue
+            ordered.append(item)
+            if len(ordered) >= limit:
+                break
+    return ordered[:limit]
+
+
+def _serialize_card_pick(item, *, role: str | None = None, monthly=None,
+                        currency: str | None = None) -> dict[str, Any]:
+    return {
+        "card_id": item.card_id,
+        "product_name": item.product_name,
+        "issuing_bank": item.issuing_bank,
+        "role": role or item.role,
+        "market": getattr(item, "market", None),
+        "matched_scenarios": list(item.matched_scenarios or []),
+        "estimated_annual_reward": float(item.estimated_annual_reward_hkd or 0),
+        "estimated_annual_fee": float(item.estimated_annual_fee_hkd or 0),
+        "estimated_annual_fx_cost": float(item.estimated_annual_fx_cost_hkd or 0),
+        "estimated_annual_net_value": float(item.estimated_annual_net_value_hkd or 0),
+        "foreign_transaction_fee_rate": (
+            float(item.foreign_transaction_fee_rate)
+            if item.foreign_transaction_fee_rate is not None else None),
+        "main_benefits": list(item.main_benefits or [])[:6],
+        "official_url": item.official_url,
+        "eligibility": item.eligibility.status if item.eligibility else None,
+        "monthly_spend_basis": float(monthly) if monthly is not None else None,
+        "currency_note": currency or None,
+    }
 
 
 def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
                             invoice_currency: str | None = None,
                             profile_facts: dict | None = None,
                             now: datetime | None = None) -> dict[str, Any]:
-    """Rank cards for tuition settlement when multi-currency or card payment applies."""
+    """Rank cards for tuition settlement when multi-currency or card payment applies.
+
+    US/UK tuition: prefer the local HSBC shelf first (avoids HK foreign-transaction
+    fees on USD/GBP bills). Hong Kong cards are backup only, never mixed into the
+    same net-value ranking as local cards.
+    """
     payment = tuition.payment
     result: dict[str, Any] = {
         "eligible_for_card_pitch": False,
@@ -164,6 +224,7 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
         "scenarios": [],
         "recommendations": [],
         "limitations": [],
+        "preferred_market": None,
     }
     if payment is None:
         result["reason"] = "暂无学校缴费方式资料，先按学校账单上的汇款/转账路径办理。"
@@ -175,31 +236,45 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
         result["reason"] = "学校当前资料未显示信用卡或多币种刷卡通道，建议优先按账单上的电汇/银行转账办理。"
         return result
 
+    local_market = _local_card_market(tuition.school_country)
+    result["preferred_market"] = local_market or "Hong Kong"
     result["eligible_for_card_pitch"] = True
-    if accepts_card:
+    place_zh = {"US": "美国", "UK": "英国", "Hong Kong": "香港"}.get(
+        local_market or "", "当地")
+    if local_market in {"US", "UK"}:
+        result["reason"] = (
+            f"缴{place_zh}学费优先参考{place_zh}发行的卡，通常可减少外币手续费。"
+        )
+    elif accepts_card:
         result["reason"] = "学校接受信用卡缴学费时，可参考下列卡片。"
     else:
-        # Card refusal is already stated in payment_steps; keep this short.
         result["reason"] = "若 Flywire 等通道当日支持刷卡，或用于境外日常消费，可参考下列卡片。"
-        result["limitations"].append(
-            "未计入支付平台加点或学校额外刷卡费。"
-        )
+    result["limitations"].append("未计入支付平台加点或学校额外刷卡费。")
 
     rate = _primary_rate(tuition.rates)
     monthly = _monthly_spend_from_tuition(rate, payment, invoice_amount)
-    scenarios = ["tuition"]
-    # Foreign-currency tuition → also score overseas FX drag.
     currency = (invoice_currency or (rate.currency if rate else "") or "").upper()
-    if currency and currency not in {"HKD", "CNY", "RMB"}:
-        scenarios.append("overseas")
-    result["scenarios"] = scenarios
+    # Local shelf pays tuition in local currency → no FX scenario.
+    # HK backup on USD/GBP bills → include overseas so FX fees are scored.
+    local_scenarios = ["tuition"]
+    hk_scenarios = ["tuition"]
+    foreign_bill = bool(currency and currency not in {"HKD", "CNY", "RMB"})
+    if foreign_bill and local_market not in {"US", "UK"}:
+        local_scenarios.append("overseas")
+    if foreign_bill:
+        hk_scenarios.append("overseas")
+    result["scenarios"] = local_scenarios
 
     facts = dict(profile_facts or {})
     if monthly is not None:
         facts["estimated_monthly_spend_hkd"] = str(monthly)
-    # Soft student hint improves student-card eligibility when profile is sparse.
+    # Soft student hint helps student-card eligibility when profile is sparse.
     facts.setdefault("applicant_identity", "student")
     facts.setdefault("role", "student")
+    if local_market == "US":
+        facts.setdefault("application_region", "US")
+    elif local_market == "UK":
+        facts.setdefault("application_region", "UK")
 
     # Lazy imports: avoid agent2.orchestration package init ↔ fx ↔ this module cycle.
     from agent2.orchestration.domains.credit_card_engine import recommend
@@ -208,60 +283,53 @@ def recommend_tuition_cards(*, tuition: TuitionContext, invoice_amount=None,
 
     repo = RdsCreditCardRepository()
     clock = now or datetime.now(timezone.utc)
-    products = []
+
+    def _load(market: str):
+        return repo._load(market, clock).products
+
     try:
-        for market in _card_markets(tuition.school_country):
-            catalog = repo._load(market, clock)  # sync path; advice is sync-friendly
-            products.extend(catalog.products)
+        local_products = _load(local_market) if local_market else []
+        hk_products = [] if local_market == "Hong Kong" else _load("Hong Kong")
+        if not local_market:
+            local_products = _load("Hong Kong")
+            hk_products = []
     except CreditCardRepositoryError as exc:
         result["limitations"].append(f"信用卡目录暂不可用：{exc}")
         return result
 
-    if not products:
+    if not local_products and not hk_products:
         result["limitations"].append("当前市场无可用信用卡产品目录。")
         return result
 
-    ranked = recommend(products, facts, scenarios, preference="no_preference", now=clock)
-    picks = []
-    ordered = []
-    if ranked.primary:
-        ordered.append(ranked.primary)
-    ordered.extend(list(ranked.supplements or [])[:2])
-    ordered.extend(list(ranked.alternatives or [])[:2])
-    # Fall back to top ranked candidates when supplements/alternatives filters are empty.
-    if len(ordered) < 2:
-        for item in ranked.ranked_candidates or []:
-            if item.card_id in {p.card_id for p in ordered}:
-                continue
-            ordered.append(item)
-            if len(ordered) >= 3:
-                break
-    for item in ordered[:3]:
-        picks.append({
-            "card_id": item.card_id,
-            "product_name": item.product_name,
-            "issuing_bank": item.issuing_bank,
-            "role": item.role,
-            "matched_scenarios": list(item.matched_scenarios or []),
-            "estimated_annual_reward": float(item.estimated_annual_reward_hkd or 0),
-            "estimated_annual_fee": float(item.estimated_annual_fee_hkd or 0),
-            "estimated_annual_fx_cost": float(item.estimated_annual_fx_cost_hkd or 0),
-            "estimated_annual_net_value": float(item.estimated_annual_net_value_hkd or 0),
-            "foreign_transaction_fee_rate": (
-                float(item.foreign_transaction_fee_rate)
-                if item.foreign_transaction_fee_rate is not None else None),
-            "main_benefits": list(item.main_benefits or [])[:6],
-            "official_url": item.official_url,
-            "eligibility": item.eligibility.status if item.eligibility else None,
-            "monthly_spend_basis": float(monthly) if monthly is not None else None,
-            "currency_note": currency or None,
-        })
+    picks: list[dict[str, Any]] = []
+    # 1) Local shelf first — never cross-rank with HK HKD net value.
+    if local_products:
+        local_ranked = recommend(
+            local_products, facts, local_scenarios, preference="no_preference", now=clock)
+        for idx, item in enumerate(_pick_ordered(local_ranked, limit=3)):
+            role = "primary" if idx == 0 else "alternative"
+            picks.append(_serialize_card_pick(
+                item, role=role, monthly=monthly, currency=currency))
+            picks[-1]["market"] = local_market
+
+    # 2) HK only as backup when local shelf is thin (FX fee on USD/GBP tuition).
+    need_backup = len(picks) < 2 and hk_products
+    if need_backup:
+        hk_ranked = recommend(
+            hk_products, facts, hk_scenarios, preference="no_preference", now=clock)
+        for item in _pick_ordered(hk_ranked, limit=3 - len(picks)):
+            picks.append(_serialize_card_pick(
+                item, role="alternative", monthly=monthly, currency=currency))
+            picks[-1]["market"] = "Hong Kong"
+        if local_market in {"US", "UK"} and any(p.get("market") == "Hong Kong" for p in picks):
+            result["limitations"].append(
+                f"香港卡仅作备用：刷{place_zh}学费通常产生外币手续费，优先考虑{place_zh}本地卡。"
+            )
+
     result["recommendations"] = picks
     if monthly is not None:
         money = _format_money(monthly, currency or None)
-        result["limitations"].append(
-            f"测算假设月均刷卡约 {money}。"
-        )
+        result["limitations"].append(f"测算假设月均刷卡约 {money}。")
     if not picks:
         result["limitations"].append("有产品目录但无符合当前资格过滤的卡片。")
     return result
@@ -276,16 +344,20 @@ def card_steps(card_payload: dict[str, Any]) -> list[str]:
     if not recs:
         return steps
     role_zh = {"primary": "首选", "alternative": "备选", "supplement": "补充"}
+    market_zh = {"US": "美国", "UK": "英国", "Hong Kong": "香港", "CN-HK": "香港"}
     for rec in recs:
         fx = rec.get("foreign_transaction_fee_rate")
         fx_txt = f"外币手续费约 {float(fx)*100:.2f}%" if fx is not None else "外币手续费未收录"
         label = role_zh.get(rec.get("role") or "", rec.get("role") or "")
+        market = market_zh.get(rec.get("market") or "", rec.get("market") or "")
+        bank = rec.get("issuing_bank") or ""
+        issuer = f"{bank}·{market}" if market else bank
         net = rec.get("estimated_annual_net_value")
         reward = rec.get("estimated_annual_reward")
         fee = rec.get("estimated_annual_fee")
         fx_cost = rec.get("estimated_annual_fx_cost")
         line = (
-            f"{label} {rec.get('product_name')}（{rec.get('issuing_bank')}）："
+            f"{label} {rec.get('product_name')}（{issuer}）："
             f"年净收益约 {net}（回馈 {reward} − 年费 {fee} − 外币成本 {fx_cost}；{fx_txt}）"
         )
         if rec.get("official_url"):
