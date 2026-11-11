@@ -1713,7 +1713,9 @@ async function goBackFollowUp() {
 }
 
 function proposalValue(p, value) {
-  if (S.fields[p.field_code]?.sensitivity === "financial") return "已提供（金额不在此处重复显示）";
+  // Show real values in the change card: asset/income bands are already ranges
+  // (their option labels reveal nothing beyond the band), and hiding them made
+  // old→new renders read as "已提供 → 已提供", an unconfirmable change.
   return value === null || value === undefined ? "（空）" : valueLabel(p.field_code, value);
 }
 
