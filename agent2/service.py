@@ -29,6 +29,7 @@ from .passwords import (dummy_hash, hash_password, needs_rehash, password_length
                         password_length_ok, verify_password)
 from .runner import Agent2Runner
 from .store import dumps
+from .tuition_knowledge import resolve_school_id
 
 DEFAULT_PROFILE_FIELDS = ("role", "destination_country", "visa_category", "school", "planned_start_date")
 SESSION_TTL = timedelta(days=7)
@@ -391,6 +392,14 @@ class Agent2Service:
     def _write_fields(self, db, profile_id, values, source_type, *, source_message_id=None,
                       profile_version=None, actor_type="user"):
         now = self._ts()
+        if "school" in values:
+            # Free-text school mentions (Chinese or English) must land in the
+            # canonical profile as SCHOOL.school_id UUIDs — the column has an
+            # FK to school(school_id).
+            resolved = resolve_school_id(values["school"])
+            if resolved:
+                values = dict(values)
+                values["school"] = resolved
         for code, value in values.items():
             old = db.execute("SELECT value_json, field_version FROM profile_field_values "
                              "WHERE profile_id=? AND field_code=?", (profile_id, code)).fetchone()
@@ -1401,6 +1410,13 @@ class Agent2Service:
             # explicitly answers the structured consent question via confirmed_fields.
             if code == "want_credit_card":
                 continue
+            if code == "school" and value:
+                # Compare against the catalogue UUID so that 「香港大学」 and the
+                # stored school_id are recognised as the same school.
+                resolved = resolve_school_id(value) or value
+                if profile.confirmed(code) == resolved or (code, dumps(resolved)) in already:
+                    continue
+                value = resolved
             if profile.confirmed(code) == value or (code, dumps(value)) in already:
                 continue
             # Skip mirrors of already-confirmed profile facts — they are not new choices.
