@@ -820,7 +820,7 @@ function drawSheet() {
       h("span", { class: "meta" },
         h("span", null, "基本信息 ", h("em", { class: "sf" }, filled), ` / ${GRID.length}`),
         h("span", null, "待办已完成 ", h("em", { class: "sf" }, done), ` / ${S.plan.length}`),
-        h("button", { class: "btn", onclick: () => go("#/report/" + S.pid) }, "导出报告"),
+        h("button", { class: "btn", onclick: () => openReportDialog(S.pid) }, "导出报告"),
         h("button", { class: "btn ghost profile-sheet-close", type: "button", onclick: closeCurrentProfile }, "收起档案"))),
     h("div", { class: "mt" }, "一 · 留学基本信息", h("button", { class: "ed", onclick: () => openEdit() }, "✎ 编辑信息")),
     h("div", { class: "grid" }, GRID.map(cell)),
@@ -2023,40 +2023,46 @@ async function openEdit(focus) {
   form.querySelector(".focus input, .focus select")?.focus();
 }
 
-// ---------- /report/:id ----------
+// ---------- report ----------
 
-async function renderReport(pid) {
-  shell(h("div", { class: "loading" }, "正在生成报告…"), "report");
-  const [profile, adv, plan] = await Promise.all([api("GET", `/profiles/${pid}`), api("GET", `/profiles/${pid}/advice`),
-    api("GET", `/profiles/${pid}/plan`)]);
+function reportDocument(profile, adv, plan) {
   const now = new Date().toISOString();
   const name = val(profile, "beneficiary") || "未命名档案";
-  const visa = adv.advice.visa;
-  const cites = visa ? visa.payload.citations || [] : [];
+  const advice = adv.advice || {};
+  const cites = Object.values(advice).flatMap((item) => item?.payload?.citations || []);
   const cn = {};
-  cites.forEach((c, i) => { cn[c.citation_id] = i + 1; });
+  const uniqueCites = cites.filter((c) => c && c.citation_id && !cn[c.citation_id]
+    && (cn[c.citation_id] = Object.keys(cn).length + 1));
   const pairs = [];
   for (let i = 0; i < GRID.length; i += 2) pairs.push(GRID.slice(i, i + 2));
   const topicBlock = (t) => {
-    if (t.key !== "visa") return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 待补充`)];
-    if (!visa) return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 未开始`)];
-    const pl = visa.payload;
-    return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 最近更新于 ${fmtFull(visa.updated_at)}`),
-      h("p", null, customerText(pl.summary, "当前资料不足以支持确定回答，请以官方最新要求为准。")),
-      h("ol", null, (pl.materials || []).filter((m) => !isInternalOutput(m.name_zh)
+    const item = advice[t.key];
+    if (!item) return h("article", { class: "report-topic" },
+      h("div", { class: "report-topic-head" }, h("span", null, t.no), h("h3", { class: "sf" }, t.title),
+        h("em", null, "尚未开始")),
+      h("p", { class: "note" }, "您可以在对话中提出相关问题，系统会逐步补全这部分方案。"));
+    const pl = item.payload || {};
+    const summary = customerText(pl.summary, "这部分建议仍在整理中，请以已核验资料为准。");
+    const steps = (pl.steps || []).filter((step) => !isInternalOutput(step)).slice(0, 6);
+    const materials = (pl.materials || []).filter((m) => !isInternalOutput(m.name_zh)
         && !isInternalOutput(m.name_en) && !isInternalOutput(m.condition_text)).map((m) => h("li", null, m.name_en && !isInternalOutput(m.name_en) ? `${m.name_zh}（${m.name_en}）` : m.name_zh,
         h("span", { class: "tagx " + m.applicability }, TAG[m.applicability]),
         cn[m.citation_id] ? ` [${cn[m.citation_id]}]` : "",
         m.condition_text && !isInternalOutput(m.condition_text) ? h("div", { class: "note" }, `条件：${m.condition_text}`) : null,
-        (m.pending_fields || []).length ? h("div", { class: "warn" }, `待确认：${m.pending_fields.map(label).join("、")}`) : null))),
-      (pl.unconfirmed_fields || []).length ? h("p", { class: "warn" }, `待确认信息：${pl.unconfirmed_fields.map(label).join("、")}`) : null];
+        (m.pending_fields || []).length ? h("div", { class: "warn" }, `待确认：${m.pending_fields.map(label).join("、")}`) : null));
+    return h("article", { class: "report-topic" },
+      h("div", { class: "report-topic-head" }, h("span", null, t.no), h("h3", { class: "sf" }, t.title),
+        h("em", null, item.status === "stale" ? "建议待更新" : `更新于 ${fmtFull(item.updated_at)}`)),
+      h("p", { class: "report-summary" }, summary),
+      steps.length ? h("ol", { class: "report-steps" }, steps.map((step) => h("li", null, step))) : null,
+      materials.length ? h("ol", { class: "report-materials" }, materials) : null,
+      (pl.unconfirmed_fields || []).length ? h("p", { class: "warn" }, `待确认信息：${pl.unconfirmed_fields.map(label).join("、")}`) : null);
   };
-  shell(h("div", { class: "report" },
-    h("div", { class: "tools" },
-      h("button", { class: "btn ghost", onclick: () => go("#/chat/" + pid) }, "返回方案"),
-      h("button", { class: "btn", onclick: () => window.print() }, "打印 / 导出 PDF")),
-    h("h1", { class: "sf" }, `${name} · 留学准备方案报告`),
-    h("div", { class: "rmeta" }, h("span", null, `生成于 ${fmtFull(now)}`)),
+  return h("div", { class: "report" },
+    h("header", { class: "report-cover" },
+      h("p", { class: "report-kicker" }, "GLOBAL PATHWAY · PRIVATE BANKING"),
+      h("h1", { class: "sf" }, `${name} · 留学准备方案报告`),
+      h("div", { class: "rmeta" }, h("span", null, "留学准备方案快照"), h("span", null, `生成于 ${fmtFull(now)}`))),
     h("h2", null, "一 · 留学基本信息"),
     h("table", null, pairs.map((pair) => h("tr", null, pair.map((c) => [h("th", null, GRID_LABEL[c] || label(c)),
       h("td", null, val(profile, c) === undefined ? "待确认" : valueLabel(c, val(profile, c)))])))),
@@ -2066,13 +2072,72 @@ async function renderReport(pid) {
     plan.items.length ? h("ol", null, plan.items.map((i) => h("li", null, `${i.done ? "☑" : "☐"} ${i.text}`)))
       : h("p", { class: "note" }, "暂无待办。"),
     h("h2", null, "四 · 资料来源"),
-    cites.length ? h("ol", null, cites.map((c) => h("li", null, h("b", null, c.source_name), " ", safeLink(c.source_url),
+    uniqueCites.length ? h("ol", null, uniqueCites.map((c) => h("li", null, h("b", null, c.source_name), " ", safeLink(c.source_url),
       h("div", { class: "note" }, `官方资料核验时间：${fmtFull(c.verified_at)}`),
       h("div", { class: "note" }, customerText(c.quote, "").slice(0, 160) + (String(c.quote || "").length > 160 ? "…" : "")))))
       : h("p", { class: "note" }, "暂无引用来源。"),
     h("div", { class: "disc" },
       `本报告是 ${fmtFull(now)} 的方案快照，内容仅基于当时已发布的官方资料；政策可能变化，请以官方最新公布为准。`,
-      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。")), "report");
+      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。"));
+}
+
+async function downloadReport(pid, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在生成…";
+  try {
+    const response = await fetch(`/v1/profiles/${encodeURIComponent(pid)}/report.pdf`, {
+      credentials: "same-origin", headers: { Accept: "application/pdf" },
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new ApiError(payload.code || "DOWNLOAD_FAILED", payload.message || "报告下载失败");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = h("a", { href: url, download: "global-pathway-report.pdf" });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("报告已开始下载");
+  } catch (error) {
+    toast(userFacingError(error, "报告暂时无法下载，请稍后重试。"), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function openReportDialog(pid) {
+  if (!pid) return;
+  const panel = h("section", { class: "modal report-modal", role: "dialog", "aria-modal": "true",
+    "aria-labelledby": "report-title" },
+    h("div", { class: "report-modal-bar" },
+      h("div", null, h("span", { class: "lab" }, "方案快照"), h("h3", { id: "report-title", class: "sf" }, "导出报告")),
+      h("div", { class: "report-modal-actions" },
+        h("button", { class: "btn ghost", type: "button", onclick: closeOverlay }, "关闭"),
+        h("button", { class: "btn", type: "button", onclick: (event) => downloadReport(pid, event.currentTarget) }, "下载 PDF"))),
+    h("div", { class: "report-modal-loading" }, "正在整理这份方案报告…"));
+  overlay(panel);
+  try {
+    const [profile, adv, plan] = await Promise.all([
+      api("GET", `/profiles/${pid}`), api("GET", `/profiles/${pid}/advice`), api("GET", `/profiles/${pid}/plan`),
+    ]);
+    if (!document.body.contains(panel)) return;
+    panel.querySelector(".report-modal-loading").replaceWith(reportDocument(profile, adv, plan));
+  } catch (e) {
+    if (!document.body.contains(panel)) return;
+    panel.querySelector(".report-modal-loading").replaceWith(h("div", { class: "report-modal-empty" },
+      h("p", null, userFacingError(e, "报告暂时无法生成，请稍后重试。")),
+      h("button", { class: "btn", type: "button", onclick: () => openReportDialog(pid) }, "重试")));
+  }
+}
+
+async function renderReport(pid) {
+  // Preserve direct links from older reports while keeping the application in chat.
+  go("#/chat/" + pid);
+  await openReportDialog(pid);
 }
 
 // ---------- /feedback ----------

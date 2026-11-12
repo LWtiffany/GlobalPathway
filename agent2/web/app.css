@@ -341,6 +341,12 @@ a{color:#8b7140}
 .report ol{margin:4px 0;padding-left:20px}
 .report li{margin:3px 0;font-size:12px;line-height:1.6}
 .report li .note{margin-top:0}
+.report-cover{padding:4px 0 18px;border-bottom:2px solid #28251f}.report-cover h1{border:0;padding:0;margin:6px 0 0}.report-kicker{margin:0!important;color:#9d2235;font-size:10px!important;font-weight:600;letter-spacing:.18em;line-height:1.4!important}.report-cover .rmeta{margin-top:13px}
+.report-modal{width:min(1040px,calc(100vw - 48px));height:min(840px,calc(100dvh - 48px));max-width:none;padding:0;display:flex;flex-direction:column;overflow:hidden;background:#f8f5ef;border:1px solid rgba(126,109,84,.28);box-shadow:0 28px 80px rgba(31,27,21,.26)}
+.report-modal-bar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 24px;border-bottom:1px solid #e5ddd0;background:rgba(255,253,249,.92)}
+.report-modal-bar .lab{display:block;margin-bottom:3px;color:#9a7b51;font-size:10px;letter-spacing:.18em}.report-modal-bar h3{margin:0;color:#28251f;font-size:18px;font-weight:600}.report-modal-actions{display:flex;gap:8px;flex:none}.report-modal-actions .btn{white-space:nowrap}
+.report-modal>.report{width:min(860px,100%);max-width:none;box-sizing:border-box;overflow:visible;margin:0 auto;padding:34px 48px 56px;border:0;background:transparent;box-shadow:none}.report-modal{overflow-y:auto}
+.report-topic{padding:17px 18px;margin:12px 0;border:1px solid #e7dfd2;border-radius:10px;background:#fffdf9}.report-topic-head{display:flex;align-items:baseline;gap:9px;padding-bottom:10px;border-bottom:1px solid #eee7db}.report-topic-head>span{color:#a51c30;font-size:11px;letter-spacing:.1em}.report-topic h3{flex:1;margin:0;font-size:15px;color:#2a2823}.report-topic em{font-size:11px;font-style:normal;color:#8b8172}.report-summary{color:#4e493f}.report-steps,.report-materials{margin-top:10px!important}.report-materials{padding-top:10px;border-top:1px solid #eee7db}.report-modal-loading,.report-modal-empty{padding:64px 28px;text-align:center;color:#827968}.report-modal-empty .btn{margin-top:8px}
 /* Long user supplied values, names and official URLs must wrap inside their panels. */
 .m,.m *,.sheet,.sheet *,.next-rail,.next-rail *,.drawer,.drawer *,.modal,.modal *,.report,.report *{min-width:0;overflow-wrap:anywhere}
 .todo li span{flex:1;min-width:0;overflow-wrap:anywhere}
@@ -468,13 +474,8 @@ a{color:#8b7140}
   .side .pf-view,.side .pf-delete{width:30px;height:30px}
   .side .new{font-size:11px;padding:8px 10px;white-space:nowrap}
   .sheet .sh .meta{justify-content:flex-start}
+  .report-modal{width:100vw;height:100dvh;border:0;border-radius:0}.report-modal-bar{padding:14px 16px;gap:10px}.report-modal-bar h3{font-size:16px}.report-modal-actions .btn{padding:8px 10px;font-size:12px}.report-modal>.report{padding:24px 18px 40px}.report-topic{padding:14px 13px}.report-topic-head{align-items:flex-start;flex-wrap:wrap}.report-topic h3{font-size:14px}.report-topic em{width:100%}
 }
-@media print{
-  body{background:#fff}
-  .top,.gold,.report .tools,.toast{display:none!important}
-  .report{border:none;margin:0;padding:0;max-width:none}
-}
-
 /* Photo-led, destination-neutral sign-in screen. */
 body:has(.login-page){overflow:hidden;background:#f7f3ed}
 .login-page{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(420px,.85fr);width:100%;min-height:100dvh;background:#f7f3ed}
