@@ -90,11 +90,16 @@ def _beneficiary_steps(*, tuition: TuitionContext | None = None) -> list[str]:
     ]
     payment = tuition.payment if tuition else None
     if payment and (payment.payee or payment.portal_name or payment.portal_url):
+        from agent2.tuition_payment_advice import PORTAL_NAME_ZH, _zh_payee
         bits = []
         if payment.payee:
-            bits.append(f"收款方资料显示为 {payment.payee}")
+            payee_zh = _zh_payee(payment.payee)
+            bits.append(
+                f"收款方资料显示为 {payee_zh}"
+                if payee_zh else "收款方以学校缴费通知书列明的账户为准")
         if payment.portal_name or payment.portal_url:
-            portal = payment.portal_name or "学校缴费门户"
+            portal = PORTAL_NAME_ZH.get((payment.portal_name or "").strip(), "") \
+                or "学校缴费门户"
             bits.append(
                 f"缴费入口：{portal}"
                 + (f"（{payment.portal_url}）" if payment.portal_url else ""))
@@ -123,9 +128,10 @@ def _tuition_reference_steps(tuition: TuitionContext, *, invoice_amount,
     if tuition.match in {"ambiguous_school", "ambiguous_program", "not_found", "none"}:
         return steps
     if tuition.school_name and tuition.rates:
-        where = tuition.school_name
+        school = tuition.school_display or tuition.school_name
+        where = school
         if tuition.program_name:
-            where = f"{tuition.school_name}（{tuition.program_name}）"
+            where = f"{school}（{tuition.program_name}）"
         years = [r.academic_year for r in tuition.rates if r.academic_year]
         focus_year = years[0] if years else None
         shown = [r for r in tuition.rates
@@ -185,9 +191,9 @@ def _school_payment_body(*, place: str, tuition: TuitionContext,
     """School billing bubble + optional separate card-advice bubble."""
     if not tuition.school_name:
         return [], {}
-    target = tuition.school_name
+    target = tuition.school_display or tuition.school_name
     if tuition.program_name and tuition.match in {"exact_program", "school_wide", "school_only"}:
-        target = f"{tuition.school_name}（{tuition.program_name}）"
+        target = f"{target}（{tuition.program_name}）"
     steps = [
         f"向{target}（{place}）缴学费前，先核对缴费通知书金额与学校收款账户。",
         *_tuition_reference_steps(
@@ -299,7 +305,7 @@ def _fx_remittance_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
         has_invoice=has_invoice)
 
     if tuition and tuition.school_name and purpose_zh == "学费" and mode != "overseas":
-        summary = f"汇往{place}支付{tuition.school_name}学费：购汇额度、材料与超额办理要点。"
+        summary = f"汇往{place}支付{tuition.school_display or tuition.school_name}学费：购汇额度、材料与超额办理要点。"
     elif mode == "overseas":
         summary = f"赴{place}留学相关的购汇与境外消费准备要点。"
     elif want_beneficiary:
@@ -380,13 +386,14 @@ def _tuition_citations(tuition: TuitionContext, *, start_index: int = 1) -> list
         seen.add(url)
         cid = f"T{len(out) + start_index}"
         quote = format_rate_line(
-            rate, school=tuition.school_name, program=tuition.program_name)
+            rate, school=tuition.school_display or tuition.school_name,
+            program=tuition.program_name)
         out.append(Citation(
             citation_id=cid,
             record_id=tuition.program_id or tuition.school_id or "tuition-catalog",
             revision_id="tuition-catalog",
             evidence_id=f"tuition:{tuition.program_id or tuition.school_id}:{len(out)}",
-            source_name=f"{tuition.school_name or '学校'} 公布学费",
+            source_name=f"{tuition.school_display or tuition.school_name or '学校'} 公布学费",
             source_url=url,
             quote=quote,
             verified_at=datetime.now(timezone.utc),
@@ -697,7 +704,7 @@ class FxWorkflow:
         ]
         if tuition and tuition.school_name:
             next_actions.insert(
-                0, f"核对{tuition.school_name}缴费通知书金额与收款账户")
+                0, f"核对{tuition.school_display or tuition.school_name}缴费通知书金额与收款账户")
         if enrich_payload.get("card_advice", {}).get("recommendations"):
             next_actions.append("若走可刷卡/多币种通道，按测算核对办卡与缴费路径")
         return DomainResult(
