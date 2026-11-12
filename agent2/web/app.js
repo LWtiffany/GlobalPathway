@@ -3,8 +3,9 @@
 const $app = document.getElementById("app");
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const GRID = ["role", "beneficiary", "destination_country", "school", "course", "offer_status",
-  "planned_start_date", "payer", "visa_category"];
-const GRID_LABEL = { destination_country: "目的地", offer_status: "录取状态", planned_start_date: "入学日期" };
+  "planned_start_date", "fee_status", "payment_deadline", "payer", "remittance_purpose", "visa_category"];
+const GRID_LABEL = { destination_country: "目的地", offer_status: "录取状态", planned_start_date: "入学日期",
+  fee_status: "学费档位", payment_deadline: "缴费截止日", remittance_purpose: "汇款用途" };
 const STATUS = {
   answered: { label: "已确认", cls: "ok", why: "" },
   needs_input: { label: "待补充", cls: "", why: "还缺少关键信息，补充后再给出确定答案。" },
@@ -34,6 +35,7 @@ const S = {
 
 // 追问撤销顺序（靠前的可先被「上一步」清掉）。trail 丢失时仍可按档案回退。
 const FOLLOW_UNDO_ORDER = [
+  "remittance_purpose", "payment_deadline", "fee_status",
   "want_credit_card", "application_region", "applicant_age_band", "applicant_age",
   "us_hsbc_account_path", "uk_hsbc_account_path", "annual_income_band_hkd", "annual_income_hkd",
   "hk_resident", "hsbc_premier_path", "premier_relationship", "hsbc_relationship_balance_band",
