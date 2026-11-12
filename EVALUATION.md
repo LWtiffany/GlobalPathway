@@ -110,3 +110,21 @@ LLM 路径现状：当日 12:11 曾以旧单政策提示词成功抽取（prompt
 **验证**：原地更新单测通过（London 金额 1529→1530，版本数 1→1、version_no 不变、审计留痕）；文档变化转人工单测通过（不建版本、发布版本不被改、新增 1 审核单）；真实端到端最终稳定于 `no_change`（数值+文档均与发布版本一致）。当前状态：1 版本 PUBLISHED、0 OPEN 审核单、2 条可接受 warning。
 
 **待办（用户后续决定）**：「每日 0 点」固定时刻调度尚未硬编码——当前调度器是「距上次运行满 1440 分钟触发」，非「固定本地 0 点」。如需严格 0 点，建议用系统任务计划（Windows 任务计划程序 / cron）在 0 点调用 `agent1.py run <source>`，或用 schedule 命令挂常驻进程配合整点对齐。
+
+## 2026-11-11 补记一：Agent2 writer 升级（prompt v2 + 护栏）与 kimi-k3 分端口
+
+**背景**：用户反馈 writer 输出"死板"。排查发现 `answer_writer.py` 中 credit_card 域连 summary 都强制用确定性版本（旧版用户只会看到"主推荐：HSBC Red Credit Card"式标签），模型输出被整体丢弃——"死板"的根因是确定性锁定，不是模型档位。
+
+**工作区模型授权面探测**（2026-11-11 实测）：/models 列出 182 个，但 deepseek-v4-pro、qwen3.8-max、qwen 全 plus 档、kimi-k3.1-pro、qwen-long、MiniMax 等全部 403；**非 flash 档仅 kimi-k3 与 glm-5.3 可用**。glm-5.3 思考关不掉（918 token 全耗 reasoning、正文截断、16.9s），排除。kimi-k3 接受 `enable_thinking=False`，关闭后小请求 1.6s（快于 deepseek-v4.1-flash 的 2.3s）。
+
+**改造**：
+1. `agent2/llm/factory.py`：新增 `AGENT2_UNDERSTANDING_MODEL` / `AGENT2_WRITER_MODEL`（及对应 `_EXTRA_BODY`）分端口配置，未设回落 `AGENT2_LLM_MODEL`；并补齐 local_secrets.py 的模型名 fallback（此前 local_secrets 里的 AGENT2_LLM_MODEL 从未被读取，隐性 bug）；kimi 系纳入自动关思考前缀列表。
+2. `write_answer.jinja2` 升级 `write-answer-v2`：面向用户自然中文、结合场景、禁标签式开头；`answer_writer.py` 放开 credit_card summary（steps/materials/limitations 仍锁死）。
+3. `validate_written_answer` 新增三护栏：拉丁 token 白名单（产品名必须在 verified 文本出现，防编造产品）；促销/保证风险词黑名单（"保证/秒批/免年费"等 verified 没说就不能写）；中文数字纳入数字校验，白名单 = verified ∪ 用户原话。A/B 首轮发现量词误伤（"这两件事"的"两"被当数字拦截），中文数字模式修正为 `[一二两三四五六七八九十百千万亿]{2,}`（只拦组合数值，放过单字量词）。
+4. 护栏失败链路不变：workflow 层校验异常即静默回退确定性答案并挂 `llm_fallback` notice。
+
+**A/B 测试**（kimi-k3 vs deepseek-v4.1-flash，5 场景 × 2 模型，prompt v2）：护栏通过 10/10，事实保留率（每例 checklist）19/19 vs 19/19，延迟 flash 1.3–2.3s、kimi 2.5–3.5s。两者表达均显著优于旧标签式 summary；kimi 略口语、倾向保留官方英文名。结论：**understanding 保持 deepseek-v4.1-flash（封闭枚举抽取，flash 足够），writer 切 kimi-k3（表达质量换取 +1~2s 延迟，可自动降级兜底）**。
+
+**配置落位**：local_secrets.py 加 `AGENT2_WRITER_MODEL='kimi-k3'`；.env.example 更新为分端口模板（deepseek 主模型 + kimi writer，移除与 deepseek 冲突的 json_schema 强制项）。`scripts/benchmark_agent2_llm.py` 的 TARGETS 保留 kimi-k3 两模式供回归；A/B 专用脚本 `scripts/ab_test_writer.py` 用后删除，结果以本补记为准。
+
+**验证**：tests/llm 28 个用例全过（含 5 个新护栏用例）；`build_llm_components()` 实测 understanding=deepseek-v4.1-flash/json_object、writer=kimi-k3/json_schema+enable_thinking=False。e2e `test_full_chain_follow_up...` 存在一处仓库既有漂移（第二轮 needs_input→needs_verification，git stash 复验与本次改动无关；本地 dev 落后 origin/dev 39 commits，待 pull 后核对知识库演进意图）。understand-user-v1→v2 的过时断言已顺手修复。

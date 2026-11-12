@@ -51,3 +51,11 @@
 .login label{display:flex;flex-direction:column;gap:5px;font-size:11px;color:#8a8170;margin-bottom:14px}
 .login input{border:1px solid #d9d1c2;padding:9px 12px;background:#fff}
 pre.raw{white-space:pre-wrap;word-break:break-word;background:#f8f4ec;padding:10px;font-size:11px;max-height:280px;overflow:auto;margin:0}
+@media(max-width:700px){
+  .top{padding:0 14px}.logo{gap:8px}.logo b{font-size:15px;letter-spacing:1px}.logo small{font-size:9px;letter-spacing:1px;padding-left:8px}
+  .adm{padding:22px 14px 40px;overflow-x:auto}.adm>.tickets{display:table;width:100%;min-width:680px}
+  .drawer.wide,.drawer.wide.compare{width:96vw;max-width:96vw;padding:18px}
+  .conflict .cols{grid-template-columns:minmax(0,1fr)}.choice{border-left:0;border-top:1px solid #ece6db}
+  .choice .btn{white-space:normal}.decide .btns{flex-wrap:wrap}.decide .btns .btn{flex:1}
+  .tabs{gap:8px;align-items:center;flex-wrap:wrap}.tabs .sp{display:none}.tabs select{max-width:100%;margin:0 0 6px auto}
+}

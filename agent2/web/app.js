@@ -1,7 +1,6 @@
 "use strict";
 
 const $app = document.getElementById("app");
-const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const GRID = ["role", "beneficiary", "destination_country", "school", "course", "offer_status",
   "planned_start_date", "fee_status", "payment_deadline", "payer", "remittance_purpose", "visa_category"];
 const GRID_LABEL = { destination_country: "目的地", offer_status: "录取状态", planned_start_date: "入学日期",
@@ -27,7 +26,7 @@ const S = {
   token: null, csrf: null, user: null, fields: null, profiles: [], pid: localStorage.getItem("gp_pid"),
   profile: null, conv: null, messages: [], advice: {}, adviceScopes: {}, plan: [], proposals: [],
   relationships: [], relationshipProposals: [], missing: new Set(),
-  highlight: new Set(), flash: [], busy: false, refreshingTopics: new Set(), pending: null, sheetH: null, collapsed: false, fb: {}, el: {},
+  highlight: new Set(), flash: [], busy: false, refreshingTopics: new Set(), pending: null, sheetH: null, collapsed: true, fb: {}, el: {},
   // One-question-at-a-time follow-ups; trail lets the user undo a wrong tap.
   followSeed: null, followTrail: [], suppressFields: [],
   schools: [], programs: [], schoolById: {}, programById: {}, catalogReady: false,
@@ -62,12 +61,35 @@ function h(tag, attrs, ...kids) {
   return el;
 }
 
+function profileActionIcon(kind) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const shapes = kind === "view"
+    ? [["path", { d: "M2.2 12s3.5-6 9.8-6 9.8 6 9.8 6-3.5 6-9.8 6-9.8-6-9.8-6Z" }],
+      ["circle", { cx: "12", cy: "12", r: "2.5" }]]
+    : [["path", { d: "M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6" }]];
+  shapes.forEach(([tag, attrs]) => {
+    const shape = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.entries(attrs).forEach(([key, value]) => shape.setAttribute(key, value));
+    svg.append(shape);
+  });
+  return svg;
+}
+
 const pad = (n) => String(n).padStart(2, "0");
 
 function fmtFull(iso) {
   const d = new Date(iso);
   if (isNaN(d)) return "—";
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}（${TZ}）`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function fmtVerified(iso) {
@@ -92,7 +114,7 @@ function uuid() {
   return "c-" + Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-const label = (code) => (S.fields && S.fields[code] ? S.fields[code].label : code);
+const label = (code) => (S.fields && S.fields[code] ? S.fields[code].label : "相关信息");
 
 function valueLabel(code, v) {
   if (v === undefined || v === null) return "—";
@@ -155,7 +177,7 @@ function schoolCourseInputs(initial = {}) {
       schools = await ensureSchools(country);
     } catch (e) {
       schoolSel.replaceChildren(h("option", { value: "" }, "学校列表暂不可用"));
-      toast(e.message || "无法加载学校列表", true);
+      toast(userFacingError(e, "学校列表暂时无法加载，请稍后重试。"), true);
       return;
     }
     schoolSel.replaceChildren(h("option", { value: "" }, schools.length ? "未填写" : "暂无该地区学校"));
@@ -174,7 +196,7 @@ function schoolCourseInputs(initial = {}) {
       programs = await ensurePrograms(schoolId);
     } catch (e) {
       courseSel.replaceChildren(h("option", { value: "" }, "课程列表暂不可用"));
-      toast(e.message || "无法加载课程列表", true);
+      toast(userFacingError(e, "课程列表暂时无法加载，请稍后重试。"), true);
       return;
     }
     courseSel.replaceChildren(h("option", { value: "" }, programs.length ? "未填写" : "暂无该校课程"));
@@ -196,8 +218,16 @@ function val(profile, code) {
   return f && f.status === "confirmed" ? f.value : undefined;
 }
 
+function safeHttpUrl(raw) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : "";
+  } catch (_) { return ""; }
+}
+
 function safeLink(url) {
-  return /^https?:\/\//i.test(url || "") ? h("a", { class: "text-link", href: url, target: "_blank", rel: "noopener noreferrer" }, url) : "—";
+  const href = safeHttpUrl(url);
+  return href ? h("a", { class: "text-link", href, target: "_blank", rel: "noopener noreferrer" }, href) : "—";
 }
 
 /** Turn http(s) URLs inside plain text into clickable anchors (keeps surrounding copy). */
@@ -231,9 +261,36 @@ function linkify(text) {
 }
 
 function toast(msg, bad) {
-  const t = h("div", { class: "toast" + (bad ? " bad" : "") }, msg);
+  const t = h("div", { class: "toast" + (bad ? " bad" : ""), role: bad ? "alert" : "status", "aria-live": bad ? "assertive" : "polite" },
+    customerText(msg, "操作暂未完成，请稍后再试。"));
   document.body.append(t);
   setTimeout(() => t.remove(), 3600);
+}
+
+function isInternalOutput(text) {
+  const value = String(text || "");
+  return /\b(?:prompt|completion)\s*\d+|\b(?:evidence_ids?|source_ids?|field_code|trace_id|prompt_version)\b|\b(?:llm|gateway|model|tokens?|timeout|fallback|deterministic|routing)\b|\banswered\s+(?:result|results)\b|\bmust\s+(?:include|have|contain)\s+evidence\b|\bmissing\s+evidence\b|结果必须带证据|缺少可审计证据|(?:^|\W)(?:fx_mode|selected_lifestyle|spending_scenarios|application_region|applicant_age_band|annual_income_band_hkd)(?:$|\W)|只在\s*(?:evidence|证据)|内部(?:字段|指令|提示)|不要向用户|不可展示|模型.{0,10}(?:服务|未完成|调用|响应|回退|降级|超时)|确定性规则|模板结果|服务未完成本轮处理|耗时\s*\d|\bs\d+(?:\s*[,，、;；]\s*s\d+)*\b|(?:system|developer|assistant)\s*(?:prompt|message|instruction)|<\|[^|]+\|>|(?:ignore|忽略).{0,24}(?:previous|此前|指令)|assistant\s+to=|traceback|stack\s*trace|sqlstate|psycopg\w*|keyerror|typeerror|valueerror|attributeerror|connectionrefusederror|httperror|http_\d{3}|\b(?:select|insert|update|delete)\s+.{0,30}\bfrom\b/i.test(value)
+    || /^\s*[\[{][\s\S]{20,}[\]}]\s*$/.test(value);
+}
+
+function customerText(text, fallback = "") {
+  const value = String(text || "").trim();
+  return value && !isInternalOutput(value) ? value : fallback;
+}
+
+function userFacingError(error, fallback = "操作暂未完成，请稍后重试。") {
+  const code = error && error.code;
+  const known = {
+    NETWORK: "暂时无法连接服务，请稍后重试。",
+    TIMEOUT: "处理时间比预期长，您可以稍后重试。",
+    VERSION_CONFLICT: "档案刚刚有更新，请刷新后再试。",
+    STALE_FOLLOW_UP: "这道追问已更新，请回答页面上最新的问题。",
+    VALIDATION_ERROR: "填写内容暂时无法保存，请检查后重试。",
+    INVALID_CREDENTIALS: "用户名或密码不正确，请检查后重试。",
+    ACCOUNT_LOCKED: "登录尝试次数较多，请稍后再试。",
+    LOGIN_UNAVAILABLE: "登录服务暂时不可用，请稍后重试。",
+  };
+  return Object.prototype.hasOwnProperty.call(known, code) ? known[code] : fallback;
 }
 
 function go(hash) {
@@ -292,15 +349,13 @@ function topBar(cur) {
   const right = [];
   if (S.user) {
     right.push(
-      h("a", { class: "nav" + (cur === "chat" ? " cur" : ""), href: "#/chat" }, "我的方案"),
-      h("a", { class: "nav" + (cur === "feedback" ? " cur" : ""), href: "#/feedback" }, "纠错记录"),
-      h("div", { class: "rm" }, h("div", { class: "av sf" }, S.user.display_name.slice(0, 1)), S.user.display_name),
+      h("div", { class: "rm", title: S.user.display_name }, h("div", { class: "av" }, S.user.display_name.slice(0, 1))),
       h("button", { class: "linkbtn", onclick: () => logout() }, "退出"));
   }
   return h("div", { class: "top" },
     h("div", { class: "logo", onclick: () => go(S.user ? "#/chat" : "#/login") },
-      h("div", { class: "mk sf" }, "留"), h("b", { class: "sf" }, "留学准备顾问"),
-      h("small", null, "PRIVATE BANKING · EDUCATION")),
+      h("div", { class: "mk" }, "G"), h("b", null, "Global Pathway"),
+      h("small", null, "留学顾问")),
     h("div", { class: "r" }, right));
 }
 
@@ -335,10 +390,9 @@ async function route() {
     if (page === "feedback") return await renderFeedback();
     return await renderChat(page === "chat" ? arg : null);
   } catch (e) {
-    if (!S.user) return;
+    if (!S.user) return renderLogin();
     shell(h("div", { class: "page" }, h("div", { class: "empty-state" },
-      h("p", null, `页面加载失败：${e.message}`),
-      e.trace ? h("p", { class: "mono" }, `trace_id: ${e.trace}`) : null,
+      h("p", null, "页面暂时无法打开，请稍后重试。"),
       h("button", { class: "btn", onclick: route }, "重试"))), page);
   }
 }
@@ -349,13 +403,33 @@ function renderLogin() {
   const username = h("input", { name: "u", placeholder: "用户名", autocomplete: "username", maxlength: "64" });
   const password = h("input", { name: "p", type: "password", placeholder: "密码（8–16 位）",
     autocomplete: "current-password", minlength: "8", maxlength: "16" });
-  shell(h("div", { class: "page" },
-    h("h1", { class: "sf" }, "登录"),
-    h("p", { class: "lead" }, "使用已有账号登录留学准备顾问。密码 8–16 位。"),
-    h("form", { class: "custom", onsubmit: (e) => {
+  const togglePassword = h("button", { class: "login-eye", type: "button", "aria-label": "显示密码",
+    title: "显示密码", onclick: (event) => {
+      const visible = password.type === "password";
+      password.type = visible ? "text" : "password";
+      event.currentTarget.setAttribute("aria-label", visible ? "隐藏密码" : "显示密码");
+      event.currentTarget.title = visible ? "隐藏密码" : "显示密码";
+    } }, h("span", { class: "login-eye-icon", "aria-hidden": "true" }));
+  const form = h("form", { class: "login-form", onsubmit: (e) => {
       e.preventDefault();
       passwordLogin(username.value.trim(), password.value);
-    } }, username, password, h("button", { class: "btn" }, "登录"))), "login");
+    } },
+    h("label", { class: "login-field" },
+      h("span", { class: "login-field-en" }, "USERNAME"),
+      h("span", { class: "login-field-zh" }, "用户名"),
+      h("span", { class: "login-input-wrap" }, h("span", { class: "login-user-icon", "aria-hidden": "true" }), username)),
+    h("label", { class: "login-field" },
+      h("span", { class: "login-field-en" }, "PASSWORD"),
+      h("span", { class: "login-field-zh" }, "密码"),
+      h("span", { class: "login-input-wrap" }, h("span", { class: "login-lock-icon", "aria-hidden": "true" }), password, togglePassword)),
+    h("button", { class: "btn login-submit", type: "submit" }, "登录"));
+  $app.replaceChildren(h("main", { class: "login-page" },
+    h("section", { class: "login-photo", "aria-label": "校园摄影作品" },
+      h("p", { class: "login-caption" }, "为下一段旅程，做好准备")),
+    h("section", { class: "login-panel" },
+      h("div", { class: "login-content" },
+        h("h1", { class: "login-title sf" }, "欢迎回来"),
+        h("p", { class: "login-lead" }, "继续规划您的留学与跨境生活"), form))));
 }
 
 async function afterAuth(res) {
@@ -375,7 +449,7 @@ async function passwordLogin(username, password) {
     const res = await api("POST", "/login", { username, password });
     await afterAuth(res);
   } catch (e) {
-    toast(e.message, true);
+    toast(userFacingError(e, "登录暂时未成功，请检查信息后重试。"), true);
   }
 }
 
@@ -411,10 +485,9 @@ function readInput(el, code) {
 
 // ---------- /onboarding ----------
 
-async function renderOnboarding() {
+function buildProfileCreateForm({ modal = false, onCreated, onCancel, submitLabel = "创建档案" } = {}) {
   const codes = ["role", "beneficiary", "destination_country", "school", "course", "offer_status", "planned_start_date"];
   const required = ["role", "beneficiary", "destination_country"];
-  const { profiles } = await api("GET", "/profiles");
   const err = h("div", { class: "formerr" });
   const { schoolSel, courseSel, fillSchools, fillPrograms } = schoolCourseInputs();
   const destInput = fieldInput("destination_country");
@@ -423,7 +496,8 @@ async function renderOnboarding() {
     try { dest = destInput.value ? JSON.parse(destInput.value) : undefined; } catch (_) { dest = undefined; }
     fillSchools(dest);
   });
-  const form = h("form", { class: "card", onsubmit: async (e) => {
+  let submitButton;
+  const form = h("form", { class: modal ? "profile-create-form" : "card profile-create-form", onsubmit: async (e) => {
     e.preventDefault();
     const fields = {};
     for (const c of codes) {
@@ -434,11 +508,13 @@ async function renderOnboarding() {
       err.textContent = "请至少填写角色、服务对象和目的地。";
       return;
     }
+    submitButton.disabled = true;
     try {
       const p = await api("POST", "/profiles", { fields, synthetic: true });
-      go("#/chat/" + p.profile_id);
+      await onCreated(p);
     } catch (x) {
-      err.textContent = x.message;
+      err.textContent = userFacingError(x, "档案暂时无法创建，请检查填写内容后重试。");
+      submitButton.disabled = false;
     }
   } },
   h("div", { class: "form" },
@@ -449,18 +525,48 @@ async function renderOnboarding() {
     h("label", null, "课程 / 学位", courseSel),
     h("label", null, "Offer 状态", fieldInput("offer_status")),
     h("label", null, "入学日期", fieldInput("planned_start_date"))),
-  err,
-  h("div", { class: "btns" },
-    profiles.length ? h("button", { class: "btn ghost", type: "button", onclick: () => go("#/chat") }, "返回") : null,
-    h("button", { class: "btn" }, "创建并进入方案")));
+  err);
+  submitButton = h("button", { class: "btn", type: "submit" }, submitLabel);
+  form.append(h("div", { class: "btns" },
+    onCancel ? h("button", { class: "btn ghost", type: "button", onclick: onCancel }, "取消") : null,
+    submitButton));
+  form.querySelector('[name="beneficiary"]')?.focus();
+  // Populate dependent school/course selectors without blocking the form.
+  fillSchools(undefined);
+  return form;
+}
+
+async function renderOnboarding() {
+  const { profiles } = await api("GET", "/profiles");
+  const form = buildProfileCreateForm({
+    onCreated: (profile) => go("#/chat/" + profile.profile_id),
+    onCancel: profiles.length ? () => go("#/chat") : null,
+    submitLabel: "创建并进入方案",
+  });
   shell(h("div", { class: "page" },
     h("h1", { class: "sf" }, "新建留学档案"),
     form), "onboarding");
-  // Prefill school list if destination already selected somehow.
-  try {
-    const dest = destInput.value ? JSON.parse(destInput.value) : undefined;
-    if (dest) await fillSchools(dest);
-  } catch (_) {}
+}
+
+function openNewProfileDialog() {
+  if (S.busy) return toast("当前回复还在处理中，请稍后再新建档案。", true);
+  const form = buildProfileCreateForm({
+    modal: true,
+    submitLabel: "创建档案",
+    onCancel: closeOverlay,
+    onCreated: (profile) => {
+      closeOverlay();
+      go("#/chat/" + profile.profile_id);
+    },
+  });
+  overlay(h("section", { class: "modal profile-create-modal", role: "dialog", "aria-modal": "true",
+    "aria-labelledby": "new-profile-title" },
+    h("button", { class: "close", type: "button", "aria-label": "关闭", onclick: closeOverlay }, "×"),
+    h("div", { class: "lab" }, "新增一份留学计划"),
+    h("h3", { id: "new-profile-title", class: "sf" }, "新建档案"),
+    h("p", { class: "note" }, "填写这份计划的基本信息，创建后会在当前页面打开新的档案。"),
+    form));
+  form.querySelector('[name="beneficiary"]')?.focus();
 }
 
 // ---------- /chat ----------
@@ -485,6 +591,58 @@ async function loadRelationshipProposals() {
 async function refreshProfile() {
   S.profile = await api("GET", `/profiles/${S.pid}`);
   syncProfile();
+}
+
+function viewProfile(profile) {
+  if (!profile) return;
+  if (profile.profile_id !== S.pid && S.busy) {
+    toast("当前回复还在处理中，完成后即可查看其他档案。", true);
+    return;
+  }
+  S.collapsed = false;
+  if (profile.profile_id === S.pid) {
+    if (S.el.sheet) S.el.sheet.classList.remove("collapsed");
+    S.el.side?.querySelector(".pf.on2 .pf-view")?.setAttribute("aria-expanded", "true");
+    return;
+  }
+  go("#/chat/" + profile.profile_id);
+}
+
+function selectProfile(profile) {
+  if (!profile) return;
+  if (profile.profile_id === S.pid) {
+    if (!S.collapsed) closeCurrentProfile();
+    return;
+  }
+  if (S.busy) {
+    toast("当前操作还在处理中，完成后即可切换档案。", true);
+    return;
+  }
+  // Selecting a profile opens its conversation; the eye icon opens its plan.
+  S.collapsed = true;
+  go("#/chat/" + profile.profile_id);
+}
+
+function closeCurrentProfile() {
+  if (!S.el.sheet) return;
+  S.collapsed = true;
+  S.el.sheet.classList.add("collapsed");
+  S.el.side?.querySelector(".pf.on2 .pf-view")?.setAttribute("aria-expanded", "false");
+}
+
+async function loadChatSecondary(profileId) {
+  const results = await Promise.allSettled([
+    loadPlan(), loadProposals(), loadRelationships(), loadRelationshipProposals(),
+  ]);
+  // Ignore a late secondary load after the customer deliberately changed
+  // profiles.  This is a display guard; service ownership checks still guard
+  // the underlying data.
+  if (S.pid !== profileId) return;
+  const failed = results.find((item) => item.status === "rejected");
+  if (failed) toast(userFacingError(failed.reason, "部分方案资料暂未加载，请稍后重试。"), true);
+  drawSide();
+  drawSheet();
+  drawChat({ keep: true });
 }
 
 function syncProfile() {
@@ -525,17 +683,28 @@ async function renderChat(pidArg) {
   localStorage.setItem("gp_pid", pid);
   S.profile = S.profiles.find((p) => p.profile_id === pid);
   S.conv = await api("POST", `/profiles/${pid}/session`);
-  await Promise.all([loadMessages(), loadAdvice(), loadPlan(), loadProposals(),
-    loadRelationships(), loadRelationshipProposals()]);
+  // Conversation is the primary surface.  Render it as soon as its critical
+  // data is ready instead of holding the whole page for plans and account
+  // records that can safely fill in a moment later.
+  S.plan = [];
+  S.proposals = [];
+  S.relationships = [];
+  S.relationshipProposals = [];
+  await Promise.all([loadMessages(), loadAdvice()]);
+  deriveMissing();
+  drawChatPage();
+  void loadChatSecondary(pid);
   // Resolve school / program labels for the sheet and every sidebar row.
   try {
     await ensureCatalogForProfiles(S.profiles);
   } catch (e) {
     S.catalogReady = false;
-    toast((e && e.message) || "学校/课程目录暂不可用，将显示占位文案", true);
+    toast(userFacingError(e, "学校或课程目录暂不可用，档案信息仍可继续查看。"), true);
   }
-  deriveMissing();
-  drawChatPage();
+  if (S.pid === pid) {
+    drawSide();
+    drawSheet();
+  }
 }
 
 function drawChatPage() {
@@ -543,6 +712,7 @@ function drawChatPage() {
   const sheet = h("div", { class: "sheet" + (S.collapsed ? " collapsed" : "") });
   if (S.sheetH) sheet.style.height = S.sheetH;
   const chat = h("div", { class: "chat" });
+  const rail = h("aside", { class: "next-rail" });
   const bar = h("div", { class: "bar", title: "拖动调整方案表高度，双击折叠 / 展开" }, h("i"));
   setupDrag(bar, sheet);
   const input = h("textarea", { placeholder: "请输入您的问题…（Enter 发送，Shift + Enter 换行）", maxlength: "1000" });
@@ -556,12 +726,35 @@ function drawChatPage() {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
   });
   const sendBtn = h("button", { class: "btn", onclick: submit }, "发送");
-  S.el = { side, sheet, chat, input, sendBtn };
+  S.el = { side, sheet, chat, rail, input, sendBtn };
   shell(h("div", { class: "wrap" }, side, h("div", { class: "main" }, sheet, bar, chat,
-    h("div", { class: "in" }, input, sendBtn))), "chat");
+    h("div", { class: "in" }, input, sendBtn)), rail), "chat");
   drawSide();
   drawSheet();
+  drawNextRail();
   drawChat();
+}
+
+function drawNextRail() {
+  const rail = S.el.rail;
+  if (!rail) return;
+  const pending = (S.plan || []).filter((item) => !item.done).slice(0, 3);
+  const stale = staleAdviceTopics();
+  const relationship = (S.relationships || []).find((item) => ["selected", "applying", "blocked"].includes(item.status));
+  const rows = [];
+  if (relationship) rows.push(h("div", { class: "next-item" }, h("i", { class: "next-dot active" }),
+    h("div", null, h("b", null, "银行账户进度"), h("span", null,
+      `${relationship.product_name} · ${{ selected: "准备申请", applying: "申请中", blocked: "待处理" }[relationship.status] || "已记录"}`))));
+  pending.forEach((item) => rows.push(h("div", { class: "next-item next-todo" }, h("i", { class: "next-dot" }),
+    h("div", null, h("b", null, item.text), h("span", null, "待完成")))));
+  stale.forEach((topic) => rows.push(h("div", { class: "next-item" }, h("i", { class: "next-dot warm" }),
+    h("div", null, h("b", null, `${adviceTopicLabel(topic)}待更新`), h("span", null, "可在资料工作区中重新生成")))));
+  const children = [
+    h("div", { class: "rail-label" }, "接下来"),
+    h("p", { class: "rail-intro" }, "不需要一次完成；我会在合适的时候提醒您。"),
+    ...(rows.length ? rows : [h("div", { class: "rail-empty" }, "暂时没有待处理事项。")]),
+  ];
+  rail.replaceChildren(...children);
 }
 
 function setupDrag(bar, sheet) {
@@ -590,12 +783,11 @@ function profileSub(p) {
   const m = /^(\d{4})-(\d{2})/.exec(start || "");
   const school = valueLabel("school", val(p, "school"));
   const course = valueLabel("course", val(p, "course"));
-  const parts = [
-    (school !== "—" ? school : null) || valueLabel("destination_country", val(p, "destination_country")),
-    course !== "—" ? course : null,
-    m ? `${m[1]}年${+m[2]}月` : "入学待定",
-  ];
-  return parts.filter((x) => x && x !== "—").join(" · ");
+  return {
+    school: school !== "—" ? school : valueLabel("destination_country", val(p, "destination_country")),
+    course: course !== "—" ? course : "",
+    start: m ? `${m[1]}年${+m[2]}月入学` : "入学时间待定",
+  };
 }
 
 async function deleteProfile(p) {
@@ -614,22 +806,39 @@ async function deleteProfile(p) {
     }
     toast("档案及通话记录已删除");
   } catch (e) {
-    toast(e.message, true);
+    toast(userFacingError(e, "档案删除暂未完成，请稍后重试。"), true);
   }
 }
 
 function drawSide() {
   S.el.side.replaceChildren(
-    h("div", { class: "lab" }, "我的 PROFILE"),
+    h("div", { class: "lab" }, "我的档案"),
     ...S.profiles.map((p) => {
       const name = val(p, "beneficiary") || "未命名档案";
-      return h("div", { class: "pf" + (p.profile_id === S.pid ? " on2" : ""), onclick: () => go("#/chat/" + p.profile_id) },
+      const summary = profileSub(p);
+      return h("div", { class: "pf" + (p.profile_id === S.pid ? " on2" : "") + (S.busy ? " busy" : ""),
+        tabindex: "0", role: "group", title: `切换到${name}的会话`,
+        onclick: () => selectProfile(p),
+        onkeydown: (event) => {
+          if (event.target !== event.currentTarget || !["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
+          selectProfile(p);
+        } },
         h("div", { class: "av2 sf" }, name.slice(-1)),
-        h("div", { class: "pf-body" }, h("b", { class: "sf" }, name), h("div", { class: "sub" }, profileSub(p))),
-        h("button", { class: "pf-delete", type: "button", title: `删除${name}`,
-          "aria-label": `删除${name}`, onclick: (event) => { event.stopPropagation(); deleteProfile(p); } }, "删除"));
+        h("div", { class: "pf-body" },
+          h("b", { class: "sf", title: name }, name),
+          h("div", { class: "pf-sub" },
+            summary.school && summary.school !== "—" ? h("span", { class: "pf-school", title: summary.school }, summary.school) : null,
+            summary.course ? h("span", { class: "pf-course", title: summary.course }, summary.course) : null,
+            h("span", { class: "pf-date" }, summary.start))),
+        h("div", { class: "pf-actions" },
+          h("button", { class: "pf-view", type: "button", "aria-expanded": String(p.profile_id === S.pid && !S.collapsed),
+            title: `查看${name}档案`, "aria-label": `查看${name}档案`,
+            onclick: (event) => { event.stopPropagation(); viewProfile(p); } }, profileActionIcon("view")),
+          h("button", { class: "pf-delete", type: "button", title: `删除${name}`,
+            "aria-label": `删除${name}`, onclick: (event) => { event.stopPropagation(); deleteProfile(p); } }, profileActionIcon("delete"))));
     }),
-    h("button", { class: "new", onclick: () => go("#/onboarding") }, "＋ 添加 profile"));
+    h("button", { class: "new", onclick: openNewProfileDialog }, "＋ 新建档案"));
 }
 
 function drawSheet() {
@@ -643,7 +852,8 @@ function drawSheet() {
       h("span", { class: "meta" },
         h("span", null, "基本信息 ", h("em", { class: "sf" }, filled), ` / ${GRID.length}`),
         h("span", null, "待办已完成 ", h("em", { class: "sf" }, done), ` / ${S.plan.length}`),
-        h("button", { class: "btn", onclick: () => go("#/report/" + S.pid) }, "导出报告"))),
+        h("button", { class: "btn", onclick: () => openReportDialog(S.pid) }, "导出报告"),
+        h("button", { class: "btn ghost profile-sheet-close", type: "button", onclick: closeCurrentProfile }, "收起档案"))),
     h("div", { class: "mt" }, "一 · 留学基本信息", h("button", { class: "ed", onclick: () => openEdit() }, "✎ 编辑信息")),
     h("div", { class: "grid" }, GRID.map(cell)),
     h("div", { class: "mt" }, "二 · 银行账户"),
@@ -657,6 +867,7 @@ function drawSheet() {
     S.flash = [];
     setTimeout(() => flashed.forEach((k) => document.getElementById("card-" + k)?.classList.remove("flash")), 2400);
   }
+  drawNextRail();
 }
 
 function bankRelationshipsBox() {
@@ -669,9 +880,9 @@ function bankRelationshipsBox() {
   }
   return h("div", { class: "bank-rels" }, S.relationships.map((item) =>
     h("div", { class: "bank-rel" },
-      h("span", { class: "market-tag" }, market[item.market] || item.market),
+      h("span", { class: "market-tag" }, market[item.market] || "其他地区"),
       h("b", null, item.product_name),
-      h("span", { class: "rel-status " + item.status }, status[item.status] || item.status))));
+      h("span", { class: "rel-status " + item.status }, status[item.status] || "进度已更新"))));
 }
 
 function cell(code) {
@@ -706,10 +917,10 @@ function remittanceCard(t) {
   const purpose = pl.remittance_purpose || pl.fx_mode || pl.domain_payload?.remittance_purpose
     || pl.domain_payload?.fx_mode;
   const purposeLabel = { tuition: "学费", living: "生活费", overseas: "境外消费/换汇" }[purpose]
-    || valueLabel("remittance_purpose", purpose) || purpose || "—";
+    || (purpose ? customerText(valueLabel("remittance_purpose", purpose), "其他外汇用途") : "—");
   const mats = pl.materials || pl.domain_payload?.materials || [];
   const cites = pl.citations || pl.domain_payload?.citations || [];
-  const req = mats.filter((m) => m.applicability === "required");
+  const req = mats.filter((m) => m.applicability === "required" && !isInternalOutput(m.name_zh));
   const names = req.slice(0, 2).map((m) => m.name_zh).join("、");
   return h("div", { class: "p" + flash, id: "card-remittance" },
     cardHead(t, h("span", { class: "st ok" }, "已确认")),
@@ -721,7 +932,7 @@ function remittanceCard(t) {
 function accountDocumentLabel(doc) {
   return ({ identity: "身份证明", address: "地址证明", student_status: "学生或录取证明",
     tax: "税务证明", income: "收入证明" })[doc.document_type]
-    || doc.name_zh || doc.description || doc.document_type;
+    || customerText(doc.name_zh || doc.description || doc.document_type, "");
 }
 
 function accountRuleLabel(result) {
@@ -730,7 +941,7 @@ function accountRuleLabel(result) {
     return `年龄至少 ${Number(rule.value_numeric)} 岁`;
   }
   if (rule.field_code === "bank_confirmation") return "需通过银行的身份与地址核验";
-  return rule.description || rule.condition_note || "";
+  return customerText(rule.description || rule.condition_note, "");
 }
 
 function accountAdviceDisplay(advice) {
@@ -776,10 +987,10 @@ function accountCard(t) {
     || val(S.profile, "account_region") || val(S.profile, "destination_country");
   const identity = display.identity || val(S.profile, "applicant_identity")
     || val(S.profile, "role");
-  const productName = display.productName || empty();
+  const productName = customerText(display.productName, "");
   const names = display.documentNames.slice(0, 2).join("、");
   const eligibility = display.ruleLabels.slice(0, 2).join("；")
-    || (pl.steps || []).find((s) => String(s).startsWith("公开资格要点："))?.replace("公开资格要点：", "")
+    || visibleOutputLines(pl.steps || []).find((s) => String(s).startsWith("公开资格要点："))?.replace("公开资格要点：", "")
     || empty();
   const warn = display.needsVerification;
   const pending = display.needsInput && !warn;
@@ -789,7 +1000,7 @@ function accountCard(t) {
     cardHead(t, h("span", { class: "st " + (warn || pending ? "warn" : "ok") },
       warn ? "待核实" : pending ? "待补充" : "已确认")),
     row("地区", valueLabel("destination_country", region) || region || empty()),
-    row("产品", typeof productName === "string" ? productName : productName),
+    row("产品", productName || empty()),
     row("申请人", valueLabel("applicant_identity", identity) || identity || empty()),
     row("必备材料", display.documentNames.length
       ? `${names}${display.documentNames.length > 2 ? " 等" : ""} ${display.documentNames.length} 项` : empty()),
@@ -812,6 +1023,7 @@ function planCard(t) {
 
 const ADVICE_TOPIC_LABEL = { credit_card: "信用卡建议", account: "开户建议",
   remittance: "汇款建议", visa: "签证建议" };
+const adviceTopicLabel = (topic) => ADVICE_TOPIC_LABEL[topic] || "其他建议";
 
 function withAdviceLifecycle(card, topic) {
   const advice = S.advice[topic];
@@ -819,35 +1031,77 @@ function withAdviceLifecycle(card, topic) {
   const refreshing = S.refreshingTopics.has(topic);
   card.classList.add("advice-stale");
   card.append(h("div", { class: "advice-refresh" },
-    h("b", null, refreshing ? "已开始重新生成建议，请稍候。" : "资料已变化，这份建议可能不再适用。"),
+    h("b", null, refreshing ? "正在为您更新这份建议…" : "您的资料已有更新，这份建议可以再为您核对一次。"),
     h("button", { class: "btn sm", disabled: refreshing, onclick: () => refreshAdvice(topic) },
-      refreshing ? "生成中…" : "重新生成建议")));
+      refreshing ? "更新中…" : "更新建议")));
   return card;
 }
 
 async function refreshAdvice(topic) {
+  return refreshAdviceTopics([topic]);
+}
+
+function staleAdviceTopics() {
+  return Object.entries(S.advice || {})
+    .filter(([, advice]) => advice && advice.status === "stale")
+    .map(([topic]) => topic);
+}
+
+async function refreshAdviceTopics(topics) {
+  const selected = [...new Set(topics || [])].filter((topic) => S.advice[topic]);
+  if (!selected.length) return;
   if (S.busy) { toast("上一项操作还在处理中，请稍候"); return; }
   S.busy = true;
-  S.refreshingTopics.add(topic);
+  selected.forEach((topic) => S.refreshingTopics.add(topic));
   drawSheet();
-  toast(`已开始重新生成${ADVICE_TOPIC_LABEL[topic] || "建议"}，完成后会自动显示。`);
+  drawSide();
+  toast(`正在依次重新生成${selected.map(adviceTopicLabel).join("、")}，完成后会自动显示。`);
   try {
-    const result = await api("POST", `/profiles/${S.pid}/advice/${topic}/refresh`, {});
+    const results = [];
+    // Keep regeneration ordered: the current service performs each job within
+    // the request, and parallel prompts would make the UI less predictable.
+    for (const topic of selected) {
+      results.push(await api("POST", `/profiles/${S.pid}/advice/${topic}/refresh`, {}));
+    }
     await Promise.all([loadAdvice(), loadMessages()]);
-    if (result.refreshed) S.flash = [topic];
+    S.flash = results.filter((result) => result.refreshed).map((result) => result.topic);
     drawSheet();
     // A refresh creates a new assistant reply.  Updating only the side-panel
     // left that reply invisible until a browser reload rebuilt the chat.
     drawChat({ keep: true });
-    toast(result.refreshed ? `${ADVICE_TOPIC_LABEL[topic] || "建议"}已重新生成`
-      : "还缺少必要信息，建议暂时保持待更新");
+    const completed = results.filter((result) => result.refreshed).map((result) => adviceTopicLabel(result.topic));
+    toast(completed.length ? `${completed.join("、")}已重新生成`
+      : "建议暂未更新，请稍后重试。", !completed.length);
   } catch (e) {
-    toast(e.message, true);
+    toast(userFacingError(e, "建议暂未更新，请稍后重试。"), true);
   } finally {
-    S.refreshingTopics.delete(topic);
+    selected.forEach((topic) => S.refreshingTopics.delete(topic));
     S.busy = false;
     drawSheet();
+    drawSide();
   }
+}
+
+function openAdviceImpactPanel(topics) {
+  const affected = [...new Set(topics || [])].filter((topic) => S.advice[topic]);
+  if (!affected.length) return toast("档案已保存");
+  const selected = new Set(affected);
+  const choices = h("div", { class: "proposal-advice-choices" },
+    h("div", null, "这些建议会受到本次资料修改的影响。您可以现在更新，也可以稍后处理。"),
+    affected.map((topic) => {
+      const input = h("input", { type: "checkbox", checked: true });
+      input.addEventListener("change", () => input.checked ? selected.add(topic) : selected.delete(topic));
+      return h("label", null, input, adviceTopicLabel(topic));
+    }));
+  overlay(h("div", { class: "modal impact-modal" },
+    h("h3", { class: "sf" }, "资料已保存"),
+    h("p", { class: "note" }, "原有资料已更新；这不会打断您继续咨询。"), choices,
+    h("div", { class: "btns" },
+      h("button", { class: "btn ghost", type: "button", onclick: closeOverlay }, "稍后处理"),
+      h("button", { class: "btn", type: "button", onclick: async () => {
+        closeOverlay();
+        await refreshAdviceTopics([...selected]);
+      } }, "现在重新生成"))));
 }
 
 function cardsFromAnswerSteps(steps) {
@@ -859,7 +1113,7 @@ function cardsFromAnswerSteps(steps) {
     const label = colon >= 0 ? line.slice(0, colon) : "";
     const value = colon >= 0 ? line.slice(colon + 1).trim() : "";
     const roles = { 主推荐: "primary", 初步选择: "primary", 场景搭配: "supplement",
-      附加推荐: "supplement", 其他选择: "alternative" };
+      附加推荐: "supplement", 其他选择: "alternative", 待核对选择: "alternative" };
     const network = line.match(/^(.+?)（(?:万事达卡|威士卡|银联卡|银行卡|Visa|Mastercard|UnionPay)）$/);
     if (roles[label]) cards.push({ product_name: value, role: roles[label], display_label: label });
     else if (network) cards.push({ product_name: network[1], role: "candidate" });
@@ -877,30 +1131,37 @@ function savedCardDisplay(advice) {
   const pl = advice.payload || {};
   const source = S.messages.find((message) =>
     message.role === "assistant" && message.message_id === advice.source_message_id);
-  const steps = source?.body?.answer?.steps || [];
+  const steps = visibleOutputLines(source?.body?.answer?.steps || []);
   const recovered = cardsFromAnswerSteps(steps);
   const saved = Array.isArray(pl.cards) ? pl.cards : [];
   const fromAnswer = new Map(recovered.map((card) => [card.product_name, card]));
-  const cards = saved.length ? saved.map((card) => {
+  const cards = (saved.length ? saved.map((card) => {
     const match = fromAnswer.get(card.product_name) || {};
     const merged = { ...match, ...card };
     for (const field of ["reason_text", "fee_text", "benefits_text", "application_note"])
       if (!merged[field] && match[field]) merged[field] = match[field];
     return merged;
-  }) : recovered;
+  }) : recovered).map((card) => ({
+    ...card,
+    product_name: customerText(card.product_name, ""),
+    reason_text: customerText(card.reason_text, ""),
+    fee_text: customerText(card.fee_text, ""),
+    benefits_text: customerText(card.benefits_text, ""),
+    application_note: customerText(card.application_note, ""),
+  })).filter((card) => card.product_name);
   return { cards,
     preview: !!pl.preview || steps.some((step) => step.startsWith("提前了解：")) };
 }
 
 function cardAdviceOption(card, label, featured) {
   return h("div", { class: "cc-option" + (featured ? " featured" : "") },
-    h("div", { class: "cc-label" }, label),
+    h("div", { class: "cc-label" }, customerText(label, "信用卡方案")),
     h("div", { class: "cc-name" }, card.product_name),
-    card.reason_text ? h("p", { class: "cc-reason" }, card.reason_text) : null,
+    card.reason_text ? h("p", { class: "cc-reason" }, customerText(card.reason_text, "")) : null,
     h("div", { class: "cc-fact" }, h("span", null, "年费及费用"),
-      h("strong", null, card.fee_text || "请以官网最新条款为准")),
-    card.benefits_text ? h("div", { class: "cc-fact" }, h("span", null, "主要权益"),
-      h("span", null, card.benefits_text)) : null);
+      h("strong", null, customerText(card.fee_text, "请以官网最新条款为准"))),
+    customerText(card.benefits_text) ? h("div", { class: "cc-fact" }, h("span", null, "主要权益"),
+      h("span", null, customerText(card.benefits_text))) : null);
 }
 
 function isBackupCard(card) {
@@ -931,10 +1192,10 @@ function creditCardCard(t) {
   const others = cards.filter((card) => card !== first);
   const source = S.messages.find((message) =>
     message.role === "assistant" && message.message_id === a.source_message_id);
-  const marketPrereq = (source?.body?.answer?.steps || []).find((step) =>
+  const marketPrereq = visibleOutputLines(source?.body?.answer?.steps || []).find((step) =>
     /均要求已有|到英国读书|香港卡可在留学地使用/.test(step));
-  const condition = marketPrereq || first?.application_note
-    || "申请资格及最终批核以当地汇丰的官方规定为准。";
+  const condition = customerText(marketPrereq || first?.application_note,
+    "申请资格及最终批核以当地汇丰的官方规定为准。");
   return h("div", { class: base, id: "card-credit_card" },
     cardHead(t, h("span", { class: "st " + stateClass }, state)),
     cards.length ? [
@@ -942,11 +1203,11 @@ function creditCardCard(t) {
       others.length ? h("div", { class: "cc-others" },
         h("div", { class: "cc-section" }, hasPrimary ? "其他选择" : "一起比较"),
         others.slice(0, 2).map((card, index) => h("div", { class: "cc-secondary" },
-          cardAdviceOption(card, card.role === "supplement" ? (card.display_label || "场景搭配") :
-            hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`, false))),
+          cardAdviceOption(card, card.display_label ||
+            (card.role === "supplement" ? "场景搭配" : hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`), false))),
         others.length > 2 ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`) : null) : null,
       h("div", { class: "cc-apply" }, h("b", null, "申请前请确认"), h("span", null, condition)),
-    ] : h("p", { class: "cc-empty" }, pl.summary || "目前还没有可展示的具体卡片。"));
+    ] : h("p", { class: "cc-empty" }, customerText(pl.summary, "目前还没有可展示的具体卡片。")));
 }
 
 /** Citations: numbered pills inline; numbered named links in the reference list. */
@@ -969,24 +1230,26 @@ function buildCiteMap(citations) {
 function citeLabel(c) {
   const name = (c.source_name || "").trim();
   if (name) return name;
-  try { return new URL(c.source_url).hostname.replace(/^www\./, ""); }
+  try { return new URL(safeHttpUrl(c.source_url)).hostname.replace(/^www\./, ""); }
   catch { return "来源"; }
 }
 
 function citeMark(c) {
   if (!c) return null;
   const label = `[${c.n}]`;
-  if (!c.source_url) return h("span", { class: "cite-mark" }, label);
-  return h("a", { class: "cite-mark", href: c.source_url, target: "_blank", rel: "noopener noreferrer",
+  const href = safeHttpUrl(c.source_url);
+  if (!href) return h("span", { class: "cite-mark" }, label);
+  return h("a", { class: "cite-mark", href, target: "_blank", rel: "noopener noreferrer",
     title: citeLabel(c) }, label);
 }
 
 function citeRef(c) {
   if (!c) return null;
   const text = `[${c.n}] ${citeLabel(c)}`;
-  if (!c.source_url) return h("span", { class: "cite-ref" }, text);
-  return h("a", { class: "cite-ref", href: c.source_url, target: "_blank", rel: "noopener noreferrer",
-    title: c.source_url }, text);
+  const href = safeHttpUrl(c.source_url);
+  if (!href) return h("span", { class: "cite-ref" }, text);
+  return h("a", { class: "cite-ref", href, target: "_blank", rel: "noopener noreferrer",
+    title: href }, text);
 }
 
 function sourceRefs(citations) {
@@ -1004,7 +1267,8 @@ function visaCard(t) {
       row("类别", visa ? valueLabel("visa_category", visa) : empty()), row("材料", empty()), row("待确认", empty()));
   }
   const pl = a.payload;
-  const mats = pl.materials || [];
+  const mats = (pl.materials || []).filter((m) => !isInternalOutput(m.name_zh)
+    && !isInternalOutput(m.name_en) && !isInternalOutput(m.condition_text));
   const req = mats.filter((m) => m.applicability === "required");
   const cond = mats.filter((m) => m.applicability !== "required");
   const unconfirmed = pl.unconfirmed_fields || [];
@@ -1024,10 +1288,9 @@ function todoBox() {
   return h("div", { class: "todo" },
     S.plan.length ? h("ul", null, S.plan.map((i) => h("li", { class: i.done ? "done" : "" },
       h("input", { type: "checkbox", checked: i.done, onchange: (e) => updatePlan(i, { done: e.target.checked }) }),
-      h("span", { title: "双击修改", ondblclick: () => {
-        const text = prompt("修改待办", i.text);
-        if (text && text.trim() && text.trim() !== i.text) updatePlan(i, { text: text.trim() });
-      } }, i.text),
+      h("span", null, i.text),
+      h("button", { class: "todo-edit", type: "button", "aria-label": `编辑待办：${i.text}`,
+        onclick: () => editPlan(i) }, "编辑"),
       h("button", { class: "x", title: "删除", onclick: () => deletePlan(i) }, "×"))))
       : h("div", { class: "empty" }, "暂无待办。可在回答的材料旁点「+ 待办」，或在下方直接添加。"),
     h("form", { onsubmit: (e) => {
@@ -1042,7 +1305,38 @@ async function addPlan(text) {
     await loadPlan();
     drawSheet();
     drawChat({ keep: true });
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(userFacingError(e, "待办暂未添加，请稍后重试。"), true); }
+}
+
+function editPlan(item) {
+  const input = h("input", { type: "text", maxlength: "200", value: item.text, "aria-label": "待办内容" });
+  const err = h("div", { class: "formerr", role: "alert" });
+  const save = async () => {
+    const text = input.value.trim();
+    if (!text) { err.textContent = "请填写待办内容。"; input.focus(); return; }
+    if (text === item.text) return closeOverlay();
+    try {
+      await api("PATCH", `/plan-items/${item.item_id}`, { text });
+      await loadPlan();
+      closeOverlay();
+      drawSheet();
+      drawChat({ keep: true });
+      toast("待办已更新");
+    } catch (e) {
+      err.textContent = userFacingError(e, "待办暂未更新，请稍后重试。");
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); save(); }
+  });
+  overlay(h("div", { class: "modal" },
+    h("h3", { class: "sf" }, "编辑待办"),
+    h("label", { class: "todo-edit-label" }, "待办内容", input), err,
+    h("div", { class: "btns" },
+      h("button", { class: "btn ghost", type: "button", onclick: closeOverlay }, "取消"),
+      h("button", { class: "btn", type: "button", onclick: save }, "保存"))));
+  input.focus();
+  input.select();
 }
 
 async function updatePlan(item, change) {
@@ -1050,7 +1344,7 @@ async function updatePlan(item, change) {
     await api("PATCH", `/plan-items/${item.item_id}`, change);
     await loadPlan();
     drawSheet();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(userFacingError(e, "待办暂未更新，请稍后重试。"), true); }
 }
 
 async function deletePlan(item) {
@@ -1059,7 +1353,7 @@ async function deletePlan(item) {
     await loadPlan();
     drawSheet();
     drawChat({ keep: true });
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(userFacingError(e, "待办暂未删除，请稍后重试。"), true); }
 }
 
 // ---------- chat stream ----------
@@ -1098,7 +1392,7 @@ function drawChat({ keep } = {}) {
     items.push(h("div", { class: "m u pending" }, S.pending.text));
     if (S.pending.error) {
       const p = S.pending;
-      items.push(h("div", { class: "m err" }, h("p", null, p.error.message),
+      items.push(h("div", { class: "m err" }, h("p", null, userFacingError(p.error, "这次没有完成处理，您可以重试。")),
         h("div", { class: "chips" },
           h("button", { class: "s", onclick: () => {
             S.pending = null;
@@ -1108,7 +1402,7 @@ function drawChat({ keep } = {}) {
           } }, "重试"),
           h("button", { onclick: () => { S.pending = null; drawChat(); } }, "放弃"))));
     } else {
-      items.push(h("div", { class: "m thinking" }, "正在回答…"));
+      items.push(h("div", { class: "m thinking" }, S.pending.phase || "已收到，正在为您核对…"));
     }
   }
   box.replaceChildren(...items);
@@ -1190,7 +1484,7 @@ function renderAnswerSteps(steps) {
         h("span", { class: "market-tag" }, "申请地区"),
         h("span", null, `${market}发行的卡`)));
     }
-    else if (/^(主推荐|初步选择|场景搭配|附加推荐|其他选择)：/.test(s)) {
+    else if (/^(主推荐|初步选择|场景搭配|附加推荐|其他选择|待核对选择)：/.test(s)) {
       const i = s.indexOf("：");
       box.append(h("div", { class: "card-name" },
         h("span", { class: "role-tag" }, s.slice(0, i)),
@@ -1209,11 +1503,6 @@ function renderAnswerSteps(steps) {
   const compare = steps.some((s) => s.startsWith("对比参考："));
   return [h("div", { class: "sub-h" }, preview ? "提前了解的信用卡" :
     compare ? "两张卡怎么选" : "为您挑选的信用卡"), box];
-}
-
-function isInternalOutput(text) {
-  const value = String(text || "");
-  return /\b(?:prompt|completion)\s*\d+|\b(?:evidence_ids?|source_ids?|field_code|trace_id|prompt_version)\b|\b(?:llm|gateway|model|tokens?|timeout)\b|只在\s*(?:evidence|证据)|内部(?:字段|指令|提示)|不要向用户|不可展示|\bs\d+(?:\s*[,，、;；]\s*s\d+)*\b/i.test(value);
 }
 
 function visibleOutputLines(lines) {
@@ -1255,7 +1544,8 @@ function answerBubble(b, latest) {
 
   const st = STATUS[b.status] || STATUS.cannot_answer;
   const { cmap, unique: citeList } = buildCiteMap(b.citations || []);
-  const mats = b.answer.materials || [];
+  const mats = (b.answer.materials || []).filter((m) => !isInternalOutput(m.name_zh)
+    && !isInternalOutput(m.name_en) && !isInternalOutput(m.condition_text));
   const kids = [];
 
   if (b.status !== "answered") {
@@ -1280,8 +1570,9 @@ function answerBubble(b, latest) {
   if (stepList.length) kids.push(...renderAnswerSteps(stepList));
   if ((b.conflicts || []).length) {
     kids.push(h("div", { class: "sub-h" }, "不同来源说法不一致（并列展示，未替您取舍）"));
-    b.conflicts.forEach((cf) => kids.push(h("div", null, cf.name_zh), h("div", { class: "conf" }, cf.variants.map((v) =>
-      h("div", null, h("b", null, v.source_name), v.required ? "需要" : "不需要", v.condition ? `（${v.condition}）` : "")))));
+    b.conflicts.filter((cf) => !isInternalOutput(cf.name_zh)).forEach((cf) => kids.push(h("div", null, cf.name_zh), h("div", { class: "conf" }, cf.variants
+      .filter((v) => !isInternalOutput(v.source_name) && !isInternalOutput(v.condition)).map((v) =>
+        h("div", null, h("b", null, v.source_name), v.required ? "需要" : "不需要", v.condition ? `（${v.condition}）` : "")))));
   }
   if (citeList.length) {
     kids.push(h("details", { class: "evidence" },
@@ -1298,7 +1589,8 @@ function answerBubble(b, latest) {
   }
   // Hide internal/debug notices (routing audit JSON, etc.) from the customer UI.
   const HIDDEN_NOTICE = new Set([
-    "intent_routing", "llm_routing_low_confidence", "unsupported_intent", "partial_out_of_scope",
+    "missing_evidence", "llm_fallback", "domain_workflow_todo", "intent_routing",
+    "llm_routing_low_confidence", "unsupported_intent", "partial_out_of_scope",
   ]);
   (b.notices || []).filter((n) => n && !HIDDEN_NOTICE.has(n.code) && !isInternalOutput(n.message) && !(n.message || "").trim().startsWith("{"))
     .forEach((n) => kids.push(h("div", { class: "notice" }, ...linkify(n.message))));
@@ -1414,7 +1706,7 @@ async function answerField(code, value, text, persistMode, routeMessage) {
       deriveMissing();
       drawChat({ keep: true });
       toast("问题已更新，请回答现在显示的追问");
-    } catch (e) { toast(e.message, true); }
+    } catch (e) { toast(userFacingError(e, "这道追问暂时无法更新，请稍后重试。"), true); }
     return;
   }
   // Disambiguation choices steer only this turn. They are deliberately not
@@ -1477,7 +1769,9 @@ async function goBackFollowUp() {
 }
 
 function proposalValue(p, value) {
-  if (S.fields[p.field_code]?.sensitivity === "financial") return "已提供（金额不在此处重复显示）";
+  // Show real values in the change card: asset/income bands are already ranges
+  // (their option labels reveal nothing beyond the band), and hiding them made
+  // old→new renders read as "已提供 → 已提供", an unconfirmable change.
   return value === null || value === undefined ? "（空）" : valueLabel(p.field_code, value);
 }
 
@@ -1486,13 +1780,13 @@ function proposalBundleCard(proposals) {
     .filter((topic) => S.advice[topic]);
   const selected = new Set(affected);
   const choices = affected.length ? h("div", { class: "proposal-advice-choices" },
-    h("div", null, "这些现有建议依赖本次修改。请选择现在要重新生成的内容："),
+    h("div", null, "以下建议可能因这次资料更新而变化。您想先更新哪些？"),
     affected.map((topic) => {
       const input = h("input", { type: "checkbox", checked: true });
       input.addEventListener("change", () => input.checked ? selected.add(topic) : selected.delete(topic));
-      return h("label", null, input, ADVICE_TOPIC_LABEL[topic] || topic);
+      return h("label", null, input, adviceTopicLabel(topic));
     }),
-    h("div", { class: "note" }, "未选择的建议会保留，但会标记为“待更新”，以后可在建议卡上重新生成。")) : null;
+    h("div", { class: "note" }, "暂不更新的建议会保留当前版本；之后您随时可以再更新。")) : null;
   return h("div", { class: "prop" },
     h("div", null, "要把这些信息更新到学生资料吗？"),
     h("ul", { class: "proposal-list" }, proposals.map((p) => h("li", null,
@@ -1501,27 +1795,31 @@ function proposalBundleCard(proposals) {
     choices,
     h("div", { class: "btns" },
       h("button", { class: "btn sm", onclick: () => decideProposalBundle(
-        proposals, true, [...selected]) }, affected.length ? "更新资料并处理建议" : "更新资料"),
-      h("button", { class: "btn sm ghost", onclick: () => decideProposalBundle(proposals, false) }, "仅本次使用")));
+        proposals, true, [...selected]), disabled: !!S.busy }, affected.length ? "确认并更新建议" : "确认更新"),
+      h("button", { class: "btn sm ghost", onclick: () => decideProposalBundle(proposals, false), disabled: !!S.busy }, "这次先不保存")));
 }
 
 function relationshipProposalCard(p) {
-  const market = { "CN-HK": "香港", UK: "英国", US: "美国", CN: "中国内地" }[p.market] || p.market;
+  const market = { "CN-HK": "香港", UK: "英国", US: "美国", CN: "中国内地" }[p.market] || "其他地区";
   const status = { selected: "准备申请", applying: "申请中", open: "已经开户",
-    blocked: "申请受阻", closed: "已经关闭" }[p.proposed_status] || p.proposed_status;
+    blocked: "申请受阻", closed: "已经关闭" }[p.proposed_status] || "进度已更新";
   const actions = p.proposed_status === "selected"
-    ? [h("button", { class: "btn sm", onclick: () => decideRelationship(p, true, "selected") }, "记录为准备申请"),
-       h("button", { class: "btn sm", onclick: () => decideRelationship(p, true, "open") }, "已经开好了")]
-    : [h("button", { class: "btn sm", onclick: () => decideRelationship(p, true, p.proposed_status) }, "记录进度")];
+    ? [h("button", { class: "btn sm", disabled: !!S.busy, onclick: () => decideRelationship(p, true, "selected") }, "记录为准备申请"),
+       h("button", { class: "btn sm", disabled: !!S.busy, onclick: () => decideRelationship(p, true, "open") }, "已经开好了")]
+    : [h("button", { class: "btn sm", disabled: !!S.busy, onclick: () => decideRelationship(p, true, p.proposed_status) }, "记录进度")];
   return h("div", { class: "prop relationship-prop" },
     h("div", null, "要记录这项银行账户进度吗？ ", h("b", null, `${market} · ${p.product_name}`),
       h("span", { class: "rel-proposed" }, status)),
     h("div", { class: "btns" },
       ...actions,
-      h("button", { class: "btn sm ghost", onclick: () => decideRelationship(p, false) }, "仅本次讨论")));
+      h("button", { class: "btn sm ghost", disabled: !!S.busy, onclick: () => decideRelationship(p, false) }, "这次先不记录")));
 }
 
 async function decideRelationship(p, confirm, status) {
+  if (S.busy) { toast("上一项操作还在处理中，请稍候"); return; }
+  S.busy = true;
+  toast(confirm ? "正在记录账户进度…" : "这次进度不会写入档案");
+  drawChat({ keep: true });
   try {
     if (confirm) {
       await api("POST", `/bank-relationship-proposals/${p.proposal_id}/confirm`, {
@@ -1536,11 +1834,19 @@ async function decideRelationship(p, confirm, status) {
     toast(confirm ? "已记录银行账户进度" : "这次不会写入资料");
   } catch (e) {
     if (e.code === "VERSION_CONFLICT") await refreshProfile();
-    toast(e.message, true);
+    toast(userFacingError(e, "银行账户进度暂未保存，请稍后重试。"), true);
+  } finally {
+    S.busy = false;
+    drawSide();
+    drawChat({ keep: true });
   }
 }
 
 async function decideProposalBundle(proposals, confirm, refreshTopics = []) {
+  if (S.busy) { toast("上一项操作还在处理中，请稍候"); return; }
+  S.busy = true;
+  toast(confirm ? "正在更新资料并处理相关建议…" : "正在保留本次对话内容…");
+  drawChat({ keep: true });
   try {
     if (confirm) {
       S.profile = await api("POST", "/profile-proposals/confirm-batch", {
@@ -1562,29 +1868,20 @@ async function decideProposalBundle(proposals, confirm, refreshTopics = []) {
     toast(confirm ? "已写入档案" : "已忽略该提议");
   } catch (e) {
     if (e.code === "VERSION_CONFLICT") await refreshProfile();
-    toast(e.message, true);
+    toast(userFacingError(e, "资料暂未更新，请稍后重试。"), true);
+  } finally {
+    S.busy = false;
+    drawSide();
+    drawChat({ keep: true });
   }
 }
 
 function actsRow(b) {
   const st = STATUS[b.status] || STATUS.cannot_answer;
-  const state = S.fb[b.message_id] || (S.fb[b.message_id] = {});
-  const parts = [h("div", { class: "acts" },
+  return h("div", { class: "acts" },
     h("span", { class: "fb" },
       h("span", { class: "st " + st.cls }, st.label), h("span", { class: "sep" }, "｜"),
-      h("button", { class: state.kind === "wrong" ? "on" : "", onclick: () => {
-        state.open = !state.open;
-        drawChat({ keep: true });
-      } }, "信息有误"), "·",
-      h("button", { onclick: () => { S.el.input.placeholder = "继续补充您的情况或追问…"; S.el.input.focus(); } }, "继续补充")))];
-  if (state.feedbackId) {
-    parts.push(h("div", { class: "fbok" }, `已提交纠错，编号 ${state.feedbackId}。可在「纠错记录」查看处理状态。`));
-  } else if (state.open) {
-    const note = h("textarea", { placeholder: "哪里有误？例如：材料清单缺少某项 / 来源已过期（可选）", maxlength: "500" });
-    parts.push(h("div", { class: "fbform" }, note, h("button", { class: "btn sm", onclick: () => feedback(b, "wrong", note.value) },
-      "提交纠错")));
-  }
-  return parts;
+      h("button", { onclick: () => { S.el.input.placeholder = "继续补充您的情况或追问…"; S.el.input.focus(); } }, "继续补充")));
 }
 
 async function feedback(b, kind, note) {
@@ -1595,7 +1892,7 @@ async function feedback(b, kind, note) {
     state.open = false;
     if (res.feedback_id) state.feedbackId = res.feedback_id;
     drawChat({ keep: true });
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(userFacingError(e, "反馈暂未提交，请稍后重试。"), true); }
 }
 
 async function send(text, retryCid, changed, confirmedFields, expectedProfileVersion, opts = {}) {
@@ -1616,18 +1913,39 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
     S.suppressFields = [];
   }
   S.highlight = new Set(changed || []);
-  S.pending = { text, cid: retryCid || uuid(), error: null, changed,
+  const context = {
+    profileId: S.pid,
+    conversationId: S.conv.session_id || S.conv.conversation_id,
+  };
+  const pending = { text, cid: retryCid || uuid(), error: null, changed,
     confirmedFields: confirmed, sessionFields, expectedProfileVersion, clearedFields };
+  S.pending = pending;
   drawChat();
+  const phaseTimer = setTimeout(() => {
+    if (S.pending === pending && S.pid === context.profileId) {
+      pending.phase = "正在核对与您当前资料相关的条件…";
+      drawChat({ keep: true });
+    }
+  }, 650);
+  const adviceTimer = setTimeout(() => {
+    if (S.pending === pending && S.pid === context.profileId) {
+      pending.phase = "正在整理适合您的建议，请稍候…";
+      drawChat({ keep: true });
+    }
+  }, 2100);
   try {
-    const res = await api("POST", `/sessions/${S.conv.session_id || S.conv.conversation_id}/messages`,
-      { text, client_message_id: S.pending.cid, confirmed_fields: S.pending.confirmedFields,
-        session_fields: S.pending.sessionFields,
-        expected_profile_version: S.pending.expectedProfileVersion,
-        cleared_fields: S.pending.clearedFields }, { timeout: 90000 });
+    const res = await api("POST", `/sessions/${context.conversationId}/messages`,
+      { text, client_message_id: pending.cid, confirmed_fields: pending.confirmedFields,
+        session_fields: pending.sessionFields,
+        expected_profile_version: pending.expectedProfileVersion,
+        cleared_fields: pending.clearedFields }, { timeout: 90000 });
+    if (S.pid !== context.profileId || (S.conv.session_id || S.conv.conversation_id) !== context.conversationId) {
+      return res;
+    }
     S.pending = null;
-    await Promise.all([loadMessages(), refreshProfile(), loadAdvice(), loadProposals(),
-      loadRelationships(), loadRelationshipProposals()]);
+    // Render the answer as soon as it is available.  Plans and account records
+    // then catch up without blocking the conversation from becoming usable.
+    await Promise.all([loadMessages(), refreshProfile(), loadAdvice(), loadProposals()]);
     deriveMissing();
     S.flash = res.advice_updates || [];
     if (res.status && res.status !== "needs_input") {
@@ -1637,8 +1955,10 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
     }
     drawSheet();
     drawSide();
+    void loadChatSecondary(context.profileId);
     return res;
   } catch (e) {
+    if (S.pid !== context.profileId) return null;
     if (e.code === "STALE_FOLLOW_UP") {
       S.pending = null;
       S.followTrail = [];
@@ -1650,15 +1970,20 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
         drawSide();
         toast("问题已更新，请回答现在显示的追问");
       } catch (refreshError) {
-        toast(refreshError.message, true);
+        toast(userFacingError(refreshError, "问题暂未刷新，请稍后重试。"), true);
       }
     } else if (S.pending) S.pending.error = e;
     return null;
   } finally {
+    clearTimeout(phaseTimer);
+    clearTimeout(adviceTimer);
     // busy 必须在重绘前清掉，否则「上一步」会带着 disabled 画进 DOM 后一直点不了。
     S.busy = false;
-    if (S.el.sendBtn) S.el.sendBtn.disabled = false;
-    drawChat({ keep: true });
+    if (S.pid === context.profileId) {
+      if (S.el.sendBtn) S.el.sendBtn.disabled = false;
+      drawSide();
+      drawChat({ keep: true });
+    }
   }
 }
 
@@ -1673,19 +1998,15 @@ async function openCitation(c) {
     c.synthetic ? h("span", { class: "mock" }, "示例资料") : null,
     h("div", { class: "kv" },
       h("span", null, "官方链接"), h("span", null, safeLink(c.source_url)),
-      h("span", null, "核验时间"), h("span", null, fmtFull(c.verified_at)),
-      h("span", null, "数据版本"), h("span", { class: "mono" }, c.revision_id),
-      h("span", null, "记录"), h("span", { class: "mono" }, c.record_id),
-      h("span", null, "证据编号"), h("span", { class: "mono" }, c.evidence_id)),
-    h("div", { class: "sub-h" }, "原文引用"), h("blockquote", null, c.quote),
-    c.condition_quote ? [h("div", { class: "sub-h" }, "适用条件原文"), h("blockquote", null, c.condition_quote)] : null,
+      h("span", null, "核验时间"), h("span", null, fmtFull(c.verified_at))),
+    h("div", { class: "sub-h" }, "原文引用"), h("blockquote", null, customerText(c.quote, "暂无可展示的原文摘录。")),
+    c.condition_quote && !isInternalOutput(c.condition_quote) ? [h("div", { class: "sub-h" }, "适用条件原文"), h("blockquote", null, c.condition_quote)] : null,
     snap));
   try {
     const s = await api("GET", `/knowledge/snapshots/${encodeURIComponent(c.revision_id)}`);
-    snap.textContent = `资料状态：${AVAIL[s.availability] || s.availability} · 本版本共 ${(s.evidence || []).length} 条证据 · `
-      + `核验于 ${fmtFull(s.verified_at)}`;
+    snap.textContent = `官方资料状态：${AVAIL[s.availability] || "已核验"} · 最近核验于 ${fmtFull(s.verified_at)}`;
   } catch (e) {
-    snap.textContent = `资料快照暂不可读：${e.message}`;
+    snap.textContent = "暂时无法查看官方资料状态，您仍可通过上方链接查看原文。";
   }
 }
 
@@ -1727,6 +2048,10 @@ async function openEdit(focus) {
       if (v === undefined) { if (old !== undefined) clear.push(c); } else if (v !== old) set[c] = v;
     }
     if (!Object.keys(set).length && !clear.length) return closeOverlay();
+    // Direct editing is already an explicit user confirmation.  We only offer
+    // a regeneration choice when it overwrites/removes an existing value;
+    // filling an empty field should stay frictionless.
+    const replacedExisting = Object.keys(set).some((code) => val(p, code) !== undefined) || clear.length > 0;
     try {
       S.profile = await api("PATCH", `/profiles/${S.pid}`, { expected_version: p.version, fields: set, clear_fields: clear });
       await loadAdvice();
@@ -1737,9 +2062,10 @@ async function openEdit(focus) {
       drawSheet();
       drawSide();
       drawChat({ keep: true });
-      toast("档案已保存");
+      if (replacedExisting) openAdviceImpactPanel(staleAdviceTopics());
+      else toast("资料已保存");
     } catch (e) {
-      err.textContent = e.message;
+      err.textContent = userFacingError(e, "资料暂未保存，请检查填写内容后重试。");
       if (e.code === "VERSION_CONFLICT") refreshProfile();
     }
   };
@@ -1753,39 +2079,46 @@ async function openEdit(focus) {
   form.querySelector(".focus input, .focus select")?.focus();
 }
 
-// ---------- /report/:id ----------
+// ---------- report ----------
 
-async function renderReport(pid) {
-  shell(h("div", { class: "loading" }, "正在生成报告…"), "report");
-  const [profile, adv, plan] = await Promise.all([api("GET", `/profiles/${pid}`), api("GET", `/profiles/${pid}/advice`),
-    api("GET", `/profiles/${pid}/plan`)]);
+function reportDocument(profile, adv, plan) {
   const now = new Date().toISOString();
   const name = val(profile, "beneficiary") || "未命名档案";
-  const visa = adv.advice.visa;
-  const cites = visa ? visa.payload.citations || [] : [];
+  const advice = adv.advice || {};
+  const cites = Object.values(advice).flatMap((item) => item?.payload?.citations || []);
   const cn = {};
-  cites.forEach((c, i) => { cn[c.citation_id] = i + 1; });
+  const uniqueCites = cites.filter((c) => c && c.citation_id && !cn[c.citation_id]
+    && (cn[c.citation_id] = Object.keys(cn).length + 1));
   const pairs = [];
   for (let i = 0; i < GRID.length; i += 2) pairs.push(GRID.slice(i, i + 2));
   const topicBlock = (t) => {
-    if (t.key !== "visa") return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 待补充`)];
-    if (!visa) return [h("h3", { class: "sf" }, `${t.no} ${t.title} · 未开始`)];
-    const pl = visa.payload;
-    return [h("h3", { class: "sf" }, `${t.no} ${t.title} · v${visa.version}（${fmtFull(visa.updated_at)}）`),
-      h("p", null, ...linkify(pl.summary || "")),
-      h("ol", null, (pl.materials || []).map((m) => h("li", null, m.name_en ? `${m.name_zh}（${m.name_en}）` : m.name_zh,
+    const item = advice[t.key];
+    if (!item) return h("article", { class: "report-topic" },
+      h("div", { class: "report-topic-head" }, h("span", null, t.no), h("h3", { class: "sf" }, t.title),
+        h("em", null, "尚未开始")),
+      h("p", { class: "note" }, "您可以在对话中提出相关问题，系统会逐步补全这部分方案。"));
+    const pl = item.payload || {};
+    const summary = customerText(pl.summary, "这部分建议仍在整理中，请以已核验资料为准。");
+    const steps = (pl.steps || []).filter((step) => !isInternalOutput(step)).slice(0, 6);
+    const materials = (pl.materials || []).filter((m) => !isInternalOutput(m.name_zh)
+        && !isInternalOutput(m.name_en) && !isInternalOutput(m.condition_text)).map((m) => h("li", null, m.name_en && !isInternalOutput(m.name_en) ? `${m.name_zh}（${m.name_en}）` : m.name_zh,
         h("span", { class: "tagx " + m.applicability }, TAG[m.applicability]),
         cn[m.citation_id] ? ` [${cn[m.citation_id]}]` : "",
-        m.condition_text ? h("div", { class: "note" }, `条件：${m.condition_text}`) : null,
-        (m.pending_fields || []).length ? h("div", { class: "warn" }, `待确认：${m.pending_fields.map(label).join("、")}`) : null))),
-      (pl.unconfirmed_fields || []).length ? h("p", { class: "warn" }, `待确认信息：${pl.unconfirmed_fields.map(label).join("、")}`) : null];
+        m.condition_text && !isInternalOutput(m.condition_text) ? h("div", { class: "note" }, `条件：${m.condition_text}`) : null,
+        (m.pending_fields || []).length ? h("div", { class: "warn" }, `待确认：${m.pending_fields.map(label).join("、")}`) : null));
+    return h("article", { class: "report-topic" },
+      h("div", { class: "report-topic-head" }, h("span", null, t.no), h("h3", { class: "sf" }, t.title),
+        h("em", null, item.status === "stale" ? "建议待更新" : `更新于 ${fmtFull(item.updated_at)}`)),
+      h("p", { class: "report-summary" }, summary),
+      steps.length ? h("ol", { class: "report-steps" }, steps.map((step) => h("li", null, step))) : null,
+      materials.length ? h("ol", { class: "report-materials" }, materials) : null,
+      (pl.unconfirmed_fields || []).length ? h("p", { class: "warn" }, `待确认信息：${pl.unconfirmed_fields.map(label).join("、")}`) : null);
   };
-  shell(h("div", { class: "report" },
-    h("div", { class: "tools" },
-      h("button", { class: "btn ghost", onclick: () => go("#/chat/" + pid) }, "返回方案"),
-      h("button", { class: "btn", onclick: () => window.print() }, "打印 / 导出 PDF")),
-    h("h1", { class: "sf" }, `${name} · 留学准备方案报告`),
-    h("div", { class: "rmeta" }, h("span", null, `生成于 ${fmtFull(now)} · 档案版本 v${profile.version}`)),
+  return h("div", { class: "report" },
+    h("header", { class: "report-cover" },
+      h("p", { class: "report-kicker" }, "GLOBAL PATHWAY · PRIVATE BANKING"),
+      h("h1", { class: "sf" }, `${name} · 留学准备方案报告`),
+      h("div", { class: "rmeta" }, h("span", null, "留学准备方案快照"), h("span", null, `生成于 ${fmtFull(now)}`))),
     h("h2", null, "一 · 留学基本信息"),
     h("table", null, pairs.map((pair) => h("tr", null, pair.map((c) => [h("th", null, GRID_LABEL[c] || label(c)),
       h("td", null, val(profile, c) === undefined ? "待确认" : valueLabel(c, val(profile, c)))])))),
@@ -1795,13 +2128,72 @@ async function renderReport(pid) {
     plan.items.length ? h("ol", null, plan.items.map((i) => h("li", null, `${i.done ? "☑" : "☐"} ${i.text}`)))
       : h("p", { class: "note" }, "暂无待办。"),
     h("h2", null, "四 · 资料来源"),
-    cites.length ? h("ol", null, cites.map((c) => h("li", null, h("b", null, c.source_name), " ", safeLink(c.source_url),
-      h("div", { class: "note" }, `核验 ${fmtFull(c.verified_at)} · 数据版本 ${c.revision_id}`),
-      h("div", { class: "note" }, `「${c.quote.length > 160 ? c.quote.slice(0, 160) + "…" : c.quote}」`))))
+    uniqueCites.length ? h("ol", null, uniqueCites.map((c) => h("li", null, h("b", null, c.source_name), " ", safeLink(c.source_url),
+      h("div", { class: "note" }, `官方资料核验时间：${fmtFull(c.verified_at)}`),
+      h("div", { class: "note" }, customerText(c.quote, "").slice(0, 160) + (String(c.quote || "").length > 160 ? "…" : "")))))
       : h("p", { class: "note" }, "暂无引用来源。"),
     h("div", { class: "disc" },
       `本报告是 ${fmtFull(now)} 的方案快照，内容仅基于当时已发布的官方资料；政策可能变化，请以官方最新公布为准。`,
-      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。")), "report");
+      "标注「待核实 / 待确认」的项目需补充信息或人工确认后再使用。"));
+}
+
+async function downloadReport(pid, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在生成…";
+  try {
+    const response = await fetch(`/v1/profiles/${encodeURIComponent(pid)}/report.pdf`, {
+      credentials: "same-origin", headers: { Accept: "application/pdf" },
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new ApiError(payload.code || "DOWNLOAD_FAILED", payload.message || "报告下载失败");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = h("a", { href: url, download: "global-pathway-report.pdf" });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("报告已开始下载");
+  } catch (error) {
+    toast(userFacingError(error, "报告暂时无法下载，请稍后重试。"), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function openReportDialog(pid) {
+  if (!pid) return;
+  const panel = h("section", { class: "modal report-modal", role: "dialog", "aria-modal": "true",
+    "aria-labelledby": "report-title" },
+    h("div", { class: "report-modal-bar" },
+      h("div", null, h("span", { class: "lab" }, "方案快照"), h("h3", { id: "report-title", class: "sf" }, "导出报告")),
+      h("div", { class: "report-modal-actions" },
+        h("button", { class: "btn ghost", type: "button", onclick: closeOverlay }, "关闭"),
+        h("button", { class: "btn", type: "button", onclick: (event) => downloadReport(pid, event.currentTarget) }, "下载 PDF"))),
+    h("div", { class: "report-modal-loading" }, "正在整理这份方案报告…"));
+  overlay(panel);
+  try {
+    const [profile, adv, plan] = await Promise.all([
+      api("GET", `/profiles/${pid}`), api("GET", `/profiles/${pid}/advice`), api("GET", `/profiles/${pid}/plan`),
+    ]);
+    if (!document.body.contains(panel)) return;
+    panel.querySelector(".report-modal-loading").replaceWith(reportDocument(profile, adv, plan));
+  } catch (e) {
+    if (!document.body.contains(panel)) return;
+    panel.querySelector(".report-modal-loading").replaceWith(h("div", { class: "report-modal-empty" },
+      h("p", null, userFacingError(e, "报告暂时无法生成，请稍后重试。")),
+      h("button", { class: "btn", type: "button", onclick: () => openReportDialog(pid) }, "重试")));
+  }
+}
+
+async function renderReport(pid) {
+  // Preserve direct links from older reports while keeping the application in chat.
+  go("#/chat/" + pid);
+  await openReportDialog(pid);
 }
 
 // ---------- /feedback ----------

@@ -14,6 +14,22 @@ from agent2.tuition_knowledge import (SCHOOL_NAME_ZH, PaymentDetail,
                                       TuitionContext, TuitionRate,
                                       _format_money)
 
+INSTALLMENT_PERIOD_ZH = {
+    "annual": "按年",
+    "term": "按学期",
+    "semester": "按学期",
+    "monthly": "按月",
+    "other": "按学校安排",
+}
+SCENARIO_LABELS_ZH = {
+    "tuition": "学费",
+    "deposit": "押金/订金",
+    "application": "申请费",
+    "accommodation": "住宿",
+    "living": "生活费",
+    "other": "其他费用",
+}
+
 BILLING_CYCLE_ZH = {
     "per_year_advance": "通常按学年预付（一次缴清全年）",
     "per_term": "通常按学期账单缴费",
@@ -190,7 +206,10 @@ def payment_steps(payment: PaymentDetail | None) -> list[str]:
     cycle = BILLING_CYCLE_ZH.get(payment.billing_cycle, payment.billing_cycle)
     if payment.installment_count:
         period = {"month": "按月", "term": "按学期", "year": "按年"}.get(
-            (payment.installment_period or "").lower(), payment.installment_period or "")
+            (payment.installment_period or "").lower(),
+            INSTALLMENT_PERIOD_ZH.get(payment.installment_period or "",
+                                      payment.installment_period or ""),
+        )
         if period and period in cycle:
             steps.append(f"{cycle}，约分 {payment.installment_count} 次。")
         else:

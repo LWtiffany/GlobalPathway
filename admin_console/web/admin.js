@@ -108,9 +108,21 @@ function explainReason(text) {
 }
 
 function toast(msg, bad) {
-  const t = h("div", { class: "toast" + (bad ? " bad" : "") }, msg);
+  const t = h("div", { class: "toast" + (bad ? " bad" : ""), role: bad ? "alert" : "status",
+    "aria-live": bad ? "assertive" : "polite" }, msg);
   document.body.append(t);
   setTimeout(() => t.remove(), 3600);
+}
+
+function userFacingError(error, fallback) {
+  const messages = {
+    NETWORK: "暂时无法连接服务，请稍后重试。",
+    ADMIN_UNAUTHORIZED: "登录已失效，请重新登录。",
+    INVALID_CREDENTIALS: "用户名或密码不正确，请检查后重试。",
+  };
+  const code = error && error.code;
+  return Object.prototype.hasOwnProperty.call(messages, code) ? messages[code]
+    : (fallback || "操作暂未完成，请稍后重试。");
 }
 
 class ApiError extends Error {
@@ -174,7 +186,7 @@ function renderLogin(err) {
       sessionStorage.setItem("gp_admin_name", r.admin);
       render();
     } catch (ex) {
-      errEl.textContent = ex.message;
+      errEl.textContent = userFacingError(ex, "登录暂未成功，请检查信息后重试。");
     }
   };
   $app.replaceChildren(topBar(), h("div", { class: "gold" }),
@@ -193,7 +205,7 @@ async function load() {
   try {
     A.data = await api("GET", "/reviews" + q);
   } catch (e) {
-    if (A.token) toast(e.message, true);
+    if (A.token) toast(userFacingError(e, "审核数据暂时无法加载，请稍后重试。"), true);
     return;
   }
   renderList();
@@ -292,7 +304,7 @@ async function openDetail(ids) {
     A.note = "";
     A.conflicts = conflictChoices(reviews[0].evidence);
   } catch (e) {
-    toast(e.message, true);
+    toast(userFacingError(e, "审核详情暂时无法打开，请稍后重试。"), true);
     return;
   }
   renderDrawer();
@@ -458,7 +470,7 @@ function decideView(r) {
       toast(verb === "approve" ? "已按选定说法写入正式库" : "已驳回，数据未入库");
       await load();
     } catch (e) {
-      toast(e.message, true);
+      toast(userFacingError(e, "操作暂未完成，请稍后重试。"), true);
     } finally {
       A.busy = false;
     }

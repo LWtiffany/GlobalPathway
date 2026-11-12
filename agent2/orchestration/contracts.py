@@ -191,6 +191,8 @@ class OrchestrationInput(FrozenModel):
     conversation_intents: list[str] = Field(default_factory=list)
     asked_fields: list[str] = Field(default_factory=list)
     input_mode: Literal["free_text", "structured_selection"] = "free_text"
+    # Recompute saved advice from the current Profile without starting another interview.
+    refresh_mode: bool = False
     understood_facts: dict[str, Any] = Field(default_factory=dict)
     understood_basis: dict[str, str] = Field(default_factory=dict)
     # Service may run understanding once for routing; workflow skips a second call.
@@ -199,6 +201,11 @@ class OrchestrationInput(FrozenModel):
     understanding_model_used: bool = False
     # Intents recovered by UserUnderstandingPort (distinct from session conversation_intents).
     llm_intents: list[str] = Field(default_factory=list)
+    # Display name of the profile under advice; used to personalise follow-up copy.
+    profile_name: str = ""
+    # Confirmed role of the profile owner ("student" or "parent"); steers the
+    # writer's point of view (address the parent vs the applicant).
+    profile_role: str = ""
     # Dialogue gist so routing can tell continuations of the open topic from new topics.
     session_topic: str | None = None
     session_last_user_text: str = ""

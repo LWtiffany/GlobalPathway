@@ -29,9 +29,14 @@ _INTERNAL_OUTPUT_PATTERNS = (
     re.compile(r"\b(?:prompt|completion)\s*\d+", re.I),
     re.compile(r"\b(?:evidence_ids?|source_ids?|field_code|trace_id|prompt_version)\b", re.I),
     re.compile(r"\b(?:llm|gateway|model|token(?:s)?|completion|timeout)\b", re.I),
+    re.compile(r"\banswered\s+(?:result|results)\b|\bmust\s+(?:include|have|contain)\s+evidence\b|\bmissing\s+evidence\b|结果必须带证据|缺少可审计证据", re.I),
     re.compile(r"只在\s*(?:evidence|证据)|内部(?:字段|指令|提示)|不要向用户|不可展示", re.I),
     re.compile(r"\bs\d+(?:\s*[,，、;；]\s*s\d+)*\b", re.I),
 )
+_INTERNAL_NOTICE_CODES = {
+    "missing_evidence", "llm_fallback", "domain_workflow_todo", "intent_routing",
+    "llm_routing_low_confidence", "unsupported_intent", "partial_out_of_scope",
+}
 
 
 def _looks_internal_output(text: str) -> bool:
@@ -44,7 +49,9 @@ def _sanitize_user_answer(answer: UnifiedAnswer) -> UnifiedAnswer:
     clean_steps = [line for line in body.steps if not _looks_internal_output(line)]
     clean_limitations = [line for line in body.limitations if not _looks_internal_output(line)]
     clean_actions = [line for line in answer.next_actions if not _looks_internal_output(line)]
-    clean_notices = [notice for notice in answer.notices if not _looks_internal_output(notice.message)]
+    clean_notices = [notice for notice in answer.notices
+                     if notice.code not in _INTERNAL_NOTICE_CODES
+                     and not _looks_internal_output(notice.message)]
     summary = body.summary if not _looks_internal_output(body.summary) else "当前资料不足以支持确定回答，请按页面提示补充信息或核实官方要求。"
     if not clean_steps and body.steps:
         clean_steps = ["当前资料不足以支持确定回答，请核实适用条件和官方要求。"]
@@ -60,7 +67,9 @@ def _sanitize_user_answer(answer: UnifiedAnswer) -> UnifiedAnswer:
                 next_actions=result.next_actions, notices=result.notices,
                 follow_up_questions=result.follow_up_questions)).answer,
             "next_actions": [line for line in result.next_actions if not _looks_internal_output(line)],
-            "notices": [notice for notice in result.notices if not _looks_internal_output(notice.message)],
+            "notices": [notice for notice in result.notices
+                        if notice.code not in _INTERNAL_NOTICE_CODES
+                        and not _looks_internal_output(notice.message)],
             "follow_up_questions": _sanitize_user_answer(UnifiedAnswer(
                 status=result.status, answer=result.answer,
                 follow_up_questions=result.follow_up_questions)).follow_up_questions,
@@ -245,7 +254,9 @@ async def write_answer(ctx: StepContext[WorkflowState, WorkflowDependencies, Non
             and ctx.state.answer.status in {"answered", "needs_verification"}):
         try:
             body = await port.write(request=ctx.state.request, verified_answer=ctx.state.answer)
-            validate_written_answer(body, ctx.state.answer.answer)
+            validate_written_answer(body, ctx.state.answer.answer,
+                                    user_text=ctx.state.request.text,
+                                    profile_name=ctx.state.request.profile_name)
             ctx.state.answer = ctx.state.answer.model_copy(update={"answer": body})
             ctx.state.llm_model_versions["writer"] = port.model_version
             ctx.state.llm_prompt_versions["writer"] = port.prompt_version

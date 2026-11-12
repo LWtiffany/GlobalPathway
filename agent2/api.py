@@ -19,6 +19,7 @@ from pydantic_core import to_jsonable_python
 
 from . import clarify
 from .service import SESSION_COOKIE, ServiceError
+from .report_pdf import build_report_pdf
 
 MAX_BODY_BYTES = 64 * 1024
 MUTATING = {"POST", "PATCH", "DELETE", "PUT"}
@@ -320,6 +321,17 @@ def list_plan(service, user_id, body, query, profile_id):
     return 200, service.list_plan(user_id, profile_id)
 
 
+def report_download(service, headers, profile_id):
+    """Return a binary PDF while preserving the same ownership check as API routes."""
+    token, _ = session_token_from_headers(headers)
+    session = service.session_for_token(token)
+    user_id = session["user_id"]
+    profile = _dump(service.get_profile(user_id, profile_id))
+    advice = _dump(service.list_advice(user_id, profile_id))
+    plan = _dump(service.list_plan(user_id, profile_id))
+    return build_report_pdf(profile, advice, plan)
+
+
 @route("POST", r"/v1/profiles/(?P<profile_id>[\w-]+)/plan")
 def add_plan_item(service, user_id, body, query, profile_id):
     return 201, service.add_plan_item(user_id, profile_id, body.get("text"))
@@ -337,7 +349,8 @@ def delete_plan_item(service, user_id, body, query, item_id):
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-                ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
+                ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml",
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 STATIC_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
                                "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
@@ -462,6 +475,27 @@ def make_handler(service):
 
         def do_GET(self):
             path = self.path.partition("?")[0]
+            report_match = re.fullmatch(r"/v1/profiles/(?P<profile_id>[\w-]+)/report\.pdf", path)
+            if report_match:
+                try:
+                    data = report_download(service, self.headers, report_match.group("profile_id"))
+                    return self._respond(200, data, "application/pdf", (
+                        ("Content-Disposition", "attachment; filename=global-pathway-report.pdf"),
+                        ("Cache-Control", "no-store"),
+                    ))
+                except ServiceError as exc:
+                    payload = {"code": exc.code, "message": exc.message, "retryable": exc.retryable,
+                               "trace_id": str(uuid.uuid4())}
+                    error_status = exc.http_status
+                except Exception:
+                    import logging
+                    logging.exception("report download failed")
+                    payload = {"code": "INTERNAL", "message": "报告暂时无法生成", "retryable": True,
+                               "trace_id": str(uuid.uuid4())}
+                    error_status = 500
+                return self._respond(error_status,
+                                     json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                     "application/json; charset=utf-8")
             # Registered API routes (including /healthz) must win over the SPA fallback.
             if path.startswith("/v1/") or any(
                     verb == "GET" and pattern.match(path)
