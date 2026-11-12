@@ -392,11 +392,11 @@ def _payment_from_row(row) -> PaymentDetail:
     )
 
 
-# Method ids that mean "see the programme page" — they carry no actual
+# Method ids that mean "see the programme/office page" — they carry no actual
 # channel information. When a level/programme row only lists these, the
 # school-wide row (if any) has the real payment channels and must win.
 _PLACEHOLDER_METHODS = {"programme_catalog_channels", "programme_page_channels",
-                        "programme_specific"}
+                        "programme_specific", "hkust_registry_payment_channels"}
 
 
 def _is_placeholder_payment_row(row) -> bool:
@@ -789,7 +789,13 @@ def format_rate_line(rate: TuitionRate, *, school: str | None = None,
 
 def compare_to_quota(rates: list[TuitionRate], *, quota_amount, quota_currency: str | None
                      ) -> str | None:
-    """If a rate shares the quota currency, say whether it exceeds the facilitation quota."""
+    """If a rate shares the quota currency, say whether it exceeds the facilitation quota.
+
+    HKD tuition against a USD quota uses the official Linked Exchange Rate
+    System band (7.75–7.85 HKD/USD) for a bounded estimate instead of
+    inventing a spot rate: if the whole band is below (or above) the quota,
+    the answer states the conclusion explicitly.
+    """
     if quota_amount is None or not quota_currency:
         return None
     try:
@@ -800,10 +806,30 @@ def compare_to_quota(rates: list[TuitionRate], *, quota_amount, quota_currency: 
             and not r.is_estimate]
     if not same:
         currencies = sorted({r.currency for r in rates if r.currency})
-        if currencies:
-            return (f"学费参考币种为 {'/'.join(currencies)}，与便利化额度币种 {quota_currency} 不同；"
-                    "是否超额请按购汇当日折算后向银行确认（此处不做汇率估算）。")
-        return None
+        if not currencies:
+            return None
+        if quota_currency.upper() == "USD" and currencies == ["HKD"]:
+            hkd_rates = [r for r in rates if r.currency == "HKD" and not r.is_estimate]
+            top = max(r.amount for r in hkd_rates)
+            quota_txt = _format_money(quota, quota_currency)
+            # 7.75 gives the largest USD value, 7.85 the smallest — the whole
+            # conversion band stays inside the official LERS range.
+            usd_lo = (top / Decimal("7.85")).quantize(Decimal("1"))
+            usd_hi = (top / Decimal("7.75")).quantize(Decimal("1"))
+            money = _format_money(top, "HKD")
+            if usd_hi <= quota:
+                return (f"参考学费约 {money}，按港元联系汇率区间（7.75–7.85）估算约 "
+                        f"{_format_money(usd_lo, 'USD')}–{_format_money(usd_hi, 'USD')}，"
+                        f"未超过年度便利化额度约 {quota_txt}（以银行购汇当日折算为准）。")
+            if usd_lo >= quota:
+                return (f"参考学费约 {money}，按港元联系汇率区间（7.75–7.85）估算约 "
+                        f"{_format_money(usd_lo, 'USD')}–{_format_money(usd_hi, 'USD')}，"
+                        f"已超过年度便利化额度约 {quota_txt}；"
+                        "超额度办理时请按银行要求准备学费证明等材料。")
+            return (f"参考学费约 {money}，按港元联系汇率区间估算接近年度便利化额度约 "
+                    f"{quota_txt}；是否超过请按购汇当日折算后与银行确认。")
+        return (f"学费参考币种为 {'/'.join(currencies)}，与便利化额度币种 {quota_currency} 不同；"
+                "是否超额请按购汇当日折算后向银行确认（此处不做汇率估算）。")
     # Use the largest same-currency official amount as the conservative remittance planning figure.
     top = max(same, key=lambda r: r.amount)
     money = _format_money(top.amount, top.currency)
