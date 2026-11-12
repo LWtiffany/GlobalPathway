@@ -70,9 +70,10 @@ a{color:#8b7140}
 .extra .tag.miss{border-color:#e7c7c2;color:#8e1b24;background:#fbf3f1}
 .extra .tag.hl{border-color:#d8c294}
 
-.plan{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid #ece6db;margin-bottom:20px}
-.p{padding:14px 16px;border-right:1px solid #ece6db;min-width:0;transition:background .6s}
-.p:last-child{border-right:0}
+/* Single-column stack: filled/empty cards stay full width (no half-empty orphan cells). */
+.plan{display:flex;flex-direction:column;border:1px solid #ece6db;margin-bottom:20px}
+.p{padding:14px 16px;border-bottom:1px solid #ece6db;min-width:0;transition:background .6s}
+.p:last-child{border-bottom:0}
 .p.flash{background:#f8f1e1}
 .p h4{margin:0 0 10px;font-size:14px;font-weight:400;display:flex;justify-content:space-between;align-items:baseline}
 .p h4 small{font-family:Arial;color:#b89b6a;font-size:11px;margin-right:6px}
@@ -83,18 +84,23 @@ a{color:#8b7140}
 .row>span:first-child{color:#9a917f;flex:none}
 .row>span:last-child{text-align:right;min-width:0}
 .p .why{font-size:11px;color:#a59c8a;line-height:1.6;margin-top:8px}
-.credit-advice{background:#fffdfa}
+.topic-advice,.credit-advice{background:#fffdfa}
+.topic-wide{width:100%}
 .cc-market{font-size:10.5px;color:#8e1b24;letter-spacing:.4px;margin:2px 0 8px}
 .cc-intro,.cc-empty{font-size:12px;line-height:1.6;color:#6f675a;margin:0 0 11px}
 .cc-option{padding:10px 0;min-width:0}
-.cc-option.featured{background:#fbf7f0;border-left:3px solid #8e1b24;padding:12px 13px;margin:0 -3px}
+.cc-option.featured{background:#fbf7f0;border-left:3px solid #8e1b24;padding:12px 13px;margin:4px 0}
+.cc-option:not(.featured){padding:10px 0 4px}
 .cc-label{font-size:10px;color:#8e1b24;letter-spacing:1px;margin-bottom:4px}
 .cc-name{font-size:14px;font-weight:600;line-height:1.4;overflow-wrap:anywhere}
-.cc-reason{font-size:12px;color:#4c5f4e;line-height:1.55;margin:7px 0 9px}
-.cc-fact{display:grid;grid-template-columns:68px minmax(0,1fr);gap:8px;border-top:1px solid #eee7da;padding-top:7px;margin-top:7px;font-size:11.5px;line-height:1.5}
+.cc-reason{font-size:12px;color:#4c5f4e;line-height:1.55;margin:7px 0 0}
+.cc-reason+.cc-reason{margin-top:5px}
+.cc-fact{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;border-top:1px solid #eee7da;padding-top:7px;margin-top:7px;font-size:11.5px;line-height:1.5;text-align:left}
 .cc-fact>span:first-child{color:#8a8170}
 .cc-fact strong{font-weight:600;color:#22201c;overflow-wrap:anywhere}
-.cc-fact>span:last-child{overflow-wrap:anywhere}
+.cc-fact>span:last-child{overflow-wrap:anywhere;min-width:0}
+.cc-fact .e{text-align:left}
+.cc-fact .cites-fold>summary{margin-left:0}
 .cc-others{border-top:1px solid #e9e0d2;margin-top:12px}
 .cc-section{font-size:10.5px;color:#8a8170;letter-spacing:1px;margin-top:10px}
 .cc-secondary+.cc-secondary{border-top:1px solid #eee7da}
@@ -104,8 +110,7 @@ a{color:#8b7140}
 .cc-apply{display:flex;flex-direction:column;gap:5px;background:#f8f4ec;border-left:2px solid #b89b6a;padding:10px 11px;margin-top:12px;font-size:11.5px;line-height:1.55;color:#5e574a}
 .cc-apply b{font-size:10.5px;color:#8b7140;letter-spacing:.5px}
 .cc-meta{font-size:10px;color:#a59c8a;line-height:1.5;margin-top:11px;border-top:1px solid #f1ece3;padding-top:8px}
-@media(max-width:1600px){.plan{grid-template-columns:repeat(3,minmax(0,1fr))}.credit-advice{grid-column:1/-1;border-top:1px solid #ece6db}}
-@media(max-width:900px){.plan{grid-template-columns:1fr}.p{border-right:0;border-bottom:1px solid #ece6db}.p:last-child{border-bottom:0}.credit-advice{grid-column:auto}}
+@media(max-width:900px){.p{padding:12px 14px}}
 .text-link{color:#3d5a80;text-decoration:underline;text-underline-offset:2px;word-break:break-all}
 .text-link:hover{color:#1a3a7a}
 .cite-mark{font-size:10px;line-height:1;color:#5b6b8c;text-decoration:none;margin-left:4px;padding:1px 5px;border-radius:999px;background:rgba(91,107,140,.1);vertical-align:super;font-variant-numeric:tabular-nums}
@@ -118,6 +123,10 @@ a{color:#8b7140}
 .cites-label{color:#8a8172;font-size:11px;margin-bottom:4px}
 .cites-list{display:flex;flex-direction:column;gap:3px}
 .cites-inline{margin-left:4px;white-space:nowrap}
+.cites-fold{text-align:left;color:#6b6358}
+.cites-fold>summary{cursor:pointer;color:#6f675a;list-style-position:inside;width:fit-content}
+.cites-fold>summary:hover{color:#8e1b24}
+.cites-fold[open] .cites-list{margin-top:6px;text-align:left}
 .evidence{margin-top:10px;color:#6b6358;font-size:12px}
 .evidence summary{width:fit-content;color:#6f675a;cursor:pointer;list-style-position:inside}
 .evidence summary:hover{color:#8e1b24}
@@ -453,17 +462,7 @@ a{color:#8b7140}
 .sheet .profile-sheet-close{white-space:nowrap}
 /* Size the plan cards to the profile drawer, not the browser viewport. */
 @container (max-width:800px){
-  .sheet .plan{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .sheet .plan .credit-advice{grid-column:1/-1;border-top:1px solid #ece6db;border-right:0}
-  .sheet .plan .p:nth-child(odd){border-right:1px solid #ece6db}
-  .sheet .plan .p:nth-child(even){border-right:0}
-  .sheet .plan .credit-advice{border-right:0}
   .sheet .plan .cc-name{overflow-wrap:anywhere;word-break:normal}
-}
-@container (max-width:540px){
-  .sheet .plan{grid-template-columns:minmax(0,1fr)}
-  .sheet .plan .p,.sheet .plan .p:nth-child(odd),.sheet .plan .p:nth-child(even){grid-column:auto;border-right:0;border-bottom:1px solid #ece6db}
-  .sheet .plan .credit-advice{grid-column:auto;border-bottom:0}
 }
 @media screen and (max-width:700px){
   .side{max-height:112px}

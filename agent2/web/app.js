@@ -599,12 +599,18 @@ function viewProfile(profile) {
     toast("当前回复还在处理中，完成后即可查看其他档案。", true);
     return;
   }
-  S.collapsed = false;
+  // Same profile: eye icon toggles the plan sheet open / closed.
   if (profile.profile_id === S.pid) {
+    if (!S.collapsed) {
+      closeCurrentProfile();
+      return;
+    }
+    S.collapsed = false;
     if (S.el.sheet) S.el.sheet.classList.remove("collapsed");
-    S.el.side?.querySelector(".pf.on2 .pf-view")?.setAttribute("aria-expanded", "true");
+    drawSide();
     return;
   }
+  S.collapsed = false;
   go("#/chat/" + profile.profile_id);
 }
 
@@ -627,7 +633,8 @@ function closeCurrentProfile() {
   if (!S.el.sheet) return;
   S.collapsed = true;
   S.el.sheet.classList.add("collapsed");
-  S.el.side?.querySelector(".pf.on2 .pf-view")?.setAttribute("aria-expanded", "false");
+  // Refresh sidebar so the eye icon title/aria switches back to「查看」.
+  if (S.el.side) drawSide();
 }
 
 async function loadChatSecondary(profileId) {
@@ -832,8 +839,10 @@ function drawSide() {
             summary.course ? h("span", { class: "pf-course", title: summary.course }, summary.course) : null,
             h("span", { class: "pf-date" }, summary.start))),
         h("div", { class: "pf-actions" },
-          h("button", { class: "pf-view", type: "button", "aria-expanded": String(p.profile_id === S.pid && !S.collapsed),
-            title: `查看${name}档案`, "aria-label": `查看${name}档案`,
+          h("button", { class: "pf-view", type: "button",
+            "aria-expanded": String(p.profile_id === S.pid && !S.collapsed),
+            title: p.profile_id === S.pid && !S.collapsed ? `收起${name}档案` : `查看${name}档案`,
+            "aria-label": p.profile_id === S.pid && !S.collapsed ? `收起${name}档案` : `查看${name}档案`,
             onclick: (event) => { event.stopPropagation(); viewProfile(p); } }, profileActionIcon("view")),
           h("button", { class: "pf-delete", type: "button", title: `删除${name}`,
             "aria-label": `删除${name}`, onclick: (event) => { event.stopPropagation(); deleteProfile(p); } }, profileActionIcon("delete"))));
@@ -905,13 +914,73 @@ function row(k, ...v) {
 
 const empty = () => h("span", { class: "e" }, "—");
 
+/** Shared plan-card primitives — same visual language as credit-card advice. */
+function adviceFact(label, value, { strong = true } = {}) {
+  if (value == null || value === false) return null;
+  const isNode = typeof value === "object";
+  return h("div", { class: "cc-fact" },
+    h("span", null, label),
+    isNode ? h("span", null, value)
+      : strong ? h("strong", null, value) : h("span", null, value));
+}
+
+function adviceOption({ label, title, body, lines, facts, featured = true } = {}) {
+  const textLines = (lines || []).filter((s) => s && !isInternalOutput(s));
+  return h("div", { class: "cc-option" + (featured ? " featured" : "") },
+    label ? h("div", { class: "cc-label" }, label) : null,
+    title ? h("div", { class: "cc-name" }, title) : null,
+    body ? h("p", { class: "cc-reason" },
+      ...(typeof body === "string" ? linkify(body) : [body])) : null,
+    ...textLines.map((line) => h("p", { class: "cc-reason" }, ...linkify(line))),
+    ...(facts || []).filter(Boolean));
+}
+
+function adviceNote(title, text) {
+  if (!text) return null;
+  return h("div", { class: "cc-apply" },
+    h("b", null, title),
+    typeof text === "string" ? h("span", null, text) : text);
+}
+
+function advicePanel(t, { id, status, statusClass = "", flash = "", wide = true, kids }) {
+  // Plan cards always stack full-width so empty modules do not leave a half-blank cell.
+  return h("div", {
+    class: "p topic-advice topic-wide" + flash,
+    id,
+  }, cardHead(t, h("span", { class: "st " + statusClass }, status)), ...kids.filter(Boolean));
+}
+
+function remittancePaymentSteps(pl) {
+  const saved = visibleOutputLines(pl.payment_steps || []);
+  if (saved.length) return saved;
+  const companions = pl.domain_payload?.companion_bubbles || [];
+  const payment = companions.find((c) => c && c.kind === "school_payment");
+  return visibleOutputLines(payment?.steps || []);
+}
+
+function remittanceFxSteps(pl, paymentSteps) {
+  const saved = visibleOutputLines(pl.fx_steps || []);
+  if (saved.length) return saved.filter((s) => !isInternalOutput(s));
+  const pay = new Set(paymentSteps);
+  return visibleOutputLines(pl.steps || []).filter((s) => !pay.has(s) && !isTuitionCardSteps([s]));
+}
+
+function remittancePaymentTitle(steps, fallback) {
+  const first = String(steps[0] || "");
+  const hit = first.match(/^(.+?)\s*学费参考/);
+  if (hit) return hit[1].trim();
+  const school = val(S.profile, "school");
+  return school ? `${valueLabel("school", school) || school}` : fallback;
+}
+
 function remittanceCard(t) {
   const a = S.advice.remittance;
   const flash = S.flash.includes("remittance") ? " flash" : "";
   if (!a) {
-    return h("div", { class: "p" + flash, id: "card-remittance" },
-      cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("用途", empty()), row("材料", empty()), row("来源", empty()));
+    return advicePanel(t, {
+      id: "card-remittance", status: "未开始", flash,
+      kids: [adviceFact("用途", empty()), adviceFact("材料", empty()), adviceFact("来源", empty())],
+    });
   }
   const pl = a.payload || {};
   const purpose = pl.remittance_purpose || pl.fx_mode || pl.domain_payload?.remittance_purpose
@@ -921,12 +990,35 @@ function remittanceCard(t) {
   const mats = pl.materials || pl.domain_payload?.materials || [];
   const cites = pl.citations || pl.domain_payload?.citations || [];
   const req = mats.filter((m) => m.applicability === "required" && !isInternalOutput(m.name_zh));
-  const names = req.slice(0, 2).map((m) => m.name_zh).join("、");
-  return h("div", { class: "p" + flash, id: "card-remittance" },
-    cardHead(t, h("span", { class: "st ok" }, "已确认")),
-    row("用途", purposeLabel),
-    row("必备材料", req.length ? `${names}${req.length > 2 ? " 等" : ""} ${req.length} 项` : empty()),
-    row("来源", sourceRefs(cites)));
+  const materialNames = req.map((m) => m.name_zh).filter(Boolean);
+  const deadline = val(S.profile, "payment_deadline");
+  const paymentSteps = remittancePaymentSteps(pl).filter((s) => !isInternalOutput(s));
+  const fxSteps = remittanceFxSteps(pl, paymentSteps).filter((s) => !isInternalOutput(s));
+  return advicePanel(t, {
+    id: "card-remittance", status: "已确认", statusClass: "ok", flash, wide: true,
+    kids: [
+      paymentSteps.length ? adviceOption({
+        label: "怎么交学费",
+        title: remittancePaymentTitle(paymentSteps, "学校官方缴费"),
+        lines: paymentSteps.slice(0, 8),
+        featured: true,
+      }) : null,
+      fxSteps.length ? adviceOption({
+        label: "购汇与汇款",
+        title: purposeLabel !== "—" ? `汇款用途 · ${purposeLabel}` : "购汇要点",
+        lines: fxSteps.slice(0, 6),
+        featured: false,
+        facts: [
+          deadline ? adviceFact("缴费截止",
+            valueLabel("payment_deadline", deadline) || deadline) : null,
+        ],
+      }) : adviceFact("用途", purposeLabel),
+      adviceFact("必备材料",
+        materialNames.length ? materialNames.join("、") : empty(),
+        { strong: false }),
+      adviceFact("来源", sourceRefs(cites), { strong: false }),
+    ],
+  });
 }
 
 function accountDocumentLabel(doc) {
@@ -977,9 +1069,13 @@ function accountCard(t) {
   const a = S.advice.account;
   const flash = S.flash.includes("account") ? " flash" : "";
   if (!a) {
-    return h("div", { class: "p" + flash, id: "card-account" },
-      cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("地区", empty()), row("产品", empty()), row("材料", empty()), row("门槛", empty()));
+    return advicePanel(t, {
+      id: "card-account", status: "未开始", flash,
+      kids: [
+        adviceFact("地区", empty()), adviceFact("产品", empty()),
+        adviceFact("材料", empty()), adviceFact("门槛", empty()),
+      ],
+    });
   }
   const display = accountAdviceDisplay(a);
   const { pl, dp } = display;
@@ -988,25 +1084,41 @@ function accountCard(t) {
   const identity = display.identity || val(S.profile, "applicant_identity")
     || val(S.profile, "role");
   const productName = customerText(display.productName, "");
-  const names = display.documentNames.slice(0, 2).join("、");
   const eligibility = display.ruleLabels.slice(0, 2).join("；")
     || visibleOutputLines(pl.steps || []).find((s) => String(s).startsWith("公开资格要点："))?.replace("公开资格要点：", "")
-    || empty();
+    || "";
   const warn = display.needsVerification;
   const pending = display.needsInput && !warn;
   const scopes = Object.keys(S.adviceScopes.account || {});
   const scopeNames = scopes.map((key) => ({ "CN-HK": "香港", UK: "英国", US: "美国", CN: "中国内地" }[key] || key));
-  return h("div", { class: "p" + flash, id: "card-account" },
-    cardHead(t, h("span", { class: "st " + (warn || pending ? "warn" : "ok") },
-      warn ? "待核实" : pending ? "待补充" : "已确认")),
-    row("地区", valueLabel("destination_country", region) || region || empty()),
-    row("产品", productName || empty()),
-    row("申请人", valueLabel("applicant_identity", identity) || identity || empty()),
-    row("必备材料", display.documentNames.length
-      ? `${names}${display.documentNames.length > 2 ? " 等" : ""} ${display.documentNames.length} 项` : empty()),
-    row("门槛", eligibility),
-    scopes.length > 1 ? row("已咨询地区", scopeNames.join("、")) : null,
-    row("来源", sourceRefs(pl.citations || dp.citations || [])));
+  const summary = customerText(pl.summary, "");
+  const status = warn ? "待核实" : pending ? "待补充" : "已确认";
+  return advicePanel(t, {
+    id: "card-account",
+    status,
+    statusClass: warn || pending ? "warn" : "ok",
+    flash,
+    wide: !!productName,
+    kids: [
+      adviceOption({
+        label: productName ? "开户方案" : "当前进度",
+        title: productName || "待选定开户产品",
+        body: summary && summary.length < 180 ? summary : null,
+        featured: !!productName,
+        facts: [
+          adviceFact("地区", valueLabel("destination_country", region) || region || empty()),
+          adviceFact("申请人",
+            valueLabel("applicant_identity", identity) || identity || empty()),
+          adviceFact("必备材料",
+            display.documentNames.length ? display.documentNames.join("、") : empty(),
+            { strong: false }),
+          eligibility ? adviceFact("门槛", eligibility, { strong: false }) : adviceFact("门槛", empty()),
+          scopes.length > 1 ? adviceFact("已咨询地区", scopeNames.join("、"), { strong: false }) : null,
+        ],
+      }),
+      adviceFact("来源", sourceRefs(pl.citations || dp.citations || []), { strong: false }),
+    ],
+  });
 }
 
 function planCard(t) {
@@ -1154,14 +1266,18 @@ function savedCardDisplay(advice) {
 }
 
 function cardAdviceOption(card, label, featured) {
-  return h("div", { class: "cc-option" + (featured ? " featured" : "") },
-    h("div", { class: "cc-label" }, customerText(label, "信用卡方案")),
-    h("div", { class: "cc-name" }, card.product_name),
-    card.reason_text ? h("p", { class: "cc-reason" }, customerText(card.reason_text, "")) : null,
-    h("div", { class: "cc-fact" }, h("span", null, "年费及费用"),
-      h("strong", null, customerText(card.fee_text, "请以官网最新条款为准"))),
-    customerText(card.benefits_text) ? h("div", { class: "cc-fact" }, h("span", null, "主要权益"),
-      h("span", null, customerText(card.benefits_text))) : null);
+  return adviceOption({
+    label: customerText(label, "信用卡方案"),
+    title: card.product_name,
+    body: card.reason_text || null,
+    featured,
+    facts: [
+      adviceFact("年费及费用", customerText(card.fee_text, "请以官网最新条款为准")),
+      customerText(card.benefits_text)
+        ? adviceFact("主要权益", customerText(card.benefits_text), { strong: false })
+        : null,
+    ],
+  });
 }
 
 function isBackupCard(card) {
@@ -1173,10 +1289,12 @@ function isBackupCard(card) {
 function creditCardCard(t) {
   const a = S.advice.credit_card;
   const flash = S.flash.includes("credit_card") ? " flash" : "";
-  const base = "p credit-advice" + flash;
-  if (!a) return h("div", { class: base, id: "card-credit_card" },
-    cardHead(t, h("span", { class: "st" }, "未开始")),
-    ...(t.rows || ["产品", "费用 / 限制", "申请条件"]).map((r) => row(r, empty())));
+  if (!a) {
+    return advicePanel(t, {
+      id: "card-credit_card", status: "未开始", flash, wide: true,
+      kids: (t.rows || ["产品", "费用 / 限制", "申请条件"]).map((r) => adviceFact(r, empty())),
+    });
+  }
 
   const pl = a.payload || {};
   const display = savedCardDisplay(a);
@@ -1196,18 +1314,22 @@ function creditCardCard(t) {
     /均要求已有|到英国读书|香港卡可在留学地使用/.test(step));
   const condition = customerText(marketPrereq || first?.application_note,
     "申请资格及最终批核以当地汇丰的官方规定为准。");
-  return h("div", { class: base, id: "card-credit_card" },
-    cardHead(t, h("span", { class: "st " + stateClass }, state)),
-    cards.length ? [
+  return advicePanel(t, {
+    id: "card-credit_card", status: state, statusClass: stateClass, flash, wide: true,
+    kids: cards.length ? [
       cardAdviceOption(first, hasPrimary ? "首选推荐" : "方案一 · 供比较", hasPrimary),
       others.length ? h("div", { class: "cc-others" },
         h("div", { class: "cc-section" }, hasPrimary ? "其他选择" : "一起比较"),
         others.slice(0, 2).map((card, index) => h("div", { class: "cc-secondary" },
           cardAdviceOption(card, card.display_label ||
             (card.role === "supplement" ? "场景搭配" : hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`), false))),
-        others.length > 2 ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`) : null) : null,
-      h("div", { class: "cc-apply" }, h("b", null, "申请前请确认"), h("span", null, condition)),
-    ] : h("p", { class: "cc-empty" }, customerText(pl.summary, "目前还没有可展示的具体卡片。")));
+        others.length > 2
+          ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`)
+          : null) : null,
+      adviceNote("申请前请确认", condition),
+    ] : [h("p", { class: "cc-empty" },
+      customerText(pl.summary, "目前还没有可展示的具体卡片。"))],
+  });
 }
 
 /** Citations: numbered pills inline; numbered named links in the reference list. */
@@ -1255,16 +1377,26 @@ function citeRef(c) {
 function sourceRefs(citations) {
   const { unique } = buildCiteMap(citations);
   if (!unique.length) return empty();
-  return h("div", { class: "cites-list" }, unique.map((c) => h("div", null, citeRef(c))));
+  // Keep the side-panel compact: show a one-line summary, expand on click.
+  return h("details", { class: "cites-fold" },
+    h("summary", null, `${unique.length} 条官方依据`),
+    h("div", { class: "cites-list" }, unique.map((c) => h("div", null, citeRef(c)))));
 }
 
 function visaCard(t) {
   const a = S.advice.visa;
   const flash = S.flash.includes("visa") ? " flash" : "";
   const visa = val(S.profile, "visa_category");
+  const dest = val(S.profile, "destination_country");
   if (!a) {
-    return h("div", { class: "p" + flash, id: "card-visa" }, cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("类别", visa ? valueLabel("visa_category", visa) : empty()), row("材料", empty()), row("待确认", empty()));
+    return advicePanel(t, {
+      id: "card-visa", status: "未开始", flash,
+      kids: [
+        adviceFact("类别", visa ? valueLabel("visa_category", visa) : empty()),
+        adviceFact("材料", empty()),
+        adviceFact("待确认", empty()),
+      ],
+    });
   }
   const pl = a.payload;
   const mats = (pl.materials || []).filter((m) => !isInternalOutput(m.name_zh)
@@ -1273,14 +1405,42 @@ function visaCard(t) {
   const cond = mats.filter((m) => m.applicability !== "required");
   const unconfirmed = pl.unconfirmed_fields || [];
   const warn = unconfirmed.length || mats.some((m) => m.applicability === "unverified");
-  const names = req.slice(0, 2).map((m) => m.name_zh).join("、");
-  return h("div", { class: "p" + flash, id: "card-visa" },
-    cardHead(t, h("span", { class: "st " + (warn ? "warn" : "ok") }, warn ? "待核实" : "已确认")),
-    row("类别", `${valueLabel("destination_country", val(S.profile, "destination_country"))} · ${valueLabel("visa_category", visa)}`),
-    row("必备材料", req.length ? `${names}${req.length > 2 ? " 等" : ""} ${req.length} 项` : empty()),
-    row("视情况", cond.length ? `${cond.length} 项` : "无"),
-    row("待确认", unconfirmed.length ? h("span", { class: "warn" }, unconfirmed.map(label).join("、")) : "无"),
-    row("来源", sourceRefs(pl.citations)));
+  const reqNames = req.map((m) => m.name_zh).filter(Boolean);
+  const condNames = cond.map((m) => m.name_zh).filter(Boolean);
+  const category = [
+    valueLabel("destination_country", dest),
+    valueLabel("visa_category", visa),
+  ].filter(Boolean).join(" · ") || "签证材料清单";
+  const summary = customerText(pl.summary, "");
+  return advicePanel(t, {
+    id: "card-visa",
+    status: warn ? "待核实" : "已确认",
+    statusClass: warn ? "warn" : "ok",
+    flash,
+    wide: true,
+    kids: [
+      adviceOption({
+        label: "签证方案",
+        title: category,
+        body: summary && summary.length < 180 ? summary : null,
+        featured: true,
+        facts: [
+          adviceFact("必备材料",
+            reqNames.length ? reqNames.join("、") : empty(),
+            { strong: false }),
+          adviceFact("视情况",
+            condNames.length ? condNames.join("、") : "无",
+            { strong: false }),
+          adviceFact("待确认",
+            unconfirmed.length
+              ? h("span", { class: "warn" }, unconfirmed.map(label).join("、"))
+              : "无",
+            { strong: false }),
+        ],
+      }),
+      adviceFact("来源", sourceRefs(pl.citations), { strong: false }),
+    ],
+  });
 }
 
 function todoBox() {

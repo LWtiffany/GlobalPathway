@@ -213,15 +213,20 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         )
         # Per-domain payload: keep each side-panel topic on its own answer, not the
         # merged multi-intent steps (which would make every panel look identical).
-        # FX remittance may also carry a school-payment companion bubble; fold those
-        # action steps into the side-panel so the saved advice stays complete.
-        advice_steps = []
+        # FX remittance may also carry a school-payment companion bubble; keep those
+        # steps separately so the profile card can show「怎么交学费」without mixing
+        # card pitches or FX quota copy into the same block.
+        payment_steps: list[str] = []
         for companion in (result.payload or {}).get("companion_bubbles") or []:
-            advice_steps.extend(list(companion.get("steps") or []))
-        advice_steps.extend(list(result.answer.steps or []))
+            if companion.get("kind") == "school_payment":
+                payment_steps.extend(list(companion.get("steps") or []))
+        fx_steps = list(result.answer.steps or [])
+        advice_steps = [*payment_steps, *fx_steps]
         payload = {
             "summary": result.answer.summary,
             "steps": advice_steps,
+            "payment_steps": payment_steps,
+            "fx_steps": fx_steps,
             "result_status": result.status,
             "trace_id": orchestrated.trace_id,
             "domain_payload": result.payload,

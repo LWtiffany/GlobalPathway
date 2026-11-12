@@ -728,10 +728,8 @@ class FxWorkflow:
                 body = drafted
                 model_version = f"{self.model.model_name}+{PROMPT_VERSION}"
         except Exception:
-            notices.append(Notice(
-                code="fx_llm_fallback",
-                message="模型未能完成本轮外汇表述，已使用政策摘录与确定性要点。",
-            ))
+            # Silent deterministic fallback — do not surface model failure copy.
+            pass
 
         claims = _claims_from_citations(citations, materials)
         next_actions = [
