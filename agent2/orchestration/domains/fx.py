@@ -94,9 +94,9 @@ def _beneficiary_steps(*, tuition: TuitionContext | None = None) -> list[str]:
         bits = []
         if payment.payee:
             payee_zh = _zh_payee(payment.payee)
-            bits.append(
-                f"收款方资料显示为 {payee_zh}"
-                if payee_zh else "收款方以学校缴费通知书列明的账户为准")
+            # English-only payee lines stay payload-only rather than a filler.
+            if payee_zh:
+                bits.append(f"收款方资料显示为 {payee_zh}")
         if payment.portal_name or payment.portal_url:
             portal = PORTAL_NAME_ZH.get((payment.portal_name or "").strip(), "") \
                 or "学校缴费门户"
@@ -195,7 +195,6 @@ def _school_payment_body(*, place: str, tuition: TuitionContext,
     if tuition.program_name and tuition.match in {"exact_program", "school_wide", "school_only"}:
         target = f"{target}（{tuition.program_name}）"
     steps = [
-        f"向{target}（{place}）缴学费前，先核对缴费通知书金额与学校收款账户。",
         *_tuition_reference_steps(
             tuition, invoice_amount=invoice_amount, invoice_currency=invoice_currency),
     ]
@@ -289,7 +288,7 @@ def _fx_remittance_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
             invoice_currency=invoice_currency,
             quota_amount=amount, quota_currency=currency))
         if over:
-            steps.append("若超过年度便利化额度，按超额度要求补充学费/在读/护照签证等证明后再办理；是否获批以银行审核为准。")
+            steps.append("折算后如超过年度便利化额度，按超额度要求补充学费/在读/护照签证等证明后再办理；是否获批以银行审核为准。")
         elif over is False:
             steps.append("额度内购汇按便利化流程办理；超额度政策未在当前资料中确认，请向办理银行核实。")
         else:

@@ -198,18 +198,15 @@ def payment_steps(payment: PaymentDetail | None) -> list[str]:
             steps.append(f"{cycle}，约分 {payment.installment_count} 次缴纳{suffix}。")
     else:
         steps.append(f"{cycle}。")
-    if payment.due_rule:
-        if _has_cjk(payment.due_rule):
-            steps.append(f"账单截止：{payment.due_rule}")
-        else:
-            # English source rules stay out of the chat; keep a Chinese summary.
-            steps.append("账单截止：以学校缴费通知书和缴费平台公布的截止日期为准。")
+    if payment.due_rule and _has_cjk(payment.due_rule):
+        # English source rules stay payload-only; the user-provided deadline
+        # already shows in the main bubble — no filler fallback sentence.
+        steps.append(f"账单截止：{payment.due_rule}")
     if payment.payee:
         payee_zh = _zh_payee(payment.payee)
-        steps.append(
-            f"收款方：{payee_zh}。"
-            if payee_zh
-            else "收款方：以学校缴费通知书列明的收款账户为准。")
+        # English-only payee lines stay payload-only rather than a filler.
+        if payee_zh:
+            steps.append(f"收款方：{payee_zh}。")
     if payment.portal_name or payment.portal_url:
         portal = PORTAL_NAME_ZH.get((payment.portal_name or "").strip(), "") or "学校缴费门户"
         if payment.portal_url:
