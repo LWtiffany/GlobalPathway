@@ -404,6 +404,25 @@ def _is_placeholder_payment_row(row) -> bool:
     return bool(methods) and all(m in _PLACEHOLDER_METHODS for m in methods)
 
 
+def _merge_placeholder_payment(base_row, wide_row):
+    """Keep the level/programme row's own billing rhythm, take the real
+    channels from the school-wide row.
+
+    Placeholder rows carry the degree-level billing_cycle / instalment facts
+    that must survive the fallback; only the channel-ish fields were the
+    placeholders (see HKUST: bachelor row says per_year_advance, the CSFU
+    school-wide row lists the actual payment channels).
+    """
+    merged = dict(base_row)
+    for key in ("payment_methods", "portal_name", "portal_url",
+                "supports_multi_currency", "multi_currency_channels",
+                "multi_currency_note"):
+        merged[key] = wide_row[key]
+    if base_row.get("accepts_credit_card") is None:
+        merged["accepts_credit_card"] = wide_row.get("accepts_credit_card")
+    return merged
+
+
 def _load_payment_detail(con, *, school_id: str, program_id: str | None,
                          level: str | None) -> PaymentDetail | None:
     """Prefer programme override, then level, then school_wide.
@@ -412,6 +431,8 @@ def _load_payment_detail(con, *, school_id: str, program_id: str | None,
     page" markers, portal points at a catalog page) never mask a
     substantive school-wide row: HKUST MSc, for example, falls back to the
     CSFU payment-methods row instead of the programme-catalog placeholder.
+    The fallback merges channel fields from the school-wide row while
+    keeping the degree row's billing_cycle / instalment facts.
     """
     row = None
     if program_id:
@@ -442,9 +463,11 @@ def _load_payment_detail(con, *, school_id: str, program_id: str | None,
            ORDER BY recorded_at DESC NULLS LAST LIMIT 1""",
         (school_id,),
     ).fetchone()
-    if wide and not _is_placeholder_payment_row(wide) \
-            and (row is None or _is_placeholder_payment_row(row)):
-        return _payment_from_row(wide)
+    if wide and not _is_placeholder_payment_row(wide):
+        if row is None:
+            return _payment_from_row(wide)
+        if _is_placeholder_payment_row(row):
+            return _payment_from_row(_merge_placeholder_payment(row, wide))
     return _payment_from_row(row) if row else None
 
 
@@ -785,6 +808,44 @@ def format_rate_line(rate: TuitionRate, *, school: str | None = None,
         money = f"{basis} {money}"
     est = "（估算，请以缴费通知为准）" if rate.is_estimate else ""
     return f"{head}：{money}{est}"
+
+
+_LOCAL_FEE_STATUSES = {"home", "local", "in_state"}
+_NON_LOCAL_FEE_STATUSES = {"non_local", "international", "out_of_state"}
+
+
+def fee_status_tiers(rates: list[TuitionRate]) -> list[dict[str, Any]]:
+    """Fee-tier options for the fee_status question, priced from the catalog.
+
+    Returns [] when the school publishes a single tier (no question needed);
+    otherwise one option per side: local / non-local with sample amounts.
+    """
+    official = [r for r in rates if not r.is_estimate]
+    pool = official or rates
+    tiers: list[dict[str, Any]] = []
+    for value, wanted in (("local", _LOCAL_FEE_STATUSES),
+                          ("non_local", _NON_LOCAL_FEE_STATUSES)):
+        hits = [r for r in pool if (r.fee_status or "") in wanted]
+        if hits:
+            top = max(hits, key=lambda r: r.amount)
+            tiers.append({
+                "value": value,
+                "label": "本地生" if value == "local" else "非本地生",
+                "sample": _format_money(top.amount, top.currency),
+            })
+    # Ask only when both sides exist.
+    return tiers if len(tiers) == 2 else []
+
+
+def filter_rates_by_fee_status(rates: list[TuitionRate], fee_status: str | None
+                               ) -> list[TuitionRate]:
+    """Keep only the rates on the user's fee tier; fall back to all rates."""
+    if not fee_status:
+        return rates
+    wanted = (_LOCAL_FEE_STATUSES if str(fee_status).strip().casefold() in
+              {"local", *_LOCAL_FEE_STATUSES} else _NON_LOCAL_FEE_STATUSES)
+    kept = [r for r in rates if (r.fee_status or "") in wanted]
+    return kept or rates
 
 
 def compare_to_quota(rates: list[TuitionRate], *, quota_amount, quota_currency: str | None

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 
 from agent2.fx_knowledge import (Agent1FxPolicyRead, FxPolicyBundle, FxPolicyLoader,
                                  PURPOSE_LABEL, build_fx_answer_parts)
@@ -15,9 +16,12 @@ from agent2.llm.contracts import StructuredModel
 from agent2.llm.prompts import PromptRenderer
 from agent2.llm.schemas import WrittenAnswer
 from agent2.llm.validation import validate_written_answer
-from agent2.models import AnswerBody, Claim, Citation, Material, Notice
-from agent2.tuition_knowledge import (TuitionContext, TuitionResolver, compare_to_quota,
-                                      format_rate_line, resolve_tuition)
+from agent2.models import (AnswerBody, Claim, Citation, FollowUpQuestion, Material,
+                           Notice)
+from agent2.tuition_knowledge import (TuitionContext, TuitionResolver,
+                                      compare_to_quota, fee_status_tiers,
+                                      filter_rates_by_fee_status, format_rate_line,
+                                      resolve_tuition)
 
 from ..contracts import DomainResult, DomainTask, OrchestrationInput
 from .minimal import COUNTRY_LABEL, merged_facts, needs_input
@@ -590,6 +594,39 @@ class FxWorkflow:
                     missing=["course"], facts=facts, basis=basis,
                     profile_version=request.profile_version,
                 )
+            # Split fee tiers (local vs non-local) → ask once, then show only
+            # the user's tier instead of both catalogue rates.
+            if (intent == "remittance_tuition" and tuition is not None
+                    and not facts.get("fee_status")):
+                tiers = fee_status_tiers(tuition.rates)
+                if tiers:
+                    return DomainResult(
+                        task_id=task.task_id, domain="fx", status="needs_input",
+                        answer=AnswerBody(
+                            summary="学校学费按本地生/非本地生分档，先确认您按哪一档缴纳。",
+                            steps=["确认档位后，只按对应学费展示并测算额度与材料。"],
+                        ),
+                        missing_fields=["fee_status"],
+                        follow_up_questions=[FollowUpQuestion(
+                            question_code="ask_fee_status",
+                            field="fee_status",
+                            text="学校学费按本地生/非本地生分档，您按哪一档缴纳？",
+                            rule="tuition-fee-tier-v1",
+                            profile_version=request.profile_version,
+                            input_type="single_select",
+                            options=[
+                                {"value": t["value"],
+                                 "label": f"{t['label']}（{t['sample']}）"}
+                                for t in tiers
+                            ],
+                        )],
+                        observed_facts=facts, observed_basis=basis,
+                    )
+            if tuition is not None and facts.get("fee_status"):
+                tuition = replace(
+                    tuition,
+                    rates=filter_rates_by_fee_status(
+                        tuition.rates, str(facts["fee_status"])))
 
         try:
             bundle: FxPolicyBundle | None = self.policy_loader(
