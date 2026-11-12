@@ -21,6 +21,80 @@ _UUID_RE = re.compile(
 def _looks_like_id(value: str | None) -> bool:
     return bool(value and _UUID_RE.match(value.strip()))
 
+# Chinese display names for the catalogued schools (keys are casefolded
+# catalogue names). Customer-facing copy reads 「香港大学」, not the English
+# catalogue row.
+SCHOOL_NAME_ZH = {
+    "the chinese university of hong kong": "香港中文大学",
+    "the hong kong university of science and technology": "香港科技大学",
+    "the university of hong kong": "香港大学",
+    "imperial college london": "帝国理工学院",
+    "king's college london": "伦敦国王学院",
+    "london school of economics and political science": "伦敦政治经济学院",
+    "university college london": "伦敦大学学院",
+    "university of cambridge": "剑桥大学",
+    "university of edinburgh": "爱丁堡大学",
+    "university of manchester": "曼彻斯特大学",
+    "university of oxford": "牛津大学",
+    "university of warwick": "华威大学",
+    "boston university": "波士顿大学",
+    "brown university": "布朗大学",
+    "california institute of technology": "加州理工学院",
+    "carnegie mellon university": "卡内基梅隆大学",
+    "case western reserve university": "凯斯西储大学",
+    "columbia university": "哥伦比亚大学",
+    "cornell university": "康奈尔大学",
+    "dartmouth college": "达特茅斯学院",
+    "duke university": "杜克大学",
+    "emory university": "埃默里大学",
+    "georgia institute of technology": "佐治亚理工学院",
+    "harvard university": "哈佛大学",
+    "johns hopkins university": "约翰斯·霍普金斯大学",
+    "massachusetts institute of technology": "麻省理工学院",
+    "michigan state university": "密歇根州立大学",
+    "new york university": "纽约大学",
+    "northwestern university": "西北大学",
+    "ohio state university": "俄亥俄州立大学",
+    "penn state university park": "宾夕法尼亚州立大学帕克分校",
+    "purdue university west lafayette": "普渡大学西拉法叶分校",
+    "rice university": "莱斯大学",
+    "stanford university": "斯坦福大学",
+    "texas a&m university": "得克萨斯农工大学",
+    "university of arizona": "亚利桑那大学",
+    "university of california, berkeley": "加州大学伯克利分校",
+    "university of california, davis": "加州大学戴维斯分校",
+    "university of california, irvine": "加州大学尔湾分校",
+    "university of california, los angeles": "加州大学洛杉矶分校",
+    "university of california, san diego": "加州大学圣地亚哥分校",
+    "university of california, santa barbara": "加州大学圣塔芭芭拉分校",
+    "university of chicago": "芝加哥大学",
+    "university of florida": "佛罗里达大学",
+    "university of illinois at urbana-champaign": "伊利诺伊大学香槟分校",
+    "university of maryland, college park": "马里兰大学帕克分校",
+    "university of massachusetts amherst": "马萨诸塞大学阿默斯特分校",
+    "university of michigan-ann arbor": "密歇根大学安娜堡分校",
+    "university of minnesota": "明尼苏达大学",
+    "university of north carolina at chapel hill": "北卡罗来纳大学教堂山分校",
+    "university of pennsylvania": "宾夕法尼亚大学",
+    "university of pittsburgh": "匹兹堡大学",
+    "university of rochester": "罗切斯特大学",
+    "university of southern california": "南加州大学",
+    "university of texas at austin": "得克萨斯大学奥斯汀分校",
+    "university of virginia": "弗吉尼亚大学",
+    "university of washington": "华盛顿大学",
+    "university of wisconsin-madison": "威斯康星大学麦迪逊分校",
+    "vanderbilt university": "范德堡大学",
+    "washington university in st louis": "圣路易斯华盛顿大学",
+    "yale university": "耶鲁大学",
+}
+
+
+def school_display_name(name: str | None) -> str:
+    """Chinese display name for a catalog school; English fallback."""
+    if not name:
+        return ""
+    return SCHOOL_NAME_ZH.get(str(name).strip().casefold(), str(name).strip())
+
 # fee_status values allowed by TUITION check constraint → Chinese label for display.
 # Keys are schema enums, not school-specific rates.
 FEE_STATUS_ZH = {
@@ -48,6 +122,70 @@ STUDY_MODE_ZH = {
     "part_time": "兼读制",
     "full-time": "全日制",
     "part-time": "兼读制",
+}
+
+# Catalog rate_label strings → Chinese. Unmapped English labels are omitted
+# from customer-facing lines rather than leaked into the answer.
+RATE_LABEL_ZH = {
+    "part time": "兼读制",
+    "half time": "半时",
+    "half time (htm)": "半时（HTM）",
+    "half time (htmc)": "半时（HTMC）",
+    "full time": "全日制",
+    "full time (jsd)": "全日制（JSD）",
+    "full time (ftmc)": "全日制（FTMC）",
+    "summer": "暑期",
+    "second year": "第二年",
+    "second year: one term only": "第二年（仅一学期）",
+    "second year (gsb)": "第二年（GSB）",
+    "first year (gsb)": "第一年（GSB）",
+    "g2 / second year": "G2/第二年",
+    "tuition (g1)": "学费（G1）",
+    "tuition (g2)": "学费（G2）",
+    "tuition (all years)": "学费（全部学年）",
+    "first three semesters": "首三学期",
+    "subsequent semesters": "后续学期",
+    "non-resident first 3 semesters": "非住校首三学期",
+    "non-resident subsequent semesters": "非住校后续学期",
+    "academic year incl. summer": "学年（含暑期）",
+    "example 16-month total": "16 个月总计示例",
+    "12 months": "12 个月",
+    "18 months": "18 个月",
+    "20 months": "20 个月",
+    "regular enrollment": "常规注册",
+    "reduced tuition": "减免学费",
+    "continuing registration": "续读注册",
+    "continuation fee": "续读费",
+    "visiting researcher": "访问研究者",
+    "intern": "实习",
+    "clinical years 4-6": "临床年（第 4-6 年）",
+    "pre-clinical years 1-3": "临床前（第 1-3 年）",
+    "ddp 5th year": "双学位第五年",
+    "sb thesis only tuition": "仅论文年学费",
+    "light load tuition": "低学分学费",
+    "marginal rate": "边际费率",
+    "off-campus internship tuition": "校外实习学费",
+    "six or fewer units": "6 学分及以下",
+    "six or more units": "6 学分及以上",
+    "8 units": "8 学分",
+    "8-10 units": "8-10 学分",
+    "9 units": "9 学分",
+    "10 unit": "10 学分",
+    "11 units": "11 学分",
+    "11-18 units": "11-18 学分",
+    "each graduate engineering unit above 18": "工程研究生超 18 学分（每学分）",
+    "each graduate unit above 18": "研究生超 18 学分（每学分）",
+    "each unit above the quarterly maximum": "超出季度上限学分（每学分）",
+    "1 course rate": "1 门课费率",
+    "2 course rate": "2 门课费率",
+    "3 course rate": "3 门课费率",
+    "4 course rate": "4 门课费率",
+    "tuition for d.f.a. candidates in residence": "驻校 D.F.A. 候选人学费",
+    "urop — over 18 units*": "UROP 超 18 学分",
+    "1-7 units (summer only)": "1-7 学分（仅暑期）",
+    "2025-26 intake": "2025-26 学年入学",
+    "2026-27 intake": "2026-27 学年入学",
+    "2017-18 to 2024-25 intakes": "2017-18 至 2024-25 学年入学",
 }
 
 
@@ -155,6 +293,8 @@ class PaymentDetail:
 class TuitionContext:
     school_id: str | None = None
     school_name: str | None = None
+    # Chinese display name (SCHOOL_NAME_ZH) for customer-facing copy.
+    school_display: str | None = None
     school_country: str | None = None
     program_id: str | None = None
     program_name: str | None = None
@@ -171,6 +311,7 @@ class TuitionContext:
             "match": self.match,
             "school_id": self.school_id,
             "school_name": self.school_name,
+            "school_display": self.school_display,
             "school_country": self.school_country,
             "program_id": self.program_id,
             "program_name": self.program_name,
@@ -251,38 +392,98 @@ def _payment_from_row(row) -> PaymentDetail:
     )
 
 
+# Method ids that mean "see the programme page" — they carry no actual
+# channel information. When a level/programme row only lists these, the
+# school-wide row (if any) has the real payment channels and must win.
+_PLACEHOLDER_METHODS = {"programme_catalog_channels", "programme_page_channels",
+                        "programme_specific"}
+
+
+def _is_placeholder_payment_row(row) -> bool:
+    methods = row["payment_methods"] or []
+    return bool(methods) and all(m in _PLACEHOLDER_METHODS for m in methods)
+
+
 def _load_payment_detail(con, *, school_id: str, program_id: str | None,
                          level: str | None) -> PaymentDetail | None:
-    """Prefer programme override, then level, then school_wide."""
+    """Prefer programme override, then level, then school_wide.
+
+    Placeholder level/programme rows (payment_methods are "see programme
+    page" markers, portal points at a catalog page) never mask a
+    substantive school-wide row: HKUST MSc, for example, falls back to the
+    CSFU payment-methods row instead of the programme-catalog placeholder.
+    """
+    row = None
     if program_id:
-        row = con.execute(
+        hit = con.execute(
             """SELECT * FROM tuition_payment_detail
                WHERE school_id=%s AND scope='programme' AND program_id=%s
                ORDER BY recorded_at DESC NULLS LAST LIMIT 1""",
             (school_id, program_id),
         ).fetchone()
-        if row:
-            return _payment_from_row(row)
+        if hit and not _is_placeholder_payment_row(hit):
+            return _payment_from_row(hit)
+        # placeholder or missing → keep looking at level / school_wide
     if level:
-        row = con.execute(
+        hit = con.execute(
             """SELECT * FROM tuition_payment_detail
                WHERE school_id=%s AND scope='level' AND level=%s
                ORDER BY recorded_at DESC NULLS LAST LIMIT 1""",
             (school_id, level),
         ).fetchone()
-        if row:
-            return _payment_from_row(row)
-    row = con.execute(
+        if hit and not _is_placeholder_payment_row(hit):
+            return _payment_from_row(hit)
+        row = hit  # may be None or a placeholder — decided against school_wide below
+    # level/programme row is missing or a placeholder → prefer a substantive
+    # school-wide row before settling for what we have.
+    wide = con.execute(
         """SELECT * FROM tuition_payment_detail
            WHERE school_id=%s AND scope='school_wide'
            ORDER BY recorded_at DESC NULLS LAST LIMIT 1""",
         (school_id,),
     ).fetchone()
+    if wide and not _is_placeholder_payment_row(wide) \
+            and (row is None or _is_placeholder_payment_row(row)):
+        return _payment_from_row(wide)
     return _payment_from_row(row) if row else None
 
 
+def _zh_school_to_en(query: str) -> str:
+    """Map a user-supplied Chinese school name to its English catalogue name."""
+    q = query.strip()
+    for en, zh in SCHOOL_NAME_ZH.items():
+        if q == zh or zh in q:
+            return en
+    return query
+
+
+def resolve_school_id(school_text) -> str | None:
+    """Best-effort resolve a free-text school mention to its SCHOOL.school_id UUID.
+
+    Used before writing or comparing the profile ``school`` field so that a
+    Chinese/English name and the stored UUID compare equal. Returns the input
+    unchanged when it already looks like an id, and None when no single
+    catalogue row matches (callers then keep the original behaviour).
+    """
+    if school_text is None:
+        return None
+    text = str(school_text).strip()
+    if not text:
+        return None
+    if _looks_like_id(text):
+        return text
+    try:
+        with read_session() as con:
+            schools = _find_schools(con, text, None)
+            if len(schools) == 1:
+                return schools[0]["school_id"]
+    except Exception:  # noqa: BLE001 — RDS unavailable must not break profile writes
+        return None
+    return None
+
+
 def _find_schools(con, school_query: str, destination_country: str | None):
-    q = school_query.strip()
+    q = _zh_school_to_en(school_query).strip()
     if not q:
         return []
     # Demo/profile stores school as SCHOOL.school_id UUID; resolve by PK first.
@@ -394,6 +595,7 @@ def resolve_tuition(*, school: str | None, course: str | None = None,
         school_row = schools[0]
         ctx.school_id = school_row["school_id"]
         ctx.school_name = school_row["name"]
+        ctx.school_display = school_display_name(school_row["name"])
         ctx.school_country = school_row["country"]
 
         if course and str(course).strip():
@@ -571,8 +773,11 @@ def format_rate_line(rate: TuitionRate, *, school: str | None = None,
     mode = STUDY_MODE_ZH.get((rate.study_mode or "").lower(), rate.study_mode)
     if mode:
         bits.append(mode)
-    if rate.rate_label and str(rate.rate_label) not in bits:
-        bits.append(str(rate.rate_label))
+    if rate.rate_label:
+        label = RATE_LABEL_ZH.get(str(rate.rate_label).strip().casefold())
+        if label and label not in bits:
+            # Unmapped English labels stay out of the Chinese answer line.
+            bits.append(label)
     head = " · ".join(bits) if bits else "学费参考"
     basis = FEE_BASIS_ZH.get(rate.fee_basis or "", rate.fee_basis or "")
     money = _format_money(rate.amount, rate.currency)
