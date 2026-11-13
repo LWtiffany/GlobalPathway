@@ -606,7 +606,7 @@ class FxWorkflow:
                         task_id=task.task_id, domain="fx", status="needs_input",
                         answer=AnswerBody(
                             summary="学校学费按本地生/非本地生分档，先确认您按哪一档缴纳。",
-                            steps=["确认档位后，只按对应学费展示并测算额度与材料。"],
+                            steps=["选好之后，我就按这一档的学费给您算额度和材料。"],
                         ),
                         missing_fields=["fee_status"],
                         follow_up_questions=[FollowUpQuestion(
