@@ -1680,6 +1680,17 @@ function visibleOutputLines(lines) {
   return (lines || []).filter((line) => !isInternalOutput(line));
 }
 
+/**
+ * Backend filler lines (minimal-domain needs_input turns) that carry no advice.
+ * Filtering them removes the empty "给您的建议" section above follow-up questions.
+ */
+const FILLER_STEPS = new Set([
+  "先确认会影响建议方向的关键信息，再给出准备清单。",
+]);
+function adviceSteps(lines) {
+  return visibleOutputLines(lines).filter((s) => !FILLER_STEPS.has(String(s).trim()));
+}
+
 function answerBubble(b, latest) {
   // Follow-ups: chat only ever shows the current question + answer controls.
   // Past needs_input turns are dropped so the cluttered status/steps/proposal card
@@ -1691,7 +1702,7 @@ function answerBubble(b, latest) {
     if (!question) return null;
     const kids = [];
     // Multi-intent: show each domain's short summary before the first follow-up.
-    const safeSteps = visibleOutputLines(b.answer?.steps || []);
+    const safeSteps = adviceSteps(b.answer?.steps || []);
     if (b.answer?.summary && !isInternalOutput(b.answer.summary)) {
       kids.push(h("p", null, ...linkify(b.answer.summary)));
     }
@@ -1725,7 +1736,7 @@ function answerBubble(b, latest) {
   const safeSummary = isInternalOutput(b.answer.summary)
     ? "当前资料不足以支持确定回答，请按页面提示补充信息或核实官方要求。"
     : b.answer.summary;
-  const rawSteps = visibleOutputLines(b.answer.steps).filter((s) => !String(s).startsWith("政策原文："));
+  const rawSteps = adviceSteps(b.answer.steps).filter((s) => !String(s).startsWith("政策原文："));
   const stepList = isCardRecommendationSteps(rawSteps)
     ? rawSteps.map(cardStepForDisplay).filter(Boolean) : rawSteps;
   const multi = multiDomainSections(stepList);
