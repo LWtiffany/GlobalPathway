@@ -198,7 +198,7 @@ a{color:#8b7140}
 .card-rec .market-tag{font-size:10px;font-weight:400;letter-spacing:.5px;color:#8e1b24;border:1px solid #d9b4b7;padding:1px 5px;white-space:nowrap}
 .card-rec .card-note{font-size:12px;color:#6f675a;line-height:1.6;margin:0 0 8px}
 .card-rec .card-name{margin:12px 0 0;padding:12px 14px 8px;border:1px solid #e5ddd0;border-bottom:0;background:#fff;font-weight:600;font-size:14px;color:#22201c;display:flex;align-items:center;gap:9px}
-.card-rec .role-tag{font-size:10px;font-weight:500;letter-spacing:.5px;color:#fff;background:#8e1b24;padding:3px 7px;white-space:nowrap}
+.card-rec .role-tag{display:inline-flex;align-items:center;justify-content:center;flex:none;font-size:10px;font-weight:500;letter-spacing:.5px;line-height:1.2;color:#fff;background:#8e1b24;padding:3px 8px;white-space:nowrap}
 .card-rec .card-detail{font-size:12px;color:#5e574a;line-height:1.65;margin:0;padding:3px 14px;border-left:1px solid #e5ddd0;border-right:1px solid #e5ddd0;background:#fff}
 .card-rec .card-detail.reason{color:#3f5743;padding-top:5px;padding-bottom:7px;border-bottom:1px solid #f0ebe3}
 .card-rec .card-detail+ .card-detail:last-of-type{padding-bottom:12px;border-bottom:1px solid #e5ddd0}

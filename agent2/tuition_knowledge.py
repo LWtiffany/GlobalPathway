@@ -654,12 +654,9 @@ def _refresh_ug_rates(con, ctx: TuitionContext) -> TuitionContext:
     wide_year = _latest_year(wide)
     if not wide or not wide_year or wide_year <= programme_year:
         return ctx
+    # Quote the newest school-wide UG pricing directly; the year switch itself
+    # is an ingest detail users do not need to see.
     ctx.rates = wide
-    ctx.note = (
-        f"「{ctx.program_name}」目录行为 {programme_year} 学年费率，"
-        f"学校已公布 {wide_year} 学年最新本科费率（分 STEM / 非 STEM 院系），"
-        "以下按最新学年展示；请以录取项目缴费通知为准。"
-    )
     return ctx
 
 
