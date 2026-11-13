@@ -300,6 +300,12 @@ a{color:#8b7140}
 .thinking{display:flex;align-items:center;gap:8px;color:#6f675a!important}
 .thinking:before{content:"";width:7px;height:7px;border-radius:50%;background:#8e1b24;animation:thinking-pulse 1.05s ease-in-out infinite}
 @keyframes thinking-pulse{0%,100%{opacity:.3;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
+/* Step chain in the waiting bubble: done steps fade to ticks, active one pulses. */
+.thinking-chain{display:flex;flex-direction:column;gap:5px}
+.thinking-chain .chain-step{display:flex;align-items:center;gap:8px;font-size:12.5px;color:#8a8172;line-height:1.55}
+.thinking-chain .chain-step.done{color:#ab9f89}
+.thinking-chain .chain-step.done .tick{flex:none;font-size:11px;color:#36704f}
+.thinking-chain .chain-step.thinking{color:#6f675a!important}
 .impact-modal .note{margin:0 0 14px}
 
 /* Profile details are an on-demand workspace, not a permanent banner above chat. */

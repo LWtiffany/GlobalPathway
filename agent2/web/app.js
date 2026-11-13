@@ -1563,6 +1563,15 @@ function drawChat({ keep } = {}) {
             });
           } }, "重试"),
           h("button", { onclick: () => { S.pending = null; drawChat(); } }, "放弃"))));
+    } else if (S.pending.phases && S.pending.phases.length > 1) {
+      // Step chain: completed steps get a tick and fade; the active one keeps
+      // the pulse dot and re-renders as the chain advances.
+      const phases = S.pending.phases;
+      const idx = S.pending.phaseIdx || 0;
+      items.push(h("div", { class: "m thinking-chain" },
+        phases.slice(0, idx).map((p) =>
+          h("div", { class: "chain-step done" }, h("span", { class: "tick" }, "✓"), p)),
+        h("div", { class: "chain-step thinking" }, phases[idx])));
     } else {
       items.push(h("div", { class: "m thinking" }, S.pending.phase || "已收到，正在为您核对…"));
     }
@@ -2073,6 +2082,57 @@ async function feedback(b, kind, note) {
   } catch (e) { toast(userFacingError(e, "反馈暂未提交，请稍后重试。"), true); }
 }
 
+/**
+ * Waiting-bubble step chains that mirror what the agent actually does for each
+ * intent, instead of two generic lines. The active step shows the pulse dot;
+ * earlier steps fade to ticks while the request is in flight.
+ */
+function thinkingPhases(text, isStructured) {
+  const t = String(text || "");
+  if (isStructured) {
+    return [
+      "正在把您的选择记入学生资料…",
+      "正在按新信息重新核对受影响的建议…",
+      "正在整理更新后的建议…",
+    ];
+  }
+  if (/学费|缴费|付款|截止|汇款|购汇|电汇|汇出|换汇|额度|汇到|汇过去|怎么汇/.test(t)) {
+    return [
+      "正在确认您的学校与课程信息…",
+      "正在查询学校官方学费目录…",
+      "正在核对学费档位与缴费要求…",
+      "正在测算购汇额度与所需材料…",
+      "正在起草回答并核对数字…",
+    ];
+  }
+  if (/信用卡|办卡|刷卡|返现|年费|羊毛/.test(t)) {
+    return [
+      "正在确认您的所在地与用卡需求…",
+      "正在比对各行信用卡的年费与权益…",
+      "正在核对每张卡的申请条件…",
+      "正在计算长期持有的综合收益…",
+      "正在起草推荐并核对条款…",
+    ];
+  }
+  if (/开户|账户|借记卡|银行卡/.test(t)) {
+    return [
+      "正在确认您的身份与所在地…",
+      "正在匹配可办理的银行与账户类型…",
+      "正在核对开户门槛与所需证件…",
+      "正在整理开户流程与材料清单…",
+    ];
+  }
+  if (/签证|visa|护照|资金证明|存款证明/.test(t)) {
+    return [
+      "正在确认您的签证类型与目的地…",
+      "正在核对签证材料清单…",
+      "正在核对资金证明等要求…",
+      "正在整理办理流程与时间线…",
+    ];
+  }
+  return ["正在核对与您当前资料相关的条件…", "正在整理适合您的建议，请稍候…"];
+}
+
 async function send(text, retryCid, changed, confirmedFields, expectedProfileVersion, opts = {}) {
   if (S.busy) {
     toast("上一条还在处理中，请稍候再提交");
@@ -2098,19 +2158,27 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
   const pending = { text, cid: retryCid || uuid(), error: null, changed,
     confirmedFields: confirmed, sessionFields, expectedProfileVersion, clearedFields };
   S.pending = pending;
+  // Intent-specific chain: first step shows immediately, then advances while
+  // the request is in flight. Stale pending (switched profile / new message)
+  // stops the chain through the guard below.
+  const phases = thinkingPhases(text, isStructured);
+  pending.phases = phases;
+  pending.phaseIdx = 0;
+  pending.phase = phases[0];
+  let phaseTimer = 0;
+  const advancePhase = (delay) => {
+    phaseTimer = setTimeout(() => {
+      if (S.pending !== pending || S.pid !== context.profileId) return;
+      if (pending.phaseIdx < phases.length - 1) {
+        pending.phaseIdx += 1;
+        pending.phase = phases[pending.phaseIdx];
+        drawChat({ keep: true });
+      }
+      advancePhase(1600);
+    }, delay);
+  };
+  advancePhase(950);
   drawChat();
-  const phaseTimer = setTimeout(() => {
-    if (S.pending === pending && S.pid === context.profileId) {
-      pending.phase = "正在核对与您当前资料相关的条件…";
-      drawChat({ keep: true });
-    }
-  }, 650);
-  const adviceTimer = setTimeout(() => {
-    if (S.pending === pending && S.pid === context.profileId) {
-      pending.phase = "正在整理适合您的建议，请稍候…";
-      drawChat({ keep: true });
-    }
-  }, 2100);
   try {
     const res = await api("POST", `/sessions/${context.conversationId}/messages`,
       { text, client_message_id: pending.cid, confirmed_fields: pending.confirmedFields,
@@ -2154,7 +2222,6 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
     return null;
   } finally {
     clearTimeout(phaseTimer);
-    clearTimeout(adviceTimer);
     // busy 必须在重绘前清掉，否则「上一步」会带着 disabled 画进 DOM 后一直点不了。
     S.busy = false;
     if (S.pid === context.profileId) {
