@@ -30,6 +30,7 @@ from .passwords import (dummy_hash, hash_password, needs_rehash, password_length
 from .runner import Agent2Runner
 from .store import dumps
 from .tuition_knowledge import resolve_school_id
+from .tuition_timing import timing_todos
 
 DEFAULT_PROFILE_FIELDS = ("role", "destination_country", "visa_category", "school", "planned_start_date")
 SESSION_TTL = timedelta(days=7)
@@ -1656,6 +1657,36 @@ class Agent2Service:
         self._write_advice_rows(db, profile=profile, conversation_id=conversation_id,
                                 output=output, answer=answer, now=now,
                                 skip_topics=proposed_topics)
+        self._sync_tuition_timing_todos(db, profile=profile, output=output, now=now)
+
+    def _sync_tuition_timing_todos(self, db, *, profile, output, now):
+        """Tuition-remittance turns with a confirmed deadline keep two countdown
+        todos in the user's plan (购汇/电汇倒排日期).
+
+        Deterministic item ids make the upsert idempotent: re-running a tuition
+        turn refreshes the wording after a deadline change (resetting done,
+        because the old date no longer applies) without duplicating rows, and a
+        cleared deadline removes the derived todos again.
+        """
+        intents = set(output.active_intents or [])
+        if "remittance_tuition" not in intents:
+            return
+        field = profile.fields.get("payment_deadline")
+        deadline = field.value if (field and field.status == "confirmed") else None
+        rows = timing_todos(deadline, profile.profile_id) if deadline else []
+        for item_id, text in rows:
+            existing = db.execute("SELECT text FROM plan_items WHERE item_id=?", (item_id,)).fetchone()
+            if existing and existing["text"] == text:
+                continue  # unchanged wording: keep the user's done state
+            db.execute("""INSERT INTO plan_items (item_id, profile_id, text, done, created_at, updated_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(item_id) DO UPDATE SET text=excluded.text, done=0,
+                    updated_at=excluded.updated_at""",
+                       (item_id, profile.profile_id, text, 0, now, now))
+        if deadline is None:
+            for suffix in ("timing:fx", "timing:wire"):
+                db.execute("DELETE FROM plan_items WHERE item_id=?",
+                           (f"{profile.profile_id}:{suffix}",))
 
     def _advice_metadata(self, profile, conversation_id, item, source_message_id, turn_facts=None):
         topic = item["topic"]

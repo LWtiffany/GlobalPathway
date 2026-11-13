@@ -251,7 +251,9 @@ def _fx_remittance_body(*, place: str, purpose_zh: str, mode: str, facts: dict,
     steps: list[str] = []
     deadline = facts.get("payment_deadline")
     if deadline and purpose_zh == "学费" and mode != "overseas":
-        steps.append(f"学校缴费截止日按您提供的信息为 {deadline}；请按此倒排购汇与汇出时间。")
+        from agent2.tuition_timing import timing_step
+        steps.append(timing_step(deadline)
+                     or f"学校缴费截止日按您提供的信息为 {deadline}；请按此倒排购汇与汇出时间。")
     if want_beneficiary or _BENEFICIARY.search(user_text or ""):
         steps.extend(_beneficiary_steps(tuition=tuition))
 
