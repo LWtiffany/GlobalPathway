@@ -7,7 +7,7 @@ per school. Callers pass profile facts (school name, course, destination).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -134,6 +134,8 @@ RATE_LABEL_ZH = {
     "full time": "全日制",
     "full time (jsd)": "全日制（JSD）",
     "full time (ftmc)": "全日制（FTMC）",
+    "stem": "STEM 院系",
+    "non_stem": "非 STEM 院系",
     "summer": "暑期",
     "second year": "第二年",
     "second year: one term only": "第二年（仅一学期）",
@@ -536,16 +538,36 @@ def _find_schools(con, school_query: str, destination_country: str | None):
     return rows
 
 
+# Degree-level tokens: a query naming one level must never fuzzy-match a
+# programme of another level ("Bachelor of Business Administration" vs
+# "Master of Business Administration" shared 3 of 4 tokens and scored 45).
+_UG_LEVEL_TOKENS = {"bachelor", "undergraduate", "ug", "bba", "bsc", "beng", "llb"}
+_PG_LEVEL_TOKENS = {"master", "msc", "mba", "ma", "llm", "mphil", "mpa", "med", "msw",
+                    "mar", "postgraduate", "graduate", "professional", "phd", "doctoral",
+                    "edd", "dpa", "dnurs", "psyd", "mds", "emb"}
+# Filler words that inflated token-overlap scores without carrying meaning.
+_SCORE_STOPWORDS = {"of", "in", "the", "and", "at", "for"}
+
+
+def _level_conflict(query_tokens: set[str], name_tokens: set[str]) -> bool:
+    return bool((query_tokens & _UG_LEVEL_TOKENS and name_tokens & _PG_LEVEL_TOKENS)
+                or (query_tokens & _PG_LEVEL_TOKENS and name_tokens & _UG_LEVEL_TOKENS))
+
+
 def _score_program(name: str, level: str | None, course_q: str) -> int:
     n, c = _norm(name), _norm(course_q)
     if not c:
         return 0
     if n == c:
         return 100
+    nt, ct = set(n.split()), set(c.split())
+    if _level_conflict(ct, nt):
+        return 0
     if c in n or n in c:
         return 80
-    # token overlap
-    nt, ct = set(n.split()), set(c.split())
+    # token overlap (filler words excluded: "MSc in X" must match
+    # "Master of Science in X" instead of being diluted by "of"/"in")
+    nt, ct = nt - _SCORE_STOPWORDS, ct - _SCORE_STOPWORDS
     if not ct:
         return 0
     overlap = len(nt & ct) / len(ct)
@@ -575,9 +597,76 @@ def _pick_school_wide(con, school_id: str):
     return None, []
 
 
+def _norm_year(year: str | None) -> str:
+    return (year or "").strip().replace("-", "/")
+
+
+def _latest_year(rates) -> str | None:
+    years = sorted({_norm_year(r.academic_year) for r in rates if r.academic_year})
+    return years[-1] if years else None
+
+
+def _ug_wide_rates(con, school_id: str) -> list:
+    """School-level UG rows (bachelor/undergraduate pseudo-programmes),
+    newest academic year only, deduped. Grouped rows (HKU's "Undergraduate
+    programmes (STEM / Non-STEM Faculties)") get stem/non_stem rate labels so
+    the answer line can name the faculty group."""
+    rows = con.execute(
+        """SELECT program_id, name FROM program
+           WHERE school_id=%s AND level IN ('bachelor', 'undergraduate')""",
+        (school_id,),
+    ).fetchall()
+    merged: list = []
+    for p in rows:
+        name_l = _norm(p["name"])
+        for rate in _load_rates(con, p["program_id"]):
+            label = rate.rate_label
+            if "non-stem" in name_l or "non stem" in name_l:
+                label = "non_stem"
+            elif "stem" in name_l:
+                label = "stem"
+            if label != rate.rate_label:
+                rate = replace(rate, rate_label=label)
+            merged.append(rate)
+    year = _latest_year(merged)
+    if year:
+        merged = [r for r in merged if _norm_year(r.academic_year) == year]
+    seen, out = set(), []
+    for r in merged:
+        key = (r.fee_status, r.study_mode, r.amount, r.currency, r.rate_label)
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _refresh_ug_rates(con, ctx: TuitionContext) -> TuitionContext:
+    """Undergraduate rows are often ingested per programme for an older year
+    while the school publishes newer school-wide UG pricing (HKU: 2026/27
+    programme rows vs the 2027/28 STEM/Non-STEM page). When the school-level
+    rows are newer, quote those instead of the stale programme rows."""
+    if not ctx.rates or ctx.program_level not in {"bachelor", "undergraduate"}:
+        return ctx
+    programme_year = _latest_year(ctx.rates)
+    if not programme_year:
+        return ctx
+    wide = _ug_wide_rates(con, ctx.school_id)
+    wide_year = _latest_year(wide)
+    if not wide or not wide_year or wide_year <= programme_year:
+        return ctx
+    ctx.rates = wide
+    ctx.note = (
+        f"「{ctx.program_name}」目录行为 {programme_year} 学年费率，"
+        f"学校已公布 {wide_year} 学年最新本科费率（分 STEM / 非 STEM 院系），"
+        "以下按最新学年展示；请以录取项目缴费通知为准。"
+    )
+    return ctx
+
+
 def _attach_payment(con, ctx: TuitionContext) -> TuitionContext:
     if not ctx.school_id:
         return ctx
+    ctx = _refresh_ug_rates(con, ctx)
     level = None
     if ctx.program_level and "," not in ctx.program_level:
         level = ctx.program_level
@@ -659,6 +748,26 @@ def resolve_tuition(*, school: str | None, course: str | None = None,
             if not scored:
                 ctx.match = "school_only"
                 ctx.note = f"已匹配学校「{ctx.school_name}」，但未找到与「{course}」对应的项目学费。"
+                # Undergraduate queries fall back to the school's UG-level rows
+                # (bachelor/undergraduate pseudo-programmes, newest year) —
+                # taught-postgraduate fees vary per programme and must NOT be
+                # merged, so the fallback stays undergraduate-only.
+                cq_tokens = set(_norm(str(course)).split())
+                if cq_tokens & _UG_LEVEL_TOKENS or "本科" in str(course):
+                    wide = _ug_wide_rates(con, ctx.school_id)
+                    if wide:
+                        ctx.program_id = None
+                        ctx.program_name = None
+                        ctx.program_level = "undergraduate"
+                        ctx.program_scope = "level"
+                        ctx.rates = wide
+                        ctx.match = "level"
+                        ctx.note = (
+                            f"未精确匹配到「{course}」的项目行，已按该校本科生"
+                            f"{_latest_year(wide)} 学年公布学费整理"
+                            "（分 STEM / 非 STEM 院系）；请以录取项目缴费通知为准。"
+                        )
+                        return _attach_payment(con, ctx)
                 sw, rates = _pick_school_wide(con, ctx.school_id)
                 if sw and rates:
                     ctx.program_id = sw["program_id"]
@@ -822,16 +931,35 @@ def fee_status_tiers(rates: list[TuitionRate]) -> list[dict[str, Any]]:
     """
     official = [r for r in rates if not r.is_estimate]
     pool = official or rates
+    # Price the tier options from the newest published year only — mixing
+    # years into one range would conflate cohort prices with fee bands.
+    year = _latest_year(pool)
+    if year:
+        pool = [r for r in pool if _norm_year(r.academic_year) == year]
     tiers: list[dict[str, Any]] = []
     for value, wanted in (("local", _LOCAL_FEE_STATUSES),
                           ("non_local", _NON_LOCAL_FEE_STATUSES)):
         hits = [r for r in pool if (r.fee_status or "") in wanted]
         if hits:
-            top = max(hits, key=lambda r: r.amount)
+            amounts = sorted({r.amount for r in hits})
+            if len(amounts) == 1:
+                sample = _format_money(amounts[0], hits[0].currency)
+            else:
+                # One tier with several published prices (HKU: STEM / Non-STEM
+                # UG bands) — quote the range instead of one misleading figure.
+                low = _format_money(amounts[0], hits[0].currency)
+                high = _format_money(amounts[-1], hits[-1].currency)
+                low_tail = low.rsplit(" ", 1)
+                high_tail = high.rsplit(" ", 1)
+                if (len(low_tail) == 2 and len(high_tail) == 2
+                        and low_tail[1] == high_tail[1]):
+                    sample = f"{low_tail[0]}–{high_tail[0]} {low_tail[1]}"
+                else:
+                    sample = f"{low}–{high}"
             tiers.append({
                 "value": value,
                 "label": "本地生" if value == "local" else "非本地生",
-                "sample": _format_money(top.amount, top.currency),
+                "sample": sample,
             })
     # Ask only when both sides exist.
     return tiers if len(tiers) == 2 else []
