@@ -1681,11 +1681,15 @@ function visibleOutputLines(lines) {
 }
 
 /**
- * Backend filler lines (minimal-domain needs_input turns) that carry no advice.
- * Filtering them removes the empty "给您的建议" section above follow-up questions.
+ * Conversational filler the backend attaches to needs_input turns. Follow-up
+ * bubbles show the question, not an advice list, so these never render.
  */
 const FILLER_STEPS = new Set([
   "先确认会影响建议方向的关键信息，再给出准备清单。",
+  "选好之后，我就按这一档的学费给您算额度和材料。",
+  "您可以按方便的程度选择，不确定的地方我们也可以先保留。",
+  "若选择了解，我会按留学地优先推荐当地汇丰卡，香港卡仅作备用。",
+  "若这次先不办也没关系；之后直接说「推荐信用卡」即可。",
 ]);
 function adviceSteps(lines) {
   return visibleOutputLines(lines).filter((s) => !FILLER_STEPS.has(String(s).trim()));
@@ -1701,12 +1705,15 @@ function answerBubble(b, latest) {
       || (b.follow_up_questions || [])[0];
     if (!question) return null;
     const kids = [];
-    // Multi-intent: show each domain's short summary before the first follow-up.
+    // Follow-up turns show the question, not an advice list: only multi-intent
+    // domain digests (## sections) stay above the first follow-up question.
     const safeSteps = adviceSteps(b.answer?.steps || []);
     if (b.answer?.summary && !isInternalOutput(b.answer.summary)) {
       kids.push(h("p", null, ...linkify(b.answer.summary)));
     }
-    if (safeSteps.length) kids.push(...renderAnswerSteps(safeSteps));
+    if (safeSteps.some((s) => String(s).startsWith("## "))) {
+      kids.push(...renderAnswerSteps(safeSteps));
+    }
     kids.push(followUp({ ...question,
       text: isInternalOutput(question.text) ? "请补充相关信息，我会继续为您核对。" : question.text,
       options: (question.options || []).filter((o) => !isInternalOutput(o.label) && !isInternalOutput(o.message)),
