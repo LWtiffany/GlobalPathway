@@ -1361,7 +1361,8 @@ class Agent2Service:
                 "profile_version": profile.version,
             }) for part in (output.message_parts or [])]
             answer = output.result
-        proposals = self._proposals_for(profile, output, user_message_id)
+        proposals = self._proposals_for(profile, output, user_message_id,
+                                        cleared_fields=cleared_fields)
         relationship_proposals = self._bank_relationship_proposals_for(
             profile, output, user_message_id, text)
         answer.profile_change_proposals = proposals
@@ -1402,8 +1403,9 @@ class Agent2Service:
             raise
         return answer
 
-    def _proposals_for(self, profile, output, user_message_id):
+    def _proposals_for(self, profile, output, user_message_id, cleared_fields=None):
         proposals = []
+        cleared_fields = set(cleared_fields or ())
         open_rows = self.store.all("SELECT field_code, new_value FROM profile_change_proposals "
                                    "WHERE profile_id=? AND status='open'", (profile.profile_id,))
         already = {(r["field_code"], r["new_value"]) for r in open_rows}
@@ -1417,6 +1419,13 @@ class Agent2Service:
         for candidate in candidates:
             code, value = candidate.field_code, candidate.new_value
             if code not in clarify.FIELDS:
+                continue
+            # An explicit undo is authoritative for this turn: when the step-back
+            # flow cleared a field, re-proposing it (e.g. the FX domain
+            # re-deriving remittance_purpose from the remittance_tuition intent)
+            # would immediately resurrect what the user just took back and wipe
+            # the actual answer with a proposal card.
+            if code in cleared_fields:
                 continue
             policy = clarify.persistence_policy(code)
             if policy["storage_class"] not in {"core_profile", "preference"} or \

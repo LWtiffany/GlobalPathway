@@ -33,8 +33,10 @@ const S = {
 };
 
 // 追问撤销顺序（靠前的可先被「上一步」清掉）。trail 丢失时仍可按档案回退。
+// remittance_purpose 不在此列：它常由消息文本自动解析入档（如「学费怎么汇」），
+// 并非用户回答过的追问步骤，撤销它只会得到一张莫名的变更提案卡。
 const FOLLOW_UNDO_ORDER = [
-  "remittance_purpose", "payment_deadline", "fee_status",
+  "payment_deadline", "fee_status",
   "want_credit_card", "application_region", "applicant_age_band", "applicant_age",
   "us_hsbc_account_path", "uk_hsbc_account_path", "annual_income_band_hkd", "annual_income_hkd",
   "hk_resident", "hsbc_premier_path", "premier_relationship", "hsbc_relationship_balance_band",
@@ -1786,14 +1788,30 @@ function currentFollowUpQuestion() {
   return qs.find((q) => val(S.profile, q.field) === undefined) || qs[0] || null;
 }
 
+/** 本会话里真正作为追问问过的字段（自动解析入档的不算「上一步」）。 */
+function askedFollowUpFields() {
+  const asked = new Set();
+  for (const m of S.messages) {
+    const body = (m && m.body) || {};
+    for (const q of body.follow_up_questions || []) {
+      if (q && q.field) asked.add(q.field);
+    }
+  }
+  return asked;
+}
+
 /** 当前问题之前、档案里已确认且可撤销的追问字段（trail 丢了也能继续上一步）。 */
 function undoableFollowFields(currentField) {
   const suppressed = new Set(S.suppressFields || []);
   const trailFields = new Set((S.followTrail || []).map((item) => item.field));
+  const asked = askedFollowUpFields();
   const idx = FOLLOW_UNDO_ORDER.indexOf(currentField);
   const candidates = idx >= 0 ? FOLLOW_UNDO_ORDER.slice(0, idx) : FOLLOW_UNDO_ORDER.slice();
   return candidates.filter((code) => {
     if (suppressed.has(code) || code === currentField) return false;
+    // Only fields this conversation actually asked may be undone — profile
+    // values auto-parsed from message text were never a user step.
+    if (!asked.has(code)) return false;
     if (trailFields.has(code)) return true;
     return val(S.profile, code) !== undefined;
   });
