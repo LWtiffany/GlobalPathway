@@ -52,7 +52,12 @@ class OpenAICompatibleChatModel:
                 model=self.model_name, messages=messages,
                 response_format={"type": "json_object"}, extra_body=self.extra_body,
             )
-            content = response.choices[0].message.content
+            message = response.choices[0].message
+            content = message.content
+            # Thinking models (e.g. glm-5.3) may leave content empty and put the
+            # final JSON only in reasoning_content when the budget is exhausted.
+            if not content:
+                content = getattr(message, "reasoning_content", None) or ""
             if not content:
                 raise RuntimeError(f"{operation}: model returned empty JSON")
             return output_type.model_validate_json(content)

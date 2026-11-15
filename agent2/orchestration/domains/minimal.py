@@ -20,9 +20,13 @@ def catalog_question(field: str, profile_version: int) -> FollowUpQuestion:
     if item.get("kind") == "multi_enum":
         input_type = "multi_select"
     policy = clarify.persistence_policy(field)
+    # Same mapping as credit_card._question: direct-answer fields confirm on
+    # answer (save_on_select). The old "no options -> proposal" fallback routed
+    # date/text answers (payment_deadline, amount, ...) through session-only
+    # facts: the value never reached the profile, and the follow-up trail never
+    # recorded the step, so the next question had no 上一步 to return to.
     persist_mode = "session_only" if policy["confirmation_mode"] == "never" else \
-        "proposal" if policy["confirmation_mode"] == "proposal" else \
-        "save_on_select" if item.get("options") else "proposal"
+        "proposal" if policy["confirmation_mode"] == "proposal" else "save_on_select"
     return FollowUpQuestion(
         question_code=f"ask_{field}",
         field=field,

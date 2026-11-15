@@ -7,7 +7,7 @@ per school. Callers pass profile facts (school name, course, destination).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -17,9 +17,13 @@ from agent1.storage import read_session
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
-# Chinese display names for every school in the catalog: customer-facing
-# sentences stay Chinese instead of embedding a long English name that reads
-# like a second institution. Unknown schools fall back to the English name.
+
+def _looks_like_id(value: str | None) -> bool:
+    return bool(value and _UUID_RE.match(value.strip()))
+
+# Chinese display names for the catalogued schools (keys are casefolded
+# catalogue names). Customer-facing copy reads 「香港大学」, not the English
+# catalogue row.
 SCHOOL_NAME_ZH = {
     "the chinese university of hong kong": "香港中文大学",
     "the hong kong university of science and technology": "香港科技大学",
@@ -91,39 +95,37 @@ def school_display_name(name: str | None) -> str:
         return ""
     return SCHOOL_NAME_ZH.get(str(name).strip().casefold(), str(name).strip())
 
-
-def _looks_like_id(value: str | None) -> bool:
-    return bool(value and _UUID_RE.match(value.strip()))
-
 # fee_status values allowed by TUITION check constraint → Chinese label for display.
 # Keys are schema enums, not school-specific rates.
 FEE_STATUS_ZH = {
-    "home": "本地学生",
-    "international": "国际学生",
-    "local": "本地学生",
-    "non_local": "非本地学生",
-    "in_state": "州内学生",
-    "out_of_state": "州外学生",
-    "all": "所有类别",
+    "home": "本地生",
+    "international": "国际生",
+    "local": "本地生",
+    "non_local": "非本地生",
+    "in_state": "州内",
+    "out_of_state": "州外",
+    "all": "统一费率",
+}
+
+FEE_BASIS_ZH = {
+    "per_year": "全年",
+    "per_term": "每学期",
+    "per_quarter": "每学季",
+    "monthly": "每月",
+    "total": "整个项目",
+    "per_credit": "每学分",
+    "other": "",
 }
 
 STUDY_MODE_ZH = {
     "full_time": "全日制",
     "part_time": "兼读制",
+    "full-time": "全日制",
+    "part-time": "兼读制",
 }
 
-FEE_BASIS_ZH = {
-    "per_year": "每年",
-    "per_term": "每学期",
-    "per_semester": "每学期",
-    "per_credit": "每学分",
-    "per_module": "每模块",
-    "per_month": "每月",
-    "total": "整个课程",
-}
-
-# Known catalog rate labels translated; unmapped English labels are omitted
-# from the line instead of leaking English into a Chinese answer.
+# Catalog rate_label strings → Chinese. Unmapped English labels are omitted
+# from customer-facing lines rather than leaked into the answer.
 RATE_LABEL_ZH = {
     "part time": "兼读制",
     "half time": "半时",
@@ -132,6 +134,8 @@ RATE_LABEL_ZH = {
     "full time": "全日制",
     "full time (jsd)": "全日制（JSD）",
     "full time (ftmc)": "全日制（FTMC）",
+    "stem": "STEM 院系",
+    "non_stem": "非 STEM 院系",
     "summer": "暑期",
     "second year": "第二年",
     "second year: one term only": "第二年（仅一学期）",
@@ -185,6 +189,29 @@ RATE_LABEL_ZH = {
     "2026-27 intake": "2026-27 学年入学",
     "2017-18 to 2024-25 intakes": "2017-18 至 2024-25 学年入学",
 }
+
+
+def _format_money(amount, currency: str | None) -> str:
+    try:
+        value = Decimal(str(amount))
+    except Exception:
+        return f"{amount} {currency or ''}".strip()
+    if value == value.to_integral_value():
+        rendered = f"{int(value):,}"
+    else:
+        rendered = f"{value:,.2f}"
+    cur = (currency or "").upper()
+    if cur == "USD":
+        return f"{rendered} 美元"
+    if cur == "GBP":
+        return f"{rendered} 英镑"
+    if cur == "HKD":
+        return f"{rendered} 港元"
+    if cur in {"CNY", "RMB"}:
+        return f"{rendered} 人民币"
+    if cur == "EUR":
+        return f"{rendered} 欧元"
+    return f"{rendered} {cur}".strip()
 
 
 @dataclass(frozen=True)
@@ -286,6 +313,7 @@ class TuitionContext:
             "match": self.match,
             "school_id": self.school_id,
             "school_name": self.school_name,
+            "school_display": self.school_display,
             "school_country": self.school_country,
             "program_id": self.program_id,
             "program_name": self.program_name,
@@ -366,33 +394,82 @@ def _payment_from_row(row) -> PaymentDetail:
     )
 
 
+# Method ids that mean "see the programme/office page" — they carry no actual
+# channel information. When a level/programme row only lists these, the
+# school-wide row (if any) has the real payment channels and must win.
+_PLACEHOLDER_METHODS = {"programme_catalog_channels", "programme_page_channels",
+                        "programme_specific", "hkust_registry_payment_channels"}
+
+
+def _is_placeholder_payment_row(row) -> bool:
+    methods = row["payment_methods"] or []
+    return bool(methods) and all(m in _PLACEHOLDER_METHODS for m in methods)
+
+
+def _merge_placeholder_payment(base_row, wide_row):
+    """Keep the level/programme row's own billing rhythm, take the real
+    channels from the school-wide row.
+
+    Placeholder rows carry the degree-level billing_cycle / instalment facts
+    that must survive the fallback; only the channel-ish fields were the
+    placeholders (see HKUST: bachelor row says per_year_advance, the CSFU
+    school-wide row lists the actual payment channels).
+    """
+    merged = dict(base_row)
+    for key in ("payment_methods", "portal_name", "portal_url",
+                "supports_multi_currency", "multi_currency_channels",
+                "multi_currency_note"):
+        merged[key] = wide_row[key]
+    if base_row.get("accepts_credit_card") is None:
+        merged["accepts_credit_card"] = wide_row.get("accepts_credit_card")
+    return merged
+
+
 def _load_payment_detail(con, *, school_id: str, program_id: str | None,
                          level: str | None) -> PaymentDetail | None:
-    """Prefer programme override, then level, then school_wide."""
+    """Prefer programme override, then level, then school_wide.
+
+    Placeholder level/programme rows (payment_methods are "see programme
+    page" markers, portal points at a catalog page) never mask a
+    substantive school-wide row: HKUST MSc, for example, falls back to the
+    CSFU payment-methods row instead of the programme-catalog placeholder.
+    The fallback merges channel fields from the school-wide row while
+    keeping the degree row's billing_cycle / instalment facts.
+    """
+    row = None
     if program_id:
-        row = con.execute(
+        hit = con.execute(
             """SELECT * FROM tuition_payment_detail
                WHERE school_id=%s AND scope='programme' AND program_id=%s
                ORDER BY recorded_at DESC NULLS LAST LIMIT 1""",
             (school_id, program_id),
         ).fetchone()
-        if row:
-            return _payment_from_row(row)
+        if hit and not _is_placeholder_payment_row(hit):
+            return _payment_from_row(hit)
+        # placeholder or missing → keep looking at level / school_wide
     if level:
-        row = con.execute(
+        hit = con.execute(
             """SELECT * FROM tuition_payment_detail
                WHERE school_id=%s AND scope='level' AND level=%s
                ORDER BY recorded_at DESC NULLS LAST LIMIT 1""",
             (school_id, level),
         ).fetchone()
-        if row:
-            return _payment_from_row(row)
-    row = con.execute(
+        if hit and not _is_placeholder_payment_row(hit):
+            return _payment_from_row(hit)
+        row = hit  # may be None or a placeholder — decided against school_wide below
+    # level/programme row is missing or a placeholder → prefer a substantive
+    # school-wide row before settling for what we have.
+    wide = con.execute(
         """SELECT * FROM tuition_payment_detail
            WHERE school_id=%s AND scope='school_wide'
            ORDER BY recorded_at DESC NULLS LAST LIMIT 1""",
         (school_id,),
     ).fetchone()
+    if wide and not _is_placeholder_payment_row(wide):
+        if row is None:
+            return _payment_from_row(wide)
+        if _is_placeholder_payment_row(row):
+            return _payment_from_row(_merge_placeholder_payment(row, wide))
     return _payment_from_row(row) if row else None
 
 
@@ -461,16 +538,36 @@ def _find_schools(con, school_query: str, destination_country: str | None):
     return rows
 
 
+# Degree-level tokens: a query naming one level must never fuzzy-match a
+# programme of another level ("Bachelor of Business Administration" vs
+# "Master of Business Administration" shared 3 of 4 tokens and scored 45).
+_UG_LEVEL_TOKENS = {"bachelor", "undergraduate", "ug", "bba", "bsc", "beng", "llb"}
+_PG_LEVEL_TOKENS = {"master", "msc", "mba", "ma", "llm", "mphil", "mpa", "med", "msw",
+                    "mar", "postgraduate", "graduate", "professional", "phd", "doctoral",
+                    "edd", "dpa", "dnurs", "psyd", "mds", "emb"}
+# Filler words that inflated token-overlap scores without carrying meaning.
+_SCORE_STOPWORDS = {"of", "in", "the", "and", "at", "for"}
+
+
+def _level_conflict(query_tokens: set[str], name_tokens: set[str]) -> bool:
+    return bool((query_tokens & _UG_LEVEL_TOKENS and name_tokens & _PG_LEVEL_TOKENS)
+                or (query_tokens & _PG_LEVEL_TOKENS and name_tokens & _UG_LEVEL_TOKENS))
+
+
 def _score_program(name: str, level: str | None, course_q: str) -> int:
     n, c = _norm(name), _norm(course_q)
     if not c:
         return 0
     if n == c:
         return 100
+    nt, ct = set(n.split()), set(c.split())
+    if _level_conflict(ct, nt):
+        return 0
     if c in n or n in c:
         return 80
-    # token overlap
-    nt, ct = set(n.split()), set(c.split())
+    # token overlap (filler words excluded: "MSc in X" must match
+    # "Master of Science in X" instead of being diluted by "of"/"in")
+    nt, ct = nt - _SCORE_STOPWORDS, ct - _SCORE_STOPWORDS
     if not ct:
         return 0
     overlap = len(nt & ct) / len(ct)
@@ -500,9 +597,73 @@ def _pick_school_wide(con, school_id: str):
     return None, []
 
 
+def _norm_year(year: str | None) -> str:
+    return (year or "").strip().replace("-", "/")
+
+
+def _latest_year(rates) -> str | None:
+    years = sorted({_norm_year(r.academic_year) for r in rates if r.academic_year})
+    return years[-1] if years else None
+
+
+def _ug_wide_rates(con, school_id: str) -> list:
+    """School-level UG rows (bachelor/undergraduate pseudo-programmes),
+    newest academic year only, deduped. Grouped rows (HKU's "Undergraduate
+    programmes (STEM / Non-STEM Faculties)") get stem/non_stem rate labels so
+    the answer line can name the faculty group."""
+    rows = con.execute(
+        """SELECT program_id, name FROM program
+           WHERE school_id=%s AND level IN ('bachelor', 'undergraduate')""",
+        (school_id,),
+    ).fetchall()
+    merged: list = []
+    for p in rows:
+        name_l = _norm(p["name"])
+        for rate in _load_rates(con, p["program_id"]):
+            label = rate.rate_label
+            if "non-stem" in name_l or "non stem" in name_l:
+                label = "non_stem"
+            elif "stem" in name_l:
+                label = "stem"
+            if label != rate.rate_label:
+                rate = replace(rate, rate_label=label)
+            merged.append(rate)
+    year = _latest_year(merged)
+    if year:
+        merged = [r for r in merged if _norm_year(r.academic_year) == year]
+    seen, out = set(), []
+    for r in merged:
+        key = (r.fee_status, r.study_mode, r.amount, r.currency, r.rate_label)
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _refresh_ug_rates(con, ctx: TuitionContext) -> TuitionContext:
+    """Undergraduate rows are often ingested per programme for an older year
+    while the school publishes newer school-wide UG pricing (HKU: 2026/27
+    programme rows vs the 2027/28 STEM/Non-STEM page). When the school-level
+    rows are newer, quote those instead of the stale programme rows."""
+    if not ctx.rates or ctx.program_level not in {"bachelor", "undergraduate"}:
+        return ctx
+    programme_year = _latest_year(ctx.rates)
+    if not programme_year:
+        return ctx
+    wide = _ug_wide_rates(con, ctx.school_id)
+    wide_year = _latest_year(wide)
+    if not wide or not wide_year or wide_year <= programme_year:
+        return ctx
+    # Quote the newest school-wide UG pricing directly; the year switch itself
+    # is an ingest detail users do not need to see.
+    ctx.rates = wide
+    return ctx
+
+
 def _attach_payment(con, ctx: TuitionContext) -> TuitionContext:
     if not ctx.school_id:
         return ctx
+    ctx = _refresh_ug_rates(con, ctx)
     level = None
     if ctx.program_level and "," not in ctx.program_level:
         level = ctx.program_level
@@ -584,6 +745,26 @@ def resolve_tuition(*, school: str | None, course: str | None = None,
             if not scored:
                 ctx.match = "school_only"
                 ctx.note = f"已匹配学校「{ctx.school_name}」，但未找到与「{course}」对应的项目学费。"
+                # Undergraduate queries fall back to the school's UG-level rows
+                # (bachelor/undergraduate pseudo-programmes, newest year) —
+                # taught-postgraduate fees vary per programme and must NOT be
+                # merged, so the fallback stays undergraduate-only.
+                cq_tokens = set(_norm(str(course)).split())
+                if cq_tokens & _UG_LEVEL_TOKENS or "本科" in str(course):
+                    wide = _ug_wide_rates(con, ctx.school_id)
+                    if wide:
+                        ctx.program_id = None
+                        ctx.program_name = None
+                        ctx.program_level = "undergraduate"
+                        ctx.program_scope = "level"
+                        ctx.rates = wide
+                        ctx.match = "level"
+                        ctx.note = (
+                            f"未精确匹配到「{course}」的项目行，已按该校本科生"
+                            f"{_latest_year(wide)} 学年公布学费整理"
+                            "（分 STEM / 非 STEM 院系）；请以录取项目缴费通知为准。"
+                        )
+                        return _attach_payment(con, ctx)
                 sw, rates = _pick_school_wide(con, ctx.school_id)
                 if sw and rates:
                     ctx.program_id = sw["program_id"]
@@ -707,37 +888,100 @@ def resolve_tuition(*, school: str | None, course: str | None = None,
 
 def format_rate_line(rate: TuitionRate, *, school: str | None = None,
                      program: str | None = None) -> str:
-    """One human-readable line from a DB rate row (no invented numbers).
-
-    Everything rendered here is Chinese; unmapped English rate labels are
-    omitted rather than leaking into the answer.
-    """
+    """One human-readable tuition line (no invented numbers, no raw DB enums)."""
     bits = []
     if school:
         bits.append(school)
     if program:
         bits.append(program)
     if rate.academic_year:
-        bits.append(rate.academic_year)
+        bits.append(f"{rate.academic_year} 学年")
     status = FEE_STATUS_ZH.get(rate.fee_status or "", rate.fee_status)
     if status:
         bits.append(status)
+    mode = STUDY_MODE_ZH.get((rate.study_mode or "").lower(), rate.study_mode)
+    if mode:
+        bits.append(mode)
     if rate.rate_label:
         label = RATE_LABEL_ZH.get(str(rate.rate_label).strip().casefold())
-        if label:
+        if label and label not in bits:
+            # Unmapped English labels stay out of the Chinese answer line.
             bits.append(label)
-    if rate.study_mode:
-        bits.append(STUDY_MODE_ZH.get(str(rate.study_mode).strip().casefold(),
-                                      rate.study_mode))
-    head = " · ".join(bits) if bits else "公布学费"
-    basis = FEE_BASIS_ZH.get((rate.fee_basis or "").strip().casefold(), "费额")
-    est = "（目录估算，待核对官方）" if rate.is_estimate else ""
-    return f"{head}：{rate.amount} {rate.currency}（{basis}）{est}"
+    head = " · ".join(bits) if bits else "学费参考"
+    basis = FEE_BASIS_ZH.get(rate.fee_basis or "", rate.fee_basis or "")
+    money = _format_money(rate.amount, rate.currency)
+    if basis:
+        money = f"{basis} {money}"
+    est = "（估算，请以缴费通知为准）" if rate.is_estimate else ""
+    return f"{head}：{money}{est}"
+
+
+_LOCAL_FEE_STATUSES = {"home", "local", "in_state"}
+_NON_LOCAL_FEE_STATUSES = {"non_local", "international", "out_of_state"}
+
+
+def fee_status_tiers(rates: list[TuitionRate]) -> list[dict[str, Any]]:
+    """Fee-tier options for the fee_status question, priced from the catalog.
+
+    Returns [] when the school publishes a single tier (no question needed);
+    otherwise one option per side: local / non-local with sample amounts.
+    """
+    official = [r for r in rates if not r.is_estimate]
+    pool = official or rates
+    # Price the tier options from the newest published year only — mixing
+    # years into one range would conflate cohort prices with fee bands.
+    year = _latest_year(pool)
+    if year:
+        pool = [r for r in pool if _norm_year(r.academic_year) == year]
+    tiers: list[dict[str, Any]] = []
+    for value, wanted in (("local", _LOCAL_FEE_STATUSES),
+                          ("non_local", _NON_LOCAL_FEE_STATUSES)):
+        hits = [r for r in pool if (r.fee_status or "") in wanted]
+        if hits:
+            amounts = sorted({r.amount for r in hits})
+            if len(amounts) == 1:
+                sample = _format_money(amounts[0], hits[0].currency)
+            else:
+                # One tier with several published prices (HKU: STEM / Non-STEM
+                # UG bands) — quote the range instead of one misleading figure.
+                low = _format_money(amounts[0], hits[0].currency)
+                high = _format_money(amounts[-1], hits[-1].currency)
+                low_tail = low.rsplit(" ", 1)
+                high_tail = high.rsplit(" ", 1)
+                if (len(low_tail) == 2 and len(high_tail) == 2
+                        and low_tail[1] == high_tail[1]):
+                    sample = f"{low_tail[0]}–{high_tail[0]} {low_tail[1]}"
+                else:
+                    sample = f"{low}–{high}"
+            tiers.append({
+                "value": value,
+                "label": "本地生" if value == "local" else "非本地生",
+                "sample": sample,
+            })
+    # Ask only when both sides exist.
+    return tiers if len(tiers) == 2 else []
+
+
+def filter_rates_by_fee_status(rates: list[TuitionRate], fee_status: str | None
+                               ) -> list[TuitionRate]:
+    """Keep only the rates on the user's fee tier; fall back to all rates."""
+    if not fee_status:
+        return rates
+    wanted = (_LOCAL_FEE_STATUSES if str(fee_status).strip().casefold() in
+              {"local", *_LOCAL_FEE_STATUSES} else _NON_LOCAL_FEE_STATUSES)
+    kept = [r for r in rates if (r.fee_status or "") in wanted]
+    return kept or rates
 
 
 def compare_to_quota(rates: list[TuitionRate], *, quota_amount, quota_currency: str | None
                      ) -> str | None:
-    """If a rate shares the quota currency, say whether it exceeds the facilitation quota."""
+    """If a rate shares the quota currency, say whether it exceeds the facilitation quota.
+
+    HKD tuition against a USD quota uses the official Linked Exchange Rate
+    System band (7.75–7.85 HKD/USD) for a bounded estimate instead of
+    inventing a spot rate: if the whole band is below (or above) the quota,
+    the answer states the conclusion explicitly.
+    """
     if quota_amount is None or not quota_currency:
         return None
     try:
@@ -748,17 +992,39 @@ def compare_to_quota(rates: list[TuitionRate], *, quota_amount, quota_currency: 
             and not r.is_estimate]
     if not same:
         currencies = sorted({r.currency for r in rates if r.currency})
-        if currencies:
-            return (f"目录学费币种为 {'/'.join(currencies)}，与便利化额度币种 {quota_currency} 不同；"
-                    "是否超额需按购汇当日折算后与银行确认，本回答不估算汇率。")
-        return None
+        if not currencies:
+            return None
+        if quota_currency.upper() == "USD" and currencies == ["HKD"]:
+            hkd_rates = [r for r in rates if r.currency == "HKD" and not r.is_estimate]
+            top = max(r.amount for r in hkd_rates)
+            quota_txt = _format_money(quota, quota_currency)
+            # 7.75 gives the largest USD value, 7.85 the smallest — the whole
+            # conversion band stays inside the official LERS range.
+            usd_lo = (top / Decimal("7.85")).quantize(Decimal("1"))
+            usd_hi = (top / Decimal("7.75")).quantize(Decimal("1"))
+            money = _format_money(top, "HKD")
+            if usd_hi <= quota:
+                return (f"参考学费约 {money}，按港元联系汇率区间（7.75–7.85）估算约 "
+                        f"{_format_money(usd_lo, 'USD')}–{_format_money(usd_hi, 'USD')}，"
+                        f"未超过年度便利化额度约 {quota_txt}（以银行购汇当日折算为准）。")
+            if usd_lo >= quota:
+                return (f"参考学费约 {money}，按港元联系汇率区间（7.75–7.85）估算约 "
+                        f"{_format_money(usd_lo, 'USD')}–{_format_money(usd_hi, 'USD')}，"
+                        f"已超过年度便利化额度约 {quota_txt}；"
+                        "超额度办理时请按银行要求准备学费证明等材料。")
+            return (f"参考学费约 {money}，按港元联系汇率区间估算接近年度便利化额度约 "
+                    f"{quota_txt}；是否超过请按购汇当日折算后与银行确认。")
+        return (f"学费参考币种为 {'/'.join(currencies)}，与便利化额度币种 {quota_currency} 不同；"
+                "是否超额请按购汇当日折算后向银行确认（此处不做汇率估算）。")
     # Use the largest same-currency official amount as the conservative remittance planning figure.
     top = max(same, key=lambda r: r.amount)
+    money = _format_money(top.amount, top.currency)
+    quota_txt = _format_money(quota, quota_currency)
     if top.amount > quota:
-        return (f"按目录金额 {top.amount} {top.currency}，已高于年度便利化额度 "
-                f"{quota} {quota_currency}；超额度办理需按银行要求准备学费证明等材料。")
-    return (f"按目录金额 {top.amount} {top.currency}，未超过年度便利化额度 "
-            f"{quota} {quota_currency}（仍以银行审核与缴费通知书为准）。")
+        return (f"参考学费约 {money}，已高于年度便利化额度约 {quota_txt}；"
+                "超额度办理时请按银行要求准备学费证明等材料。")
+    return (f"参考学费约 {money}，未超过年度便利化额度约 {quota_txt}"
+            "（仍以银行审核与缴费通知书为准）。")
 
 
 TuitionResolver = Callable[..., TuitionContext]

@@ -172,6 +172,9 @@ AGENT2_LLM_STRUCTURED_MODE=json_object   # qwen3.8-flash 可用 json_schema
 AGENT2_LLM_EXTRA_BODY={"enable_thinking":false}
 AGENT2_LLM_TIMEOUT_SECONDS=60
 AGENT2_LLM_API_KEY=                # 实际密钥放 local_secrets.py（已 gitignore）
+AGENT2_FX_LLM_MODEL=glm-5.3        # 外汇通用回答改写：思考模式（关不掉）
+AGENT2_FX_LLM_EXTRA_BODY={"enable_thinking":true,"reasoning_effort":"high"}
+AGENT2_FX_LLM_TIMEOUT_SECONDS=90
 ```
 
 Agent2 状态库使用 `AGENT2_DB_*`；未单独配置时沿用 `AGENT1_DB_*` 连接，但始终写入

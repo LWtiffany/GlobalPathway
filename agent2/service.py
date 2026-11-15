@@ -30,6 +30,7 @@ from .passwords import (dummy_hash, hash_password, needs_rehash, password_length
 from .runner import Agent2Runner
 from .store import dumps
 from .tuition_knowledge import resolve_school_id
+from .tuition_timing import timing_todos
 
 DEFAULT_PROFILE_FIELDS = ("role", "destination_country", "visa_category", "school", "planned_start_date")
 SESSION_TTL = timedelta(days=7)
@@ -107,12 +108,16 @@ class Agent2Service:
         self.accounts = accounts
         self.runner = Agent2Runner(knowledge, clock, generator=generator, suggest=suggest)
         llm = llm_components if llm_components is not None else build_llm_components()
+        shared_model = getattr(llm.writer, "model", None) if llm.writer is not None else None
+        fx_model = getattr(llm, "fx_answer_model", None) or shared_model
         self.v2_workflow = build_default_workflow(
             credit_card_repository=credit_card_repository,
             bank_repository=bank_account_repository,
             understanding=llm.understanding,
             writer=llm.writer,
             reasoner=getattr(llm, "reasoner", None),
+            fx_model=fx_model,
+            bank_model=shared_model,
             visa_knowledge=knowledge,
             clock=clock,
             visa_generator=generator,
@@ -1356,7 +1361,8 @@ class Agent2Service:
                 "profile_version": profile.version,
             }) for part in (output.message_parts or [])]
             answer = output.result
-        proposals = self._proposals_for(profile, output, user_message_id)
+        proposals = self._proposals_for(profile, output, user_message_id,
+                                        cleared_fields=cleared_fields)
         relationship_proposals = self._bank_relationship_proposals_for(
             profile, output, user_message_id, text)
         answer.profile_change_proposals = proposals
@@ -1397,8 +1403,9 @@ class Agent2Service:
             raise
         return answer
 
-    def _proposals_for(self, profile, output, user_message_id):
+    def _proposals_for(self, profile, output, user_message_id, cleared_fields=None):
         proposals = []
+        cleared_fields = set(cleared_fields or ())
         open_rows = self.store.all("SELECT field_code, new_value FROM profile_change_proposals "
                                    "WHERE profile_id=? AND status='open'", (profile.profile_id,))
         already = {(r["field_code"], r["new_value"]) for r in open_rows}
@@ -1413,6 +1420,13 @@ class Agent2Service:
             code, value = candidate.field_code, candidate.new_value
             if code not in clarify.FIELDS:
                 continue
+            # An explicit undo is authoritative for this turn: when the step-back
+            # flow cleared a field, re-proposing it (e.g. the FX domain
+            # re-deriving remittance_purpose from the remittance_tuition intent)
+            # would immediately resurrect what the user just took back and wipe
+            # the actual answer with a proposal card.
+            if code in cleared_fields:
+                continue
             policy = clarify.persistence_policy(code)
             if policy["storage_class"] not in {"core_profile", "preference"} or \
                     policy["confirmation_mode"] == "never":
@@ -1423,7 +1437,7 @@ class Agent2Service:
             if code == "want_credit_card":
                 continue
             if code == "school" and value:
-                # Compare against the catalogue UUID so that “香港大学” and the
+                # Compare against the catalogue UUID so that 「香港大学」 and the
                 # stored school_id are recognised as the same school.
                 resolved = resolve_school_id(value) or value
                 if profile.confirmed(code) == resolved or (code, dumps(resolved)) in already:
@@ -1652,6 +1666,36 @@ class Agent2Service:
         self._write_advice_rows(db, profile=profile, conversation_id=conversation_id,
                                 output=output, answer=answer, now=now,
                                 skip_topics=proposed_topics)
+        self._sync_tuition_timing_todos(db, profile=profile, output=output, now=now)
+
+    def _sync_tuition_timing_todos(self, db, *, profile, output, now):
+        """Tuition-remittance turns with a confirmed deadline keep two countdown
+        todos in the user's plan (购汇/电汇倒排日期).
+
+        Deterministic item ids make the upsert idempotent: re-running a tuition
+        turn refreshes the wording after a deadline change (resetting done,
+        because the old date no longer applies) without duplicating rows, and a
+        cleared deadline removes the derived todos again.
+        """
+        intents = set(output.active_intents or [])
+        if "remittance_tuition" not in intents:
+            return
+        field = profile.fields.get("payment_deadline")
+        deadline = field.value if (field and field.status == "confirmed") else None
+        rows = timing_todos(deadline, profile.profile_id) if deadline else []
+        for item_id, text in rows:
+            existing = db.execute("SELECT text FROM plan_items WHERE item_id=?", (item_id,)).fetchone()
+            if existing and existing["text"] == text:
+                continue  # unchanged wording: keep the user's done state
+            db.execute("""INSERT INTO plan_items (item_id, profile_id, text, done, created_at, updated_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(item_id) DO UPDATE SET text=excluded.text, done=0,
+                    updated_at=excluded.updated_at""",
+                       (item_id, profile.profile_id, text, 0, now, now))
+        if deadline is None:
+            for suffix in ("timing:fx", "timing:wire"):
+                db.execute("DELETE FROM plan_items WHERE item_id=?",
+                           (f"{profile.profile_id}:{suffix}",))
 
     def _advice_metadata(self, profile, conversation_id, item, source_message_id, turn_facts=None):
         topic = item["topic"]
