@@ -13,7 +13,7 @@ LLM 边界见 [agent2-llm.md](agent2-llm.md)；架构决策与迁移计划见
 agent2/
 ├── api.py            标准库 HTTP API（demo login、对话、档案、提案）
 ├── web/              极简前端（index.html / app.js / app.css）
-├── cli.py            命令行：serve 启动 API、eval-m06 跑评测指标
+├── cli.py            命令行：serve 启动 API
 ├── service.py        应用服务层：会话、档案、消息幂等、领域路由、事务持久化
 ├── runner.py         Legacy Runner：签证等旧流程 + 未接入领域的诚实 cannot_answer
 ├── clarify.py        Profile 字段注册表（类型/选项/时效/敏感级/领域）+ 追问合约
@@ -172,6 +172,9 @@ AGENT2_LLM_STRUCTURED_MODE=json_object   # qwen3.8-flash 可用 json_schema
 AGENT2_LLM_EXTRA_BODY={"enable_thinking":false}
 AGENT2_LLM_TIMEOUT_SECONDS=60
 AGENT2_LLM_API_KEY=                # 实际密钥放 local_secrets.py（已 gitignore）
+AGENT2_FX_LLM_MODEL=glm-5.3        # 外汇通用回答改写：思考模式（关不掉）
+AGENT2_FX_LLM_EXTRA_BODY={"enable_thinking":true,"reasoning_effort":"high"}
+AGENT2_FX_LLM_TIMEOUT_SECONDS=90
 ```
 
 Agent2 状态库使用 `AGENT2_DB_*`；未单独配置时沿用 `AGENT1_DB_*` 连接，但始终写入

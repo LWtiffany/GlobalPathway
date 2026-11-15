@@ -66,8 +66,7 @@ class VisaWorkflow:
         if not assessment.ready:
             return DomainResult(
                 task_id=task.task_id, domain="visa", status="needs_input",
-                answer=AnswerBody(summary=assessment.explanation,
-                                  steps=["回答下方问题后，我再给出确定的材料清单。"]),
+                answer=AnswerBody(summary=assessment.explanation or ""),
                 missing_fields=assessment.missing_fields,
                 follow_up_questions=assessment.questions, notices=assessment.notices,
                 projection="chat_only", observed_facts=facts, observed_basis=basis,
@@ -112,16 +111,12 @@ class VisaWorkflow:
         # Same UX as credit-card / legacy runner: finish condition questions
         # before emitting the materials list with many「待确认」rows.
         if follow.questions and not package.conflicts:
-            notices = [*assessment.notices, *follow.notices,
-                       Notice(code="pending_conditions", message=follow.explanation)]
             return DomainResult(
                 task_id=task.task_id, domain="visa", status="needs_input",
-                answer=AnswerBody(
-                    summary=follow.explanation or "补充以下信息后，我再给出更准确的材料清单。",
-                    steps=["回答下方问题后，我再给出确定的材料清单。"]),
+                answer=AnswerBody(summary=""),
                 missing_fields=[],
                 follow_up_questions=follow.questions,
-                notices=notices,
+                notices=[*assessment.notices, *follow.notices],
                 next_actions=_next_check(facts),
                 projection="chat_only",
                 observed_facts=facts, observed_basis=basis,

@@ -155,11 +155,15 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
                 and (field.status == "confirmed" or field.field_version > 0)):
             historical.pop(code, None)
     profile_values.update(historical)
+    role_field = (profile.fields or {}).get("role")
+    profile_role = str(role_field.value) if role_field and role_field.value else ""
     request = OrchestrationInput(
         text=text,
         profile_id=profile.profile_id,
         profile_version=profile.version,
         profile_values=profile_values,
+        profile_name=(getattr(profile, "display_name", None) or "").strip(),
+        profile_role=profile_role,
         conversation_intents=intents,
         asked_fields=list(asked_fields),
         input_mode="structured_selection" if structured_selection else "free_text",
@@ -209,9 +213,20 @@ def run_v2(workflow, *, profile, text, conversation_facts, asked_fields, message
         )
         # Per-domain payload: keep each side-panel topic on its own answer, not the
         # merged multi-intent steps (which would make every panel look identical).
+        # FX remittance may also carry a school-payment companion bubble; keep those
+        # steps separately so the profile card can show「怎么交学费」without mixing
+        # card pitches or FX quota copy into the same block.
+        payment_steps: list[str] = []
+        for companion in (result.payload or {}).get("companion_bubbles") or []:
+            if companion.get("kind") == "school_payment":
+                payment_steps.extend(list(companion.get("steps") or []))
+        fx_steps = list(result.answer.steps or [])
+        advice_steps = [*payment_steps, *fx_steps]
         payload = {
             "summary": result.answer.summary,
-            "steps": result.answer.steps,
+            "steps": advice_steps,
+            "payment_steps": payment_steps,
+            "fx_steps": fx_steps,
             "result_status": result.status,
             "trace_id": orchestrated.trace_id,
             "domain_payload": result.payload,
@@ -282,7 +297,8 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
     """Turn one multi-domain run into 2–3 chat bubbles with original domain formatting.
 
     1) Optional「先说要不要」intro when the user asked a need question
-    2) One bubble per domain using that domain's own summary/steps/materials/citations
+    2) Optional companion bubbles from a domain payload (e.g. school payment before FX)
+    3) One bubble per domain using that domain's own summary/steps/materials/citations
     Follow-ups, notices, and advice_updates stay on the last bubble.
     """
     results = list(unified.domain_results)
@@ -293,7 +309,9 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
         and unified.status in {"answered", "needs_verification"}
         and not unified.follow_up_questions
     )
-    split = ask_need or len(results) > 1
+    has_companions = any(
+        (item.payload or {}).get("companion_bubbles") for item in results)
+    split = ask_need or len(results) > 1 or has_companions
     if not split or not results:
         citations, claims, conflicts = [], [], []
         seen = set()
@@ -363,6 +381,23 @@ def _split_chat_parts(*, text, message_id, profile, unified, advice_updates, tra
 
     for index, domain_result in enumerate(results):
         last = index == len(results) - 1
+        companions = list((domain_result.payload or {}).get("companion_bubbles") or [])
+        for companion in companions:
+            companion_summary = companion.get("summary") or ""
+            parts.append(AnswerResult(
+                message_id=_new_message_id(),
+                status="answered",
+                profile_id=profile.profile_id,
+                profile_version=profile.version,
+                answer=AnswerBody(
+                    summary=companion_summary,
+                    steps=list(companion.get("steps") or []),
+                    limitations=list(companion.get("limitations") or []),
+                ),
+                synthetic=False,
+                trace_id=trace_id,
+                stage_ms={},
+            ))
         label = DOMAIN_LABEL.get(domain_result.domain, domain_result.domain)
         summary = domain_result.answer.summary or ""
         if summary and not summary.startswith(label):

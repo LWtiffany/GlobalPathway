@@ -58,7 +58,7 @@ flowchart LR
 | M12 计划 | 用户自己的待办，增删改状态。回答不会改计划。 | `service.py` |
 | M13 报告 | 没有单独报告表。前端 `#/report/<profile_id>` 用档案、建议和计划拼一页可打印视图。 | `web/app.js` |
 | M14 反馈 | 对某条回答提交纠错，列表可查。没有升级到 Agent1 的工单流。 | `service.py` |
-| M15 评测 | 只有 `eval-m06`。没有统一指标上报。 | `eval_m06.py` |
+| M15 评测 | `eval-m06` 已移除（2026-11-11，评估工具不上生产）。没有统一指标上报。 | — |
 | 审核后台 | 设计稿里的用户流程之外。读管理库 `REVIEW_QUEUE`，批准写入 Agent1 正式表。 | `admin.py` |
 
 数据形状在 `agent2/models.py`（Pydantic）：`Profile`、`KnowledgeRecord`、`AnswerResult`、`Citation`、`Claim` 等。
@@ -68,7 +68,7 @@ flowchart LR
 两条实现同一个 `KnowledgeRead`：
 
 - **`Agent1KnowledgeRead`（默认）** 调 `agent1.publication.search/get`，`--agent1-env` 选环境，默认 `development`。`read_id` 形如 `agent1:development`。签证政策的适用条件经 `CONDITION_MAP` 映到 Profile 字段：英国是年龄、资金来源、停留是否满 6 个月、是否住在 TB 名单国家；香港是保证人是院校还是个人、保证人是否永久性居民、常住地、是否持有香港身份证。映不上的条件（例如美国「面签前须缴签证费」）整条材料标成待核实，不当作无条件需要。未发布、已撤回、过期或快照被改过的记录不作确定回答。
-- **`FixtureKnowledgeRead`** 读 `agent2/fixtures/knowledge_uk_student_visa.json`。只接受 `synthetic=true`。回答限制里加「【模拟资料】」。`eval-m06` 也用这份夹具。
+- **`FixtureKnowledgeRead`** 读 `agent2/fixtures/knowledge_uk_student_visa.json`。只接受 `synthetic=true`。回答限制里加「【模拟资料】」。
 
 新鲜度：签证材料主题默认 7 天（`FRESHNESS_SLA`）。超过 SLA 的记录 `availability=stale`，门控不会把它当成确定依据。
 
@@ -119,7 +119,6 @@ flowchart LR
 .venv/bin/python agent2.py serve --port 8787
 .venv/bin/python agent2.py serve --knowledge fixture
 .venv/bin/python agent2.py admin add <用户名>
-.venv/bin/python agent2.py eval-m06 --repeat 50
 ```
 
 `serve` 默认监听 `127.0.0.1:8787`，知识源默认 `agent1`。`8765` 专供管理员端使用。

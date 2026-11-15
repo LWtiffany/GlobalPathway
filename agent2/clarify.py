@@ -131,6 +131,8 @@ FIELDS = {
                                           "您是否已在面签前缴纳美国签证申请费？"),
     "remittance_purpose": ("汇款用途", _enum("tuition", "living"), "ask_remittance_purpose",
                            "这笔汇款是交学费还是生活费？"),
+    "fee_status": ("学费档位", _enum("local", "non_local"), "ask_fee_status",
+                   "学校学费按本地生/非本地生分档，您按哪一档缴纳？"),
     "payment_deadline": ("付款期限", _iso_date, "ask_payment_deadline", "学校要求的付款截止日期是哪天？"),
     "amount": ("金额", _amount, "ask_amount", "需要汇多少钱？"),
     "currency": ("币种", _currency, "ask_currency", "金额是什么币种？（如 GBP、USD、HKD）"),
@@ -225,6 +227,7 @@ OPTION_LABELS = {
                        "scholarship": "奖学金"},
     "remittance_purpose": {"tuition": "学费", "living": "生活费"},
     "payer": {"self": "本人", "parent": "父母", "other": "其他"},
+    "fee_status": {"local": "本地生", "non_local": "非本地生"},
     "account_region": {"UK": "英国", "US": "美国", "CN-HK": "中国香港", "CN": "中国内地"},
     "applicant_identity": {"student": "学生本人", "parent": "家长", "other": "其他"},
     "application_region": {"UK": "英国", "US": "美国", "CN-HK": "中国香港", "CN": "中国内地"},
@@ -650,12 +653,13 @@ def assess(topic, profile: Profile, stated=None, *, condition_fields=(), expecte
         state = "field_conflict"
         explanation = "；".join(f"{label(c)}：档案为「{o}」，本次消息为「{n}」" for c, o, n in conflicts)
     elif missing:
+        # Customer-facing ask lives in follow_up_questions only — no status preamble.
         state = "needs_input"
-        explanation = "作确定结论前还需确认：" + "、".join(label(c) for c in missing)
+        explanation = ""
     else:
         state = "ready"
-        explanation = ("主题必需条件已齐全" + (
-            "；部分材料取决于：" + "、".join(label(c) for c in pending) if pending else ""))
+        # Pending requirement conditions are asked via questions; keep explanation empty.
+        explanation = ""
     missing_fields = list(dict.fromkeys(
         missing + [c for c, _, _ in invalid if c in rule.must_have]))
     return Assessment(

@@ -6,10 +6,13 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from math import log2
 
+import anyio
+
 from agent2 import clarify
 from agent2.intent import (is_card_usage_followup_answer,
                            is_card_usage_profile_statement)
 from agent2.models import AnswerBody, FollowUpQuestion, Notice
+from agent2.tuition_knowledge import resolve_tuition
 
 from ..composer import is_necessity_question
 from ..capabilities import RuleCapabilityPlanner
@@ -34,6 +37,17 @@ REGION_WORDS = {"CN-HK": ("香港", "hong kong", "hk"), "UK": ("英国", "uk"),
                 "US": ("美国", "us"), "CN": ("内地", "大陆", "中国")}
 
 CURRENCY_ZH = {"HKD": "港元", "USD": "美元", "GBP": "英镑"}
+
+
+def _usd_amount_zh(raw: str) -> str:
+    """Render a stored USD amount in Chinese reading style (100000 -> 10 万)."""
+    digits = str(raw).replace(",", "")
+    if not digits.isdigit():
+        return str(raw)
+    value = int(digits)
+    if value >= 10000 and value % 10000 == 0:
+        return f"{value // 10000} 万"
+    return f"{value:,}"
 NETWORK_ZH = {"Visa": "威士卡", "Mastercard": "万事达卡", "UnionPay": "银联卡"}
 WAIVERS_ZH = {
     "First year waived": "首年免年费",
@@ -259,6 +273,40 @@ def extract_credit_card_facts(text: str):
             r"(?:顺便|直接|如果需要.?帮我).{0,6}推荐|帮我比较.{0,4}卡", text):
         facts["want_credit_card"], basis["want_credit_card"] = "yes", "想比较信用卡"
     return facts, basis
+
+
+# Situation-referencing honorifics swap for the profile name; conversational
+# politeness ("您提到", "您想", "您可以", "如果您愿意") keeps addressing the
+# person typing. Longest patterns first so 您会更喜欢 wins over 您的.
+_ADDRESS_PATTERNS = (
+    "您会更喜欢", "您比较喜欢", "您愿意考虑", "您在汇丰的", "您通常",
+    "您的", "您是否", "您每月", "您每年", "您平时", "您最常", "您属于",
+)
+
+
+_NO_SPACE_BEFORE = set("，。？！；：、（([【")
+
+
+def _addressed(text: str, profile_name: str) -> str:
+    """Rewrite situation-specific 您 into the profile's display name.
+
+    The profile is often prepared by a parent for a child (role=parent), so
+    questions about age, income or habits should address the applicant on
+    file, not the person typing. Polite/interactive copy keeps 您. Empty or
+    missing names keep the original text.
+    """
+    name = (profile_name or "").strip()[:30]
+    if not name:
+        return text
+    pattern = "|".join(_ADDRESS_PATTERNS)
+
+    def substitute(match):
+        # Latin names next to Chinese read better with separating spaces,
+        # except right after punctuation.
+        prefix = "" if match.start() == 0 or text[match.start() - 1] in _NO_SPACE_BEFORE else " "
+        return f"{prefix}{name} {match.group()[1:]}"
+
+    return re.sub(pattern, substitute, text)
 
 
 def _question(field, text, version, *, options, input_type="single_select", max_selections=None):
@@ -489,6 +537,7 @@ class CreditCardWorkflow:
             # observed facts, otherwise the study destination leaks into a
             # persisted card-application region and the two fields couple.
             facts["application_region"] = destination
+        self._derive_hk_student_facts(facts)
 
         if request.input_mode == "free_text":
             prerequisite = re.search(r"美国|Premier Checking", request.text, re.I) and re.search(
@@ -574,6 +623,7 @@ class CreditCardWorkflow:
             return DomainResult(
                 task_id=task.task_id, domain="credit_card", status="needs_input",
                 answer=AnswerBody(
+                    # Polite conversational copy addresses the person typing: keep 您.
                     summary="信用卡不是硬性必需，您可以按自己的需要决定。如果您愿意，我可以陪您看看有哪些合适的选择。",
                     steps=[
                         "若选择了解，我会按留学地优先推荐当地汇丰卡，香港卡仅作备用。",
@@ -813,6 +863,10 @@ class CreditCardWorkflow:
 
         scenarios = facts["spending_scenarios"] if isinstance(facts["spending_scenarios"], list) else \
             [item for item in str(facts["spending_scenarios"]).split(",") if item]
+        # 学费场景 → 核对学校官方缴费通道（见 _tuition_payment_check）。
+        tuition_check = self._tuition_payment_check(facts, scenarios)
+        if tuition_check:
+            scenarios = tuition_check["scenarios"]
         result = recommend(catalog.products, facts, scenarios,
                            facts.get("reward_preference", "no_preference"), now=self.clock())
         if result.primary is None:
@@ -872,8 +926,16 @@ class CreditCardWorkflow:
             for card in recommendations
         )
         show_estimates = not (adaptive_hk and "monthly_card_spend_band_hkd" in provisional_fields)
+        primary_product = by_id.get(result.primary.card_id)
+        student_card_confirmed = bool(
+            primary_product is not None
+            and any(rule.rule_type == "student_status"
+                    for rule in primary_product.eligibility_rules)
+            and not ({"full_time_student", "student_institution_eligible"}
+                     & set(result.primary.eligibility.missing_fields)))
         steps = self._format_card_lines(result.primary, show_estimates=show_estimates,
-                                        provisional=provisional_choice)
+                                        provisional=provisional_choice,
+                                        student_card_confirmed=student_card_confirmed)
         for card in result.supplements:
             steps.extend(self._format_card_lines(card, show_estimates=show_estimates,
                                                  provisional=provisional_choice,
@@ -967,6 +1029,11 @@ class CreditCardWorkflow:
         limitations.append(
             "迎新礼遇（如首年额外现金回赠或飞行里程）属一次性优惠，未计入年度净值估算；"
             "申请前可在官网查看最新迎新条款。")
+        if tuition_check:
+            # The school's payment-channel reality leads the answer, ahead of
+            # any card lines, so a forbidden channel is never buried.
+            steps[:0] = tuition_check["steps"]
+            limitations.extend(tuition_check["limitations"])
         evidence = list(dict.fromkeys(
             [card.official_url for card in recommendations if card.official_url]
             + [source for card in recommendations for source in card.borrowing_sources]
@@ -988,6 +1055,9 @@ class CreditCardWorkflow:
                      "provisional": bool(provisional_fields),
                      "unconfirmed_fields": eligibility_missing,
                      "optional_inputs": optional_inputs,
+                     "tuition_payment_check": (
+                         {key: tuition_check[key] for key in ("school", "payment", "scenarios")}
+                         if tuition_check else None),
                      "catalog": self._catalog_summary(catalog),
                      "advisor": advisor_brief.audit if advisor_brief else {
                          "policy_version": "credit-card-advisor-v1", "suppressed": "unavailable"}},
@@ -1183,7 +1253,7 @@ class CreditCardWorkflow:
         region = facts["application_region"]
         if (not request.refresh_mode and region == "US"
                 and facts.get("us_hsbc_account_path") == "need_opening_guidance"):
-            return self._us_checking_first(task, facts, extracted, basis)
+            return await self._us_checking_first(task, facts, extracted, basis)
         try:
             catalogs = await self._catalogs(region, facts.get("card_query_scope"))
         except CreditCardRepositoryError:
@@ -1255,36 +1325,271 @@ class CreditCardWorkflow:
         raw_scenarios = facts.get("spending_scenarios") or []
         scenarios = raw_scenarios if isinstance(raw_scenarios, list) else \
             [item for item in str(raw_scenarios).split(",") if item]
-        return self._study_answer(task, catalogs, facts, scenarios, extracted, basis)
+        # 学费场景 → 核对学校官方缴费通道（见 _tuition_payment_check）。
+        tuition_check = self._tuition_payment_check(facts, scenarios)
+        if tuition_check:
+            scenarios = tuition_check["scenarios"]
+        return self._study_answer(task, catalogs, facts, scenarios, extracted, basis,
+                                  tuition_check=tuition_check)
 
     @staticmethod
-    def _us_checking_first(task, facts, extracted, basis):
+    def _load_us_premier_opening_info() -> dict | None:
+        """Read US Premier Checking opening facts from the shared RDS account tables.
+
+        Returns None (never raises) when the database is unreachable or the
+        core rows are missing, so the customer still gets generic guidance
+        instead of a failed answer. Every number quoted downstream comes from
+        a verified official row, never from memory.
+        """
+        account_id = "acct_us_premier"
+        try:
+            from agent1.storage import read_session
+            with read_session() as db:
+                age = db.execute(
+                    "SELECT value_numeric FROM ACCOUNT_ELIGIBILITY_RULE "
+                    "WHERE account_id=%s AND rule_type='minimum_age'", (account_id,)).fetchone()
+                one_of = db.execute(
+                    "SELECT value_text FROM ACCOUNT_ELIGIBILITY_RULE "
+                    "WHERE account_id=%s AND rule_type='other' AND operator='one_of'",
+                    (account_id,)).fetchone()
+                fee = db.execute(
+                    "SELECT amount, currency, waiver_condition FROM ACCOUNT_FEE "
+                    "WHERE account_id=%s AND fee_type='monthly_fee'", (account_id,)).fetchone()
+                routes = db.execute(
+                    "SELECT application_channel, can_apply_before_arrival, branch_visit_required, "
+                    "additional_notes FROM ACCOUNT_OPENING_ROUTE WHERE account_id=%s",
+                    (account_id,)).fetchall()
+                docs = db.execute(
+                    "SELECT document_type, document_name, required, condition_note "
+                    "FROM ACCOUNT_REQUIRED_DOCUMENT WHERE account_id=%s ORDER BY requirement_id",
+                    (account_id,)).fetchall()
+                verified = db.execute(
+                    "SELECT MAX(last_verified_at) AS verified FROM ACCOUNT_PRODUCT "
+                    "WHERE account_id=%s", (account_id,)).fetchone()
+        except Exception:
+            return None
+        if fee is None or not routes:
+            return None
+
+        def has_cjk(text: str) -> bool:
+            return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+        # The Premier relationship routes that keep the monthly fee waived.
+        waiver_routes = []
+        if one_of and one_of["value_text"]:
+            for part in one_of["value_text"].split(";"):
+                part = part.strip()
+                if not part:
+                    continue
+                low = part.lower()
+                match = re.search(r"USD\s*([\d,]+)", part)
+                if "relationship balance" in low:
+                    waiver_routes.append(
+                        f"合格存款与投资结余达 {_usd_amount_zh(match.group(1))}美元"
+                        if match else "保持官方公布的合格存款与投资结余")
+                elif "direct deposit" in low:
+                    waiver_routes.append(
+                        f"每月合格直接入账达 {_usd_amount_zh(match.group(1))}美元"
+                        if match else "每月合格直接入账达官方规定金额")
+                elif "mortgage" in low:
+                    waiver_routes.append("持有合资格的汇丰美国按揭")
+                elif "private bank" in low:
+                    waiver_routes.append("成为汇丰私人银行客户")
+                else:
+                    waiver_routes.append(part)
+
+        notes = []
+        for route in routes:
+            note = (route["additional_notes"] or "").strip()
+            if not note:
+                continue
+            notes.append("联名申请或超出线上标准的情况，银行可能需要电话回访补充资料。"
+                         if "Joint applications" in note else note)
+
+        # Bilingual rows exist for the same logical document; keep the Chinese
+        # name when both are present, one entry per document type.
+        required_docs: dict[str, str] = {}
+        optional_docs: dict[str, str] = {}
+        passport_validity = False
+        for doc in docs:
+            name = (doc["document_name"] or "").strip()
+            if not name:
+                continue
+            bucket = required_docs if doc["required"] else optional_docs
+            key = doc["document_type"]
+            current = bucket.get(key)
+            if current is None or (has_cjk(name) and not has_cjk(current)):
+                bucket[key] = name
+            if "six months" in (doc["condition_note"] or ""):
+                passport_validity = True
+
+        return {
+            "min_age": (int(age["value_numeric"])
+                        if age and age["value_numeric"] is not None else None),
+            "waiver_routes": waiver_routes,
+            "fee_amount": str(fee["amount"]),
+            "fee_waiver": (fee["waiver_condition"] or "").strip() or None,
+            "channels": sorted({route["application_channel"] for route in routes}),
+            "before_arrival": any(bool(route["can_apply_before_arrival"]) for route in routes),
+            "branch_visit_required": any(bool(route["branch_visit_required"]) for route in routes),
+            "route_notes": [note.rstrip("。") for note in dict.fromkeys(notes)],
+            "required_documents": list(required_docs.values()),
+            "optional_documents": list(optional_docs.values()),
+            "passport_validity": passport_validity,
+            "verified_at": (verified["verified"].strftime("%Y-%m-%d")
+                             if verified and verified["verified"] else None),
+        }
+
+    async def _us_checking_first(self, task, facts, extracted, basis):
         """Guide a customer without Premier Checking through the prerequisite first."""
         underage = facts.get("applicant_age_band") == "under_18" or (
             facts.get("applicant_age") is not None and facts["applicant_age"] < 18)
-        limitations = [
-            "美国汇丰信用卡需要另行申请并由银行审批；开好支票账户不保证信用卡获批。",
-            "Premier Checking 的开户资格、费用和申请方式请以汇丰美国官网最新说明为准。",
-        ]
+        info = await anyio.to_thread.run_sync(self._load_us_premier_opening_info)
+        if info:
+            summary = ("先把美国汇丰 Premier Checking 开好，美国信用卡才有申请基础；"
+                       "我把官方核验过的开户条件、费用和流程一次讲清楚。")
+            eligibility = (f"开户资格：申请人须年满 {info['min_age']} 岁。"
+                           if info["min_age"] else
+                           "开户资格：申请人须达到官方公布的最低开户年龄。")
+            if info["waiver_routes"]:
+                eligibility += ("开户后维持 Premier 关系可免账户月费，满足以下任一条件即可："
+                                + "；".join(info["waiver_routes"]) + "。")
+            steps = [eligibility]
+            fee_text = (f"账户月费：每月 {_usd_amount_zh(info['fee_amount'])} 美元。"
+                        if info["fee_amount"] else "账户月费：以官方公布标准为准。")
+            if info["fee_waiver"]:
+                fee_text += info["fee_waiver"]
+            steps.append(fee_text)
+            route_text = "申请方式：" + "、".join(
+                "线上" if channel == "online" else channel for channel in info["channels"])
+            if not info["branch_visit_required"]:
+                route_text += "申请，无需跑分行"
+            if not info["before_arrival"]:
+                route_text += "；汇丰美国目前不接受抵美前远程开户，请抵美后再提交申请"
+            if info["route_notes"]:
+                route_text += "；" + "；".join(info["route_notes"])
+            steps.append(route_text + "。")
+            if info["required_documents"] or info["optional_documents"]:
+                doc_text = "准备材料：" + "；".join(
+                    info["required_documents"] + info["optional_documents"])
+                if info["passport_validity"]:
+                    doc_text += "；如用护照开户，剩余有效期建议至少 6 个月"
+                steps.append(doc_text + "。")
+            steps.append("账户开好后，告诉我「已开好美国汇丰 Premier Checking」，"
+                         "我马上按您的消费场景比较美国汇丰信用卡的年费、权益和申请条件。")
+            limitations = [
+                "美国汇丰信用卡需要另行申请并由银行审批；开好支票账户不保证信用卡获批。",
+                "以上开户条件与费用整理自汇丰美国官方公布信息"
+                + (f"（{info['verified_at']} 核验）" if info["verified_at"] else "")
+                + "，条款如有更新以官网最新说明为准。",
+            ]
+        else:
+            # RDS unreachable: generic guidance only, no numbers from memory.
+            summary = "我们先看美国汇丰 Premier Checking 怎么开；账户开立后，再为您比较信用卡。"
+            steps = [
+                "先查看汇丰美国 Premier Checking 官方页面，核对年龄、申请所在地、卓越理财资格和账户费用条件。",
+                "符合条件后，按官网指引选择线上申请或联系银行协助，准备银行要求的身份证明、地址及税务资料。",
+                "账户成功开立后，告诉我「已开好美国汇丰 Premier Checking」，我再按您的用途比较当地信用卡的年费、权益和申请条件。",
+            ]
+            limitations = [
+                "美国汇丰信用卡需要另行申请并由银行审批；开好支票账户不保证信用卡获批。",
+                "Premier Checking 的开户资格、费用和申请方式请以汇丰美国官网最新说明为准。",
+            ]
         if underage:
             limitations.insert(0, "您目前未满 18 岁，尚未达到 Premier Checking 官网列出的最低开户年龄。")
         return DomainResult(
             task_id=task.task_id, domain="credit_card", status="answered",
             answer=AnswerBody(
-                summary="我们先看美国汇丰 Premier Checking 怎么开；账户开立后，再为您比较信用卡。",
-                steps=[
-                    "先查看汇丰美国 Premier Checking 官方页面，核对年龄、申请所在地、卓越理财资格和账户费用条件。",
-                    "符合条件后，按官网指引选择线上申请或联系银行协助，准备银行要求的身份证明、地址及税务资料。",
-                    "账户成功开立后，告诉我「已开好美国汇丰 Premier Checking」，我再按您的用途比较当地信用卡的年费、权益和申请条件。",
-                ],
+                summary=summary,
+                steps=steps,
                 limitations=limitations,
             ),
             evidence_refs=[US_PREMIER_CHECKING_URL, US_CARDS_URL],
-            next_actions=["先核对并申请美国汇丰 Premier Checking；开户成功后再比较信用卡。"],
+            next_actions=["按上述条件准备材料，抵美后完成 Premier Checking 开户；"
+                          "开好后再来比较信用卡。"] if info
+            else ["先核对并申请美国汇丰 Premier Checking；开户成功后再比较信用卡。"],
             payload={"groups": [], "market": "US", "journey": "premier_checking_first",
-                     "checking_url": US_PREMIER_CHECKING_URL},
+                     "checking_url": US_PREMIER_CHECKING_URL,
+                     "opening_info_source": "rds_account_tables" if info else "unavailable"},
             observed_facts=extracted, observed_basis=basis,
         )
+
+    @staticmethod
+    def _tuition_payment_check(facts: dict, scenarios: list[str]) -> dict | None:
+        """Verify the 学费 scenario against the bound school's official channels.
+
+        The user declared 学费 as a card usage scenario; TUITION_PAYMENT_DETAIL
+        records how that school actually collects fees. Ranking must not
+        reward a tuition programme the school's channel forbids, and the
+        reality (cards accepted / channel-only / not recorded) is stated
+        outright. Returns adjusted scenarios + steps + limitations, or None
+        when the tuition scenario or the school fact is absent / the catalog
+        is unreachable (deterministic ranking is kept either way).
+        """
+        if "tuition" not in scenarios:
+            return None
+        school = str(facts.get("school") or "").strip()
+        if not school:
+            return None
+        try:
+            ctx = resolve_tuition(
+                school=school,
+                course=(str(facts["course"]) if facts.get("course") else None),
+                destination_country=(str(facts["destination_country"])
+                                    if facts.get("destination_country") else None))
+        except Exception:
+            return None
+        if not ctx.school_name:
+            return None
+        scenarios = list(scenarios)
+        steps: list[str] = []
+        limitations: list[str] = []
+        school = ctx.school_display or ctx.school_name
+        payment = ctx.payment
+        if payment is None:
+            steps.append(f"已按您登记的学校核对：暂未收录 {school} 的官方缴费方式；"
+                         "学费能否以信用卡缴纳，请以学校缴费页面为准。")
+            limitations.append("学费场景按一般境外消费估算；如需按学校官方缴费通道核对，可补充学校或课程信息。")
+        elif payment.accepts_credit_card == 0:
+            # The school's channel forbids card tuition, so the tuition reward
+            # scenario is unreachable — rank by overseas daily spend instead.
+            portal = f"（详见{payment.portal_name}）" if payment.portal_name else ""
+            steps.append(f"{school} 官方缴费说明：学费支付不接受信用卡/借记卡{portal}。"
+                         "学费本身建议走学校指定通道或汇款办理；卡片更适合境外日常消费。")
+            scenarios = [item for item in scenarios if item != "tuition"]
+            limitations.append("已按学校官方缴费说明将学费场景调整为境外日常消费比较。")
+        elif payment.accepts_credit_card == 1:
+            steps.append(f"{school} 缴费通道可用信用卡支付学费（以缴费页面当日选项为准）。")
+            channels = "、".join(payment.multi_currency_channels)
+            if payment.supports_multi_currency == 1 and channels:
+                steps.append(f"学校提供本地币/多币种缴费通道（{channels}）；"
+                             "平台加点或汇率差未计入回赠估算。")
+        else:
+            channels = "、".join(payment.multi_currency_channels)
+            if payment.supports_multi_currency == 1 and channels:
+                steps.append(f"{school} 学费经本地币/多币种通道缴纳（{channels}）；"
+                             "通道内是否可用卡支付以当日选项为准，卡片测算适用于通道内可卡支付或境外日常消费的情形。")
+            else:
+                steps.append(f"已核对 {school} 的官方缴费方式；"
+                             "学费能否用信用卡缴纳未明确收录，请以学校缴费页面为准。")
+        if payment is not None and payment.summary:
+            # Only surface summaries already written in Chinese; the English
+            # source quote (e.g. "HKUST research postgraduate tuition is an
+            # annual Registry rate…") reads as a second school in a Chinese
+            # answer and stays in the payload for evidence instead.
+            if any("\u4e00" <= ch <= "\u9fff" for ch in payment.summary):
+                steps.append(payment.summary)
+        # Foreign-currency tuition (GBP/USD/...) carries FX drag either way.
+        if ctx.rates and (ctx.rates[0].currency or "").upper() not in {"HKD", "CNY", "RMB", ""}:
+            if "overseas" not in scenarios:
+                scenarios.append("overseas")
+        return {
+            "school": ctx.school_name,
+            "scenarios": scenarios,
+            "steps": [item for item in steps if item],
+            "limitations": limitations,
+            "payment": payment.as_dict() if payment else None,
+        }
 
     async def _catalogs(self, region, scope=None):
         markets = (region,) if scope and scope.get("market") == region else \
@@ -1382,9 +1687,14 @@ class CreditCardWorkflow:
             knowledge_read_id=catalog.read_id, observed_facts=extracted, observed_basis=basis,
         )
 
-    def _study_answer(self, task, catalogs, facts, scenarios, extracted, basis):
+    def _study_answer(self, task, catalogs, facts, scenarios, extracted, basis,
+                      tuition_check: dict | None = None):
         """Local HSBC shelf first; Hong Kong only as a low-approval backup."""
         steps, evidence, limitations = [], [], []
+        if tuition_check:
+            # The school's payment-channel reality leads the answer so a
+            # forbidden channel is never buried under card recommendations.
+            steps.extend(tuition_check["steps"])
         groups = []
         local_products = []
         local_shown = []
@@ -1554,6 +1864,8 @@ class CreditCardWorkflow:
         if local_shown:
             limitations.append("申请仍须满足当地条件并通过银行审批。")
             limitations.append("迎新礼遇未计入年度净值，申请前请以官网最新条款为准。")
+        if tuition_check:
+            limitations.extend(tuition_check["limitations"])
 
         now = self.clock()
         ready_products = local_products or hk_products
@@ -1577,7 +1889,10 @@ class CreditCardWorkflow:
             notices=[] if product_data_ready else [Notice(
                 code="card_product_fields_need_verification",
                 message="信用卡奖励和年费字段尚未逐项完成官方核验")],
-            payload={"groups": groups, "market": region},
+            payload={"groups": groups, "market": region,
+                     "tuition_payment_check": (
+                         {key: tuition_check[key] for key in ("school", "payment", "scenarios")}
+                         if tuition_check else None)},
             knowledge_read_id="+".join(catalog.read_id for _, catalog in catalogs),
             observed_facts=extracted, observed_basis=basis,
         )
@@ -1802,7 +2117,8 @@ class CreditCardWorkflow:
         return lines
 
     @staticmethod
-    def _format_card_lines(card, *, show_estimates=True, provisional=False, near_tie=False):
+    def _format_card_lines(card, *, show_estimates=True, provisional=False, near_tie=False,
+                           student_card_confirmed=False):
         """Format a concise, customer-facing recommendation rather than raw DB fields."""
         label = {"primary": "主推荐", "supplement": "场景搭配", "alternative": "其他选择"}[card.role]
         if provisional and card.role == "primary":
@@ -1843,7 +2159,8 @@ class CreditCardWorkflow:
                 "full_time_student", "student_institution_eligible"}:
             opening = ("从您的留学画像看，学生卡值得先了解。全日制身份及学校是否在指定名单内"
                        "尚未核实，所以这只是有条件的初步选择；申请前请按汇丰要求核对。")
-        elif card.role == "primary" and card.eligibility.matched_path == "student":
+        elif card.role == "primary" and (card.eligibility.matched_path == "student"
+                                        or student_card_confirmed):
             opening = ("您已确认全日制学生身份和指定院校资格，这张卡有独立的学生申请路径，"
                        "值得先核对申请条件；最终仍由银行审批。")
         elif card.role == "supplement" and scene_text:
@@ -1921,6 +2238,33 @@ class CreditCardWorkflow:
             "alternatives": [card for card in result.alternatives if card.card_id not in selected],
         }), near_tie_ids
 
+    @staticmethod
+    def _derive_hk_student_facts(facts: dict) -> None:
+        """Settle HK student-card facts the Profile already answers, in place.
+
+        Every Hong Kong school the product catalogs is on HSBC's designated
+        institution list (data policy, user-confirmed), so a bound Hong Kong
+        school settles student_institution_eligible; an explicit student
+        identity (role or applicant) at a Hong Kong school settles
+        full_time_student. Only None values are filled — explicit answers,
+        including explicit negatives, are never overridden. The derived
+        values stay out of the observed facts on purpose: they are
+        inference, not something the customer stated this turn.
+        """
+        school = str(facts.get("school") or "").strip()
+        in_hk = (facts.get("application_region") in {"CN-HK", "HK"}
+                 or facts.get("destination_country") in {"CN-HK", "HK", "Hong Kong",
+                                                          "香港", "中国香港"})
+        school_is_hk = bool(school) and in_hk
+        if school_is_hk and facts.get("student_institution_eligible") is None:
+            facts["student_institution_eligible"] = True
+        is_student = (facts.get("applicant_identity") == "student"
+                      or facts.get("role") == "student")
+        is_parent = facts.get("applicant_identity") == "parent"
+        if (is_student and not is_parent and school_is_hk
+                and facts.get("full_time_student") is None):
+            facts["full_time_student"] = True
+
     def _hk_best_question(self, products, facts, scope):
         """Ask only when an answer can change the HK shelf or leading card.
 
@@ -1964,6 +2308,31 @@ class CreditCardWorkflow:
                 choices = options.get(field) or []
                 if len(choices) >= 2:
                     return field, prompts[field], choices
+        # Residency is the written basic requirement of every HK card on the
+        # shelf; without it every card stays "unknown / to-verify" and the
+        # answer degrades into a disclaimer list. Ask it with the basics.
+        if ("hk_resident" not in asked and facts.get("hk_resident") is None
+                and any(rule.required and rule.rule_type == "residency"
+                        for product in remaining for rule in product.eligibility_rules)):
+            choices = options.get("hk_resident") or []
+            if len(choices) >= 2:
+                return "hk_resident", prompts["hk_resident"], choices
+        # Consumption scenarios shape the ranking copy ("如果您希望把…用得更
+        # 划算") and the coverage gaps, so ask once even when the simulated
+        # shortlist happens to look stable under every option.
+        if ("spending_scenarios" not in asked
+                and not facts.get("spending_scenarios")
+                and len(options.get("spending_scenarios") or []) >= 2):
+            return ("spending_scenarios", prompts["spending_scenarios"],
+                    options["spending_scenarios"])
+        # Without the monthly spend band the answer cannot show reward
+        # estimates at all ("未提供每月消费额，本次不展示回赠金额估算"),
+        # so ask it once instead of disclaiming it away.
+        if ("monthly_card_spend_band_hkd" not in asked
+                and not facts.get("monthly_card_spend_band_hkd")
+                and len(options.get("monthly_card_spend_band_hkd") or []) >= 2):
+            return ("monthly_card_spend_band_hkd", prompts["monthly_card_spend_band_hkd"],
+                    options["monthly_card_spend_band_hkd"])
         ranking_fields = {"spending_scenarios", "monthly_card_spend_band_hkd",
                           "reward_preference", "mainland_payment_method",
                           "hsbc_premier_path", "asset_band",
@@ -2088,13 +2457,16 @@ class CreditCardWorkflow:
     @staticmethod
     def _needs_input(task, request, extracted, basis, missing, prompts, options):
         selected = missing[:1]
+        name = request.profile_name
         return DomainResult(
             task_id=task.task_id, domain="credit_card", status="needs_input",
-            answer=AnswerBody(summary="我再了解一点您的情况，就能把选择缩小到更合适的卡。",
+            answer=AnswerBody(summary=_addressed(
+                                  "我再了解一点您的情况，就能把选择缩小到更合适的卡。", name),
+                              # Steps address the person typing: keep the polite 您.
                               steps=["您可以按方便的程度选择，不确定的地方我们也可以先保留。"]),
             missing_fields=missing,
             follow_up_questions=[_question(
-                field, prompts[field], request.profile_version, options=options[field],
+                field, _addressed(prompts[field], name), request.profile_version, options=options[field],
                 input_type="multi_select" if field == "spending_scenarios" else "single_select",
                 max_selections=3 if field == "spending_scenarios" else None)
                                  for field in selected],

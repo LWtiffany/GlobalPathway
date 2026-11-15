@@ -9,6 +9,17 @@ from agent2.runner import SCOPE_BOUNDARY
 from .contracts import JourneyStep, QualityReport, TaskPlan, UnifiedAnswer
 
 DOMAIN_LABEL = {"visa": "签证", "fx": "外汇与汇款", "bank_account": "银行开户", "credit_card": "信用卡"}
+# Same-domain tasks (e.g. tuition + living remittance) fall back to intent
+# labels so multi-task openers stay real sentences instead of repeating
+# "外汇与汇款和外汇与汇款我分开说。".
+INTENT_LABEL = {
+    "visa_documents": "签证材料",
+    "remittance_tuition": "学费汇款",
+    "remittance_living": "生活费汇款",
+    "overseas_spending": "外汇与汇款",
+    "hsbc_account": "银行开户",
+    "credit_card": "信用卡",
+}
 MATERIAL_TAG = {"required": "必需", "conditional": "视情况", "unverified": "待核实"}
 # Multi-intent turns: at most one follow-up per domain, hard cap across domains.
 MAX_FOLLOWUPS_MULTI = 2
@@ -64,27 +75,40 @@ _NECESSITY_VERDICT = {
 _JOURNEY_ORDER = {"visa": 10, "bank_account": 20, "fx": 30, "credit_card": 40}
 _JOURNEY_GUIDANCE = {
     "visa": "先确认签证类别与材料；它会影响后续时间安排。",
-    "bank_account": "确认可开户地区与账户条件，为收付款和后续办卡做准备。",
-    "fx": "核对学校缴费通知、目录学费、购汇额度与材料；可与签证、开户准备并行。",
-    "credit_card": "在申请地区、收入与银行关系明确后再选卡，减少无效申请。",
+    "bank_account": "确认可开户地区与账户条件，方便收生活费与日常付款；可与购汇材料准备并行。",
+    "fx": "核对学校缴费通知、购汇额度与材料并办理学费汇出；可与开户准备并行。",
+    "credit_card": "办卡不是缴学费硬性前置；在申请地区与银行关系明确后再比较，减少无效申请。",
 }
+_ORDER_FLOW = re.compile(r"先后|顺序|先办|再办|先做|下一步", re.I)
 
 
-def compose_journey(plan: TaskPlan, report: QualityReport) -> list[JourneyStep]:
+def compose_journey(plan: TaskPlan, report: QualityReport,
+                    *, user_text: str = "") -> list[JourneyStep]:
     """Build guidance without turning recommendations into hard dependencies."""
-    if len(plan.tasks) < 3:
+    domains = {task.domain for task in plan.tasks}
+    order_ask = bool(_ORDER_FLOW.search(user_text or ""))
+    # 交学费+开户（+办卡）先后：2 个域也给顺序；其余仍要求 ≥3。
+    min_tasks = 2 if order_ask and domains & {"fx", "bank_account"} else 3
+    if len(plan.tasks) < min_tasks:
         return []
     result_by_task = {item.task_id: item for item in report.results}
     tasks = sorted(plan.tasks, key=lambda item: (_JOURNEY_ORDER[item.domain], item.task_id))
-    journey = []
-    for index, task in enumerate(tasks, 1):
-        result = result_by_task.get(task.task_id)
-        suffix = "" if result is None or result.status == "answered" else "（本轮仍需补充或核实）"
+    journey: list[JourneyStep] = []
+    for domain in dict.fromkeys(task.domain for task in tasks):
+        # One step per domain: tuition + living remittance share 外汇与汇款.
+        domain_tasks = [task for task in tasks if task.domain == domain]
+        statuses = [result_by_task[task.task_id].status
+                    if task.task_id in result_by_task else None for task in domain_tasks]
+        suffix = "" if all(status in (None, "answered") for status in statuses) \
+            else "（本轮仍需补充或核实）"
+        guidance = _JOURNEY_GUIDANCE[domain] + suffix
+        if order_ask and domain == "credit_card":
+            guidance = "若还需信用卡，最后再比较；缴学费与开户通常不必等批卡。" + suffix
         journey.append(JourneyStep(
-            order=index, task_id=task.task_id, domain=task.domain,
-            label=DOMAIN_LABEL[task.domain],
-            guidance=_JOURNEY_GUIDANCE[task.domain] + suffix,
-            can_run_in_parallel=task.domain in {"visa", "bank_account", "fx"},
+            order=len(journey) + 1, task_id=domain_tasks[0].task_id, domain=domain,
+            label=DOMAIN_LABEL[domain],
+            guidance=guidance,
+            can_run_in_parallel=domain in {"visa", "bank_account", "fx"},
         ))
     return journey
 
@@ -170,8 +194,10 @@ class DefaultResponseComposer:
             )
 
         ask_need = is_necessity_question(user_text)
-        domains = [item.domain for item in report.results]
-        journey = compose_journey(plan, report)
+        # Distinct domains in result order; same-domain tasks (tuition +
+        # living remittance) collapse to one entry for necessity copy.
+        domains = list(dict.fromkeys(item.domain for item in report.results))
+        journey = compose_journey(plan, report, user_text=user_text)
 
         if len(report.results) == 1 and not plan.unsupported_intents:
             result = report.results[0]
@@ -232,8 +258,11 @@ class DefaultResponseComposer:
                 f"{step.order}. {step.label}：{step.guidance}" for step in journey)
         for item in report.results:
             label = DOMAIN_LABEL[item.domain]
-            labels.append(label)
-            sections.append(f"## {label}")
+            if label not in labels:
+                # One section header per domain; same-domain task content
+                # (tuition vs living remittance) appends under it in order.
+                labels.append(label)
+                sections.append(f"## {label}")
             if item.answer.summary:
                 sections.append(item.answer.summary)
             for step in item.answer.steps:
@@ -250,12 +279,22 @@ class DefaultResponseComposer:
 
         if show_need:
             summary = necessity_summary(domains)
-        elif len(labels) == 2:
-            summary = f"{labels[0]}和{labels[1]}我分开说。"
-        elif len(labels) > 2:
-            summary = f"{'、'.join(labels[:-1])}和{labels[-1]}我分开说。"
         else:
-            summary = labels[0] if labels else ""
+            task_intent = {task.task_id: task.intent for task in plan.tasks}
+            if len(domains) < len(report.results):
+                # Repeated domain: intent-level labels keep the opener a
+                # real sentence ("学费汇款和生活费汇款我分开说。").
+                summary_labels = list(dict.fromkeys(
+                    INTENT_LABEL.get(task_intent.get(item.task_id), DOMAIN_LABEL[item.domain])
+                    for item in report.results))
+            else:
+                summary_labels = labels
+            if len(summary_labels) == 2:
+                summary = f"{summary_labels[0]}和{summary_labels[1]}我分开说。"
+            elif len(summary_labels) > 2:
+                summary = f"{'、'.join(summary_labels[:-1])}和{summary_labels[-1]}我分开说。"
+            else:
+                summary = summary_labels[0] if summary_labels else ""
 
         limitations = [note for item in report.results for note in item.answer.limitations]
         notices = [note for item in report.results for note in item.notices]

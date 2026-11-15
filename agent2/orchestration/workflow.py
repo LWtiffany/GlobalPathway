@@ -254,7 +254,9 @@ async def write_answer(ctx: StepContext[WorkflowState, WorkflowDependencies, Non
             and ctx.state.answer.status in {"answered", "needs_verification"}):
         try:
             body = await port.write(request=ctx.state.request, verified_answer=ctx.state.answer)
-            validate_written_answer(body, ctx.state.answer.answer)
+            validate_written_answer(body, ctx.state.answer.answer,
+                                    user_text=ctx.state.request.text,
+                                    profile_name=ctx.state.request.profile_name)
             ctx.state.answer = ctx.state.answer.model_copy(update={"answer": body})
             ctx.state.llm_model_versions["writer"] = port.model_version
             ctx.state.llm_prompt_versions["writer"] = port.prompt_version
@@ -331,19 +333,22 @@ def build_default_workflow(*, credit_card_repository=None, understanding=None, w
                            fx_model=None, fx_policy_loader=None,
                            bank_model=None, bank_repository=None,
                            visa_knowledge=None, clock=None, visa_generator=None) -> Agent2Workflow:
-    model = fx_model or bank_model
-    if model is None and writer is not None:
-        model = getattr(writer, "model", None)
-    if model is None and understanding is not None:
-        model = getattr(understanding, "model", None)
+    # Prefer an explicit FX model (GLM-5.3 thinking) over shared writer/understanding.
+    shared = bank_model
+    if shared is None and writer is not None:
+        shared = getattr(writer, "model", None)
+    if shared is None and understanding is not None:
+        shared = getattr(understanding, "model", None)
+    resolved_fx = fx_model or shared
+    resolved_bank = bank_model or shared
     return Agent2Workflow(WorkflowDependencies(
         planner=RuleTaskPlanner(),
         capability_planner=RuleCapabilityPlanner(),
         domains=default_domain_workflows(
             credit_card_repository=credit_card_repository,
-            fx_model=model,
+            fx_model=resolved_fx,
             fx_policy_loader=fx_policy_loader,
-            bank_model=model,
+            bank_model=resolved_bank,
             bank_repository=bank_repository,
             visa_knowledge=visa_knowledge,
             clock=clock,
