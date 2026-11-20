@@ -10,7 +10,7 @@ from agent2.intent import (INTENTS, classify, is_account_only_card_mention,
 from .contracts import (Domain, DomainTask, IntentHit, OrchestrationInput, RoutingAudit,
                         TaskPlan)
 
-PLANNER_VERSION = "rules-v7"
+PLANNER_VERSION = "rules-v8"
 INTENT_DOMAIN: dict[str, Domain] = {
     "visa_documents": "visa",
     "remittance_tuition": "fx",
@@ -120,7 +120,7 @@ class RuleTaskPlanner:
 
         # Only intents explicitly returned by understanding count as llm recoveries.
         ruled = {item[1] for item in matches}
-        ruled_banking = ruled & banking_intents
+        ruled_domains = {INTENT_DOMAIN[intent] for intent in ruled}
         dropped_llm: list[str] = []
         llm_hits: list[IntentHit] = []
         for intent in dict.fromkeys(request.llm_intents):
@@ -129,11 +129,11 @@ class RuleTaskPlanner:
                 continue
             if intent not in INTENT_DOMAIN or intent in ruled:
                 continue
-            # Account and credit-card are sibling domains. A model recovery may
-            # fill a rule miss, but it must not contradict an explicit cue in
-            # this turn (e.g. 「账户类型推荐」 can never add credit_card).
-            if len(ruled_banking) == 1 and intent in banking_intents \
-                    and intent not in ruled_banking:
+            # This turn already named a domain in the text. Do not let the model
+            # pull in another domain from earlier context (e.g. 「需要先开户吗」
+            # must not rerun tuition, cards, or FX just because the profile has a school).
+            if ruled_domains and INTENT_DOMAIN[intent] not in ruled_domains:
+                dropped_llm.append(intent)
                 continue
             if ambiguous_card and intent in {"hsbc_account", "credit_card"}:
                 continue
