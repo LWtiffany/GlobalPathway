@@ -379,9 +379,46 @@ class Store:
         self._temporary = temporary
         self.user_schema = self.schema if temporary else config.USER_SCHEMA
         self._lock = threading.RLock()
-        self._connection = psycopg.connect(
-            **config.connection_kwargs(), row_factory=dict_row, autocommit=True)
+        self._connection = self._connect()
         self._prepare()
+
+    def _connect(self):
+        return psycopg.connect(
+            **config.connection_kwargs(), row_factory=dict_row, autocommit=True)
+
+    def _set_search_path(self):
+        self._connection.execute(
+            sql.SQL("SET search_path TO {}, {}, public").format(
+                # Canonical identity/Profile tables must win name resolution.
+                # Agent2 contains workflow extensions only.
+                sql.Identifier(self.user_schema), sql.Identifier(self.schema)))
+
+    def _discard_connection(self):
+        connection = getattr(self, "_connection", None)
+        self._connection = None
+        if connection is None:
+            return
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+    def _ensure_connection(self):
+        """Reuse the process connection, or open a new one after RDS drops it.
+
+        The service holds one autocommit connection for its lifetime. Aliyun
+        RDS closes idle sessions; the next login then fails with
+        ``the connection is lost`` unless we detect that and reconnect.
+        """
+        connection = self._connection
+        if connection is not None and not connection.closed:
+            try:
+                connection.execute("SELECT 1")
+                return
+            except psycopg.OperationalError:
+                self._discard_connection()
+        self._connection = self._connect()
+        self._set_search_path()
 
     @classmethod
     def temporary(cls):
@@ -393,11 +430,7 @@ class Store:
         with self._lock:
             self._connection.execute(
                 sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(self.schema)))
-            self._connection.execute(
-                sql.SQL("SET search_path TO {}, {}, public").format(
-                    # Canonical identity/Profile tables must win name resolution.
-                    # Agent2 contains workflow extensions only.
-                    sql.Identifier(self.user_schema), sql.Identifier(self.schema)))
+            self._set_search_path()
             if not self._temporary:
                 self._migrate_legacy_auth_sessions()
             schema_ddl = SCHEMA
@@ -455,12 +488,24 @@ class Store:
     @contextmanager
     def transaction(self):
         with self._lock:
-            with self._connection.transaction():
-                yield _ConnectionAdapter(self._connection)
+            started = False
+            for attempt in (1, 2):
+                self._ensure_connection()
+                try:
+                    with self._connection.transaction():
+                        started = True
+                        yield _ConnectionAdapter(self._connection)
+                        return
+                except psycopg.OperationalError:
+                    # Retry only when the caller's statements have not run.
+                    # Replaying a half-finished transaction would duplicate writes.
+                    self._discard_connection()
+                    if started or attempt == 2:
+                        raise
 
     def close(self):
         with self._lock:
-            if self._connection.closed:
+            if self._connection is None or self._connection.closed:
                 return
             if self._temporary:
                 prefix = "agent2_test_"
@@ -470,12 +515,21 @@ class Store:
                     sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(self.schema)))
             self._connection.close()
 
+    def _execute(self, statement, params=()):
+        self._ensure_connection()
+        try:
+            return self._connection.execute(_postgres_sql(statement), params)
+        except psycopg.OperationalError:
+            self._discard_connection()
+            self._ensure_connection()
+            return self._connection.execute(_postgres_sql(statement), params)
+
     def one(self, statement, params=()):
         with self._lock:
-            row = self._connection.execute(_postgres_sql(statement), params).fetchone()
+            row = self._execute(statement, params).fetchone()
         return dict(row) if row else None
 
     def all(self, statement, params=()):
         with self._lock:
-            rows = self._connection.execute(_postgres_sql(statement), params).fetchall()
+            rows = self._execute(statement, params).fetchall()
         return [dict(row) for row in rows]
