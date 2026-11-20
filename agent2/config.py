@@ -31,4 +31,10 @@ def connection_kwargs():
         "user": DB_USER,
         "password": DB_PASSWORD,
         "connect_timeout": DB_CONNECT_TIMEOUT,
+        # TCP keepalives so idle NAT/firewall drops are noticed; the store
+        # still reconnects if the server has already closed the session.
+        "keepalives": 1,
+        "keepalives_idle": int(os.getenv("AGENT2_DB_KEEPALIVES_IDLE", "30")),
+        "keepalives_interval": int(os.getenv("AGENT2_DB_KEEPALIVES_INTERVAL", "10")),
+        "keepalives_count": int(os.getenv("AGENT2_DB_KEEPALIVES_COUNT", "3")),
     }
