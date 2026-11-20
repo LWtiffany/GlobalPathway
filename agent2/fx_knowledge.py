@@ -16,9 +16,12 @@ from .retrieve import display_url
 
 PURPOSE_LABEL = {"tuition": "学费", "living": "生活费"}
 REMITTER_LABEL = {
-    "immediate_family": "直系亲属",
+    "immediate_family": "直系亲属（本人或父母等）",
+    "self_only": "仅限本人",
     "self": "本人",
     "family": "亲属",
+    "close_relatives": "近亲属",
+    "anyone_authorized": "经授权的代办人",
 }
 DOC_EN = {
     "id_document": "Valid identity document",
@@ -31,6 +34,7 @@ DOC_EN = {
     "fx_purchase_application": "Foreign-exchange purchase application",
     "authorization_letter": "Authorization letter",
     "proxy_id_document": "Proxy identity document",
+    "remittance_beneficiary_checklist": "Beneficiary / remittance field checklist",
     "other_document": "Supporting document",
 }
 FIELD_TARGETS = (
@@ -40,6 +44,8 @@ FIELD_TARGETS = (
     "field:remitter_relation",
     "field:quota_reset",
     "field:can_use_family_quota",
+    "field:tuition_direct_to_school",
+    "field:remark",
 )
 SAFE_SOURCE_PREFIX = "safe_"
 
@@ -76,11 +82,13 @@ class FxPolicyBundle:
     remitter_relation: str | None
     quota_reset: str | None
     can_use_family_quota: bool | None
-    evidence: list[FxEvidenceRow]
-    documents: list[FxDocumentRow]
-    sources: dict[str, dict[str, Any]]
-    verified_at: datetime
-    environment: str
+    tuition_direct_to_school: bool | None = None
+    remark: str | None = None
+    evidence: list[FxEvidenceRow] = field(default_factory=list)
+    documents: list[FxDocumentRow] = field(default_factory=list)
+    sources: dict[str, dict[str, Any]] = field(default_factory=dict)
+    verified_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    environment: str = "development"
 
     @property
     def purpose_zh(self) -> str:
@@ -113,6 +121,9 @@ def _condition_text(condition: dict | None) -> str | None:
                 bits.append("由他人代办" if value else "本人办理")
             elif key == "visa_deposit":
                 bits.append("涉及签证保证金/生活费证明" if value else None)
+            elif key == "study_year":
+                bits.append({"first": "入学首年", "subsequent": "后续学年"}.get(
+                    str(value), f"学年={value}"))
             else:
                 bits.append(f"{key}={value}")
         bits = [b for b in bits if b]
@@ -223,6 +234,9 @@ class Agent1FxPolicyRead:
             quota_reset=policy["quota_reset"],
             can_use_family_quota=None if policy["can_use_family_quota"] is None
             else bool(policy["can_use_family_quota"]),
+            tuition_direct_to_school=None if policy.get("tuition_direct_to_school") is None
+            else bool(policy["tuition_direct_to_school"]),
+            remark=policy.get("remark"),
             evidence=evidence_rows,
             documents=documents,
             sources=self.sources,
@@ -327,12 +341,16 @@ def build_fx_answer_parts(bundle: FxPolicyBundle, *, destination_label: str,
         "annual_quota_currency": bundle.annual_quota_currency,
         "over_quota_allowed": bundle.over_quota_allowed,
         "remitter_relation": remitter,
+        "remitter_relation_code": bundle.remitter_relation,
         "quota_reset": bundle.quota_reset,
         "can_use_family_quota": bundle.can_use_family_quota,
+        "tuition_direct_to_school": bundle.tuition_direct_to_school,
+        "remark": bundle.remark,
         "quotes": quotes,
         "materials": [
             {"name_zh": m.name_zh, "applicability": m.applicability,
-             "condition_text": m.condition_text, "citation_id": m.citation_id}
+             "condition_text": m.condition_text, "citation_id": m.citation_id,
+             "document_code": m.document_code}
             for m in materials
         ],
     }

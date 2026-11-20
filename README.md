@@ -42,14 +42,14 @@ macOS / Linux：`./run-agent1.sh`（= `scan-region all`）、`./run-agent1.sh UK
 外汇（`schema_type: fx_policy`，外汇局总局/分局与工行、中行、汇丰页面）按国家合并为两行 `FX_POLICY`
 （`purpose_code` = tuition / living），材料写入 `POLICY_DOCUMENT`（`policy_domain='fx_policy'`），
 逐字证据写入 `FX_EVIDENCE`；跨页面冲突与已有值变化进入 `REVIEW_QUEUE`（`FX_POLICY`）。
-外汇知识目前只入工作表，尚未接入发布面与 Agent2。
+外汇知识发布后由 Agent2 外汇流程读取；未发布、已撤回或超过新鲜度的记录不作确定回答。
 
 学费（`schema_type: tuition`）按学校扫描：来源登记学校，并登记项目（`programs`）或声明目录模式
 （`"catalog": true`，项目 / 学院 / 全校统一价由页面原文标签发现），每个价格点（学年 + 学生类别 + 计费口径 + 修读方式
 + 费率变体）一行 `TUITION`，逐字证据写入 `TUITION_EVIDENCE`；金额变化与跨页面冲突进入 `REVIEW_QUEUE`（`TUITION`）。
 已登记美国 U.S. News 前 50（含并列）、英国 G5 + 王曼爱华的官网学费页，以及港大、中大（香港其余 6 所待补）；
 只有 PDF / 需 JS / 被反爬拦截的页面未登记，缺口见数据库方案文档。开发库目前不含学费记录，需显式运行
-`scan-tuition <学校|US|UK|CN-HK|all>`。学费同样尚未接入发布面与 Agent2。
+`scan-tuition <学校|US|UK|CN-HK|all>`。学费目录由 Agent2 汇款建议直接读取，用于学校缴费入口、参考学费和购汇额度比较。
 
 签证政策按区域合并：同一目的地的所有官方页面（概览、资金、英语、材料、医疗附加费、TB、费用表等，
 见 `sources.json`）合并进同一组 `VISA_POLICY` 行（按 国家 + 就读地范围 唯一），字段级门控，
@@ -183,33 +183,47 @@ $env:AGENT1_LLM_BASE_URL = 'https://llm-tlndh47wd9ustbss.cn-beijing.maas.aliyunc
 
 仅返回已发布且当前可用的知识：适用范围、字段级证据、`version_id`、`verified_at`（最近成功核验时间）、可用性。超过来源新鲜度 SLA 的数据默认不作为确定事实返回（PRD 7.4）。Python 内调用：`from agent1 import knowledge; knowledge.query(...)`。
 
-## Agent2 S1（英国 Student visa 最小闭环）
+## Agent2 与管理员端（运行说明核对于 2026-11-20）
 
-设计见 `docs/agent2-module-design.md` 与 `docs/agent2-s1-uk-student-visa.md`。
+用户端覆盖签证、外汇与汇款、银行开户、信用卡。入口是 `python -m agent2.cli serve`（镜像里的命令与此相同）。前端在 `agent2/web/`，由同一进程托管，没有单独的构建步骤。管理员端是 `python -m admin_console serve`，默认 `127.0.0.1:8765`。
+
+### 本地运行
+
+数据库在 ECS 上，只监听本机 `127.0.0.1:15432`。本地先开 SSH 隧道，再启动服务。密码放环境变量 `AGENT1_DB_PASSWORD`，或放仓库根目录的 `local_secrets.py`（已 gitignore）。`AGENT2_DB_PASSWORD` 未设置时沿用 `AGENT1_DB_PASSWORD`。不要把生产 `.env` 里的 RDS 内网地址用于本地。
 
 ```bash
-.venv/bin/python agent2.py serve --port 8787      # 本地 HTTP 服务，Demo 登录（AGENT2_DEMO=0 关闭）
-.venv/bin/python agent2.py serve --knowledge fixture   # 改用合成知识夹具
+# macOS / Linux。Windows 可用 scripts/start_team03_pg_tunnel.ps1（密钥 ~/.ssh/team03_ecs_tunnel）
+ssh -N -L 127.0.0.1:15432:127.0.0.1:15432 \
+  -i ~/.ssh/team03_ecs_ed25519 \
+  -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes \
+  root@123.56.13.78
+
+export AGENT1_ENV=development
+export AGENT2_DEMO=1
+.venv/bin/python -m agent2.cli serve --host 127.0.0.1 --port 8787 \
+  --knowledge agent1 --agent1-env development
 ```
 
-- M07 默认读 Agent1 已发布政策（`agent2/agent1_read.py` 调 `agent1.publication.search/get`，`--agent1-env` 选环境，默认 development），引用给出官方页面地址；未发布、已撤回、过期（超过来源 SLA）或快照被改动的记录不作确定回答。
-- 覆盖英国、美国、香港学生签证材料。Agent1 的适用条件按 `CONDITION_MAP` 映射到 Profile 字段：英国（年龄、资金来源、停留是否满 6 个月、是否居住在 TB 名单国家）、香港（本地保证人是院校还是个人、保证人是否永久性居民、申请人常住地、是否持有香港身份证）；任一条件键映射不了（如美国“面签前须缴签证费”），该材料整条显示为“待核实”，不当作无条件需要。
-- `--knowledge fixture` 使用 `agent2/fixtures/knowledge_uk_student_visa.json` 合成知识夹具（`synthetic=true`，来源地址为 `example.invalid`），回答带【模拟资料】标识。
-- 回答生成目前用模板（M09 `template-v1`），没有接 LLM；M06 的模型追问建议是可选钩子，模型给出的字段仍要过条件表复核。
-- 前端（`agent2/web/`，原生 HTML/CSS/JS，无构建）由 `serve` 同址托管，浏览器打开 `http://127.0.0.1:8787/` 即可：模拟登录（学生/家长 × 英/港/美预设）→ 上方案表（基本信息 9 格、汇款/开户/签证/信用卡四类建议、用户待办）· 下对话（进度、追问选项、引用抽屉、质量状态、信息有误/继续补充）；另有 `#/onboarding` 建档、`#/report/<profile_id>` 打印报告、`#/feedback` 纠错记录。四类建议里目前只有签证有已发布资料，汇款/开户/信用卡显示「待补充」；管理端页面未做。
+浏览器打开 `http://127.0.0.1:8787/`。`GET /healthz` 只说明进程在听；`GET /readyz` 会连数据库，返回 200 才表示可以登录。登录页是 `/#/login`，接口是 `POST /v1/login`（账号在 `userinformation.users`）。`AGENT2_DEMO=1` 时才开放 `POST /v1/demo/login`；生产 `.env` 必须保持 `AGENT2_DEMO=0`。
 
-### 生产端口与 API 边界
+`--knowledge fixture` 改用 `agent2/fixtures/` 里的合成知识，回答带来源为模拟资料的标识。签证材料仍按已发布政策回答：未发布、已撤回、超过来源 SLA 或快照被改过的记录不作确定回答。
 
-两个系统共用一台 ECS，但进程、端口、登录令牌和 API 命名空间彼此独立：
+理解与开户/信用卡表述默认走 `deepseek-v4.1-flash`（思考关闭）；外汇通用回答走 `glm-5.3` 思考模式。密钥用 `AGENT2_LLM_API_KEY`，或 `local_secrets.py` 里的同名变量。完整变量见 `.env.example` 与 `docs/agent2.md`。
 
-| 系统 | ECS 内部监听 | 公网入口 | API |
-| --- | --- | --- | --- |
-| 用户端 Agent2 | `127.0.0.1:8787` | `https://<IP>/`（443） | `/v1/*` |
-| 管理员端 | `127.0.0.1:8765` | `https://<IP>/admin/`（443） | `/v1/admin/*` |
+### 生产端口与部署
 
-Nginx 配置见 `deploy/nginx-prod-https.conf`。安全组只需公开原有的 `80`、`443`；不要公开内部端口 `8765`、`8787` 或数据库端口。两个前端均使用同源路径访问自己的 API，因此不需要 CORS，也不会互相复用登录 token。用户资料库位于 Docker volume `agent2-data`，重新部署镜像不会清空。
+两个容器共用 ECS 的 host 网络，端口和登录令牌彼此独立。用户资料在 RDS 的 `userinformation` schema，Agent2 审计扩展在 `agent2` schema，不在 Docker volume 里。重新部署镜像不会清空这些表。
 
-推送 `prod` 后，部署流程会自动安装并校验 Nginx 双入口配置，同时构建、拉取并重启 `admin` 与 `user` 两个服务，无需修改阿里云安全组。
+| 系统 | 容器 | ECS 内部监听 | 公网入口 | API |
+| --- | --- | --- | --- | --- |
+| 用户端 | `globalpathway-user-1` | `127.0.0.1:8787` | `https://123.56.13.78/` | `/v1/*` |
+| 管理员端 | `globalpathway-admin-1` | `127.0.0.1:8765` | `https://123.56.13.78/admin/` | `/v1/admin/*` |
+
+Nginx 配置是 `deploy/nginx-prod-https.conf`，由 `deploy/install-nginx-prod.sh` 安装。安全组只公开 `80` 和 `443`，不要公开 `8765`、`8787` 或数据库端口。ECS 上的 `/srv/globalpathway/.env` 必须显式写出 RDS 地址，至少包括 `ADMIN_DB_HOST`、`ADMIN_DB_PORT`、`AGENT1_DB_HOST`、`AGENT1_DB_PORT`、`AGENT1_DB_PASSWORD`。缺任何一项，部署会在拉镜像前停止。模板见 `.env.example`。
+
+推送到 `prod` 会触发 `.github/workflows/deploy-prod.yml`（也可手动 `workflow_dispatch`）。该作业使用 GitHub environment `production`，若环境开了保护规则，需要先批准。流程是：按改动路径构建 `admin` 和/或 `user` 镜像并推到 GHCR，SSH 到 ECS 后 `git reset --hard origin/prod`，`docker compose -f docker-compose.prod.yml pull/up` 对应服务，再检查 `8765/healthz` 与 `8787/healthz`，然后安装 Nginx。只改了 `agent2/` 时会重建用户镜像，管理员镜像保持不动；两条健康检查和 Nginx 安装仍会执行。用户容器的存活探针是 `8787/readyz`。
+
+用户进程只保留一条数据库连接。RDS 关掉空闲会话后，下一次查询会先探测连接并重连，不必为此重启容器。事务正文已经开始执行后，失败不会自动重放。
 
 ## 设计要点与已知边界
 
@@ -218,7 +232,7 @@ Nginx 配置见 `deploy/nginx-prod-https.conf`。安全组只需公开原有的 
 - **失败重试**：可重试故障（网络/模型超时/限流/输出非法）按退避重试至来源 `max_retries`；401/403、验证码、登录墙、配置错误不重试，运行记 `FAILED` 且原因可见（`runs` 命令）。
 - **GOV.UK 资金页规则降级器**：仅在 LLM 瞬时超时且已登记该降级器时启用，输出同样过门控；配置错误不会触发降级。
 - 快照按规范化 Markdown 取指纹，导航/版式变动可能改变指纹（由字段级 diff 过滤，不产生新版本）。
-- **本轮未实现**（设计已列后续工作包）：PDF 与授权接口采集（A1.2）、管理端 API/UI（7.3）、独立消息队列与 outbox 投递、Agent2 详细设计、跨源冲突的审核界面、其他业务类的专用 Schema（汇款/开户/信用卡目前走通用事实 Schema）。
+- 仍未纳入这条采集管道的部分：PDF 与授权接口采集、独立消息队列与 outbox 投递、跨源冲突的审核界面。用户端与管理员端的运行方式见上文「Agent2 与管理员端」。
 - 历史混合库保留原位；开发兼容管道使用独立 legacy 库；正式新结构见本文开头与数据库方案。
 
 ## 目录
@@ -227,10 +241,10 @@ Nginx 配置见 `deploy/nginx-prod-https.conf`。安全组只需公开原有的 
 agent1/            # 兼容管道与新结构的环境、存储入口
   migrations/     # 新结构 SQL 迁移文件
 agent1.py          # CLI 入口
-agent2/            # Agent2 S1：意图、M06 追问、M07 知识读取、M08 证据、M09 生成、M10 门控、HTTP API
+agent2/            # 用户端：签证、外汇、开户、信用卡；python -m agent2.cli serve
   fixtures/       # 合成知识夹具（--knowledge fixture 使用）
   web/            # 用户端前端（serve 同址托管）
-agent2.py          # Agent2 CLI 入口（serve）
+admin_console/     # 管理员端：python -m admin_console serve（127.0.0.1:8765）
 sources.json       # 来源登记（含权威等级、负责人、检查周期、SLA、Schema 类型）
 data/
   agent1.sqlite3   # 历史混合库，保留原位

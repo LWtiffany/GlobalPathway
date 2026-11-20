@@ -24,6 +24,17 @@ AGENT2_LLM_STRUCTURED_MODE=json_object
 AGENT2_LLM_EXTRA_BODY={"enable_thinking":false}
 ```
 
+FX generic-answer rewrite (`FxWorkflow._draft_with_llm`) uses a dedicated model so understanding/writer can stay on DeepSeek while FX answers run GLM-5.3 thinking mode:
+
+```text
+AGENT2_FX_LLM_MODEL=glm-5.3
+AGENT2_FX_LLM_EXTRA_BODY={"enable_thinking":true,"reasoning_effort":"high"}
+AGENT2_FX_LLM_TIMEOUT_SECONDS=90
+AGENT2_FX_LLM_STRUCTURED_MODE=json_object
+```
+
+`glm-5.3` thinking cannot be disabled on the provider; the factory always forces `enable_thinking=true` for the FX path.
+
 The default uses provider-side JSON Object plus application-side Pydantic and business validation.
 The 2026-11-07 workspace probe measured DeepSeek understanding at 5.608 seconds versus
 Qwen3.8 Flash at 8.166 seconds; both completed the structured benchmark. This is one

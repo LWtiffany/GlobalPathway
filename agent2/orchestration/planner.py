@@ -10,7 +10,7 @@ from agent2.intent import (INTENTS, classify, is_account_only_card_mention,
 from .contracts import (Domain, DomainTask, IntentHit, OrchestrationInput, RoutingAudit,
                         TaskPlan)
 
-PLANNER_VERSION = "rules-v7"
+PLANNER_VERSION = "rules-v8"
 INTENT_DOMAIN: dict[str, Domain] = {
     "visa_documents": "visa",
     "remittance_tuition": "fx",
@@ -22,6 +22,7 @@ INTENT_DOMAIN: dict[str, Domain] = {
 
 # 「信用卡开户/开卡」整段只算信用卡，避免再拆出 bank_account（不含单独「办卡+开户」并列）。
 _CARD_ACCOUNT = re.compile(r"(?:信用卡|credit\s*card)\s*(?:开户|开卡)", re.I)
+_ORDER_FLOW = re.compile(r"先后|顺序|先办|再办|先做|下一步", re.I)
 
 RULES_CONFIDENCE = 0.95
 LLM_CONFIDENCE = 0.80
@@ -99,8 +100,11 @@ class RuleTaskPlanner:
                 continue
             if intent == "hsbc_account" and investment_account:
                 continue
+            order_flow = bool(_ORDER_FLOW.search(request.text))
             if intent == "credit_card" and (ambiguous_card or account_only_card):
-                continue
+                # 交学费/开户/办卡先后：允许办卡进入信用卡域做顺序建议。
+                if not (order_flow and re.search(r"办卡|信用卡", request.text)):
+                    continue
             if intent == "hsbc_account" and any(left <= match.start() < right
                                                  for left, right in card_account_spans):
                 continue
@@ -116,7 +120,7 @@ class RuleTaskPlanner:
 
         # Only intents explicitly returned by understanding count as llm recoveries.
         ruled = {item[1] for item in matches}
-        ruled_banking = ruled & banking_intents
+        ruled_domains = {INTENT_DOMAIN[intent] for intent in ruled}
         dropped_llm: list[str] = []
         llm_hits: list[IntentHit] = []
         for intent in dict.fromkeys(request.llm_intents):
@@ -125,11 +129,11 @@ class RuleTaskPlanner:
                 continue
             if intent not in INTENT_DOMAIN or intent in ruled:
                 continue
-            # Account and credit-card are sibling domains. A model recovery may
-            # fill a rule miss, but it must not contradict an explicit cue in
-            # this turn (e.g. 「账户类型推荐」 can never add credit_card).
-            if len(ruled_banking) == 1 and intent in banking_intents \
-                    and intent not in ruled_banking:
+            # This turn already named a domain in the text. Do not let the model
+            # pull in another domain from earlier context (e.g. 「需要先开户吗」
+            # must not rerun tuition, cards, or FX just because the profile has a school).
+            if ruled_domains and INTENT_DOMAIN[intent] not in ruled_domains:
+                dropped_llm.append(intent)
                 continue
             if ambiguous_card and intent in {"hsbc_account", "credit_card"}:
                 continue

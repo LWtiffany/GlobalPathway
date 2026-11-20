@@ -126,9 +126,9 @@ class Agent2Runner:
             timer.add("m06_model", assessment.model_ms)
         notices = list(assessment.notices)
         if not assessment.ready:
-            notices.append(Notice(code=assessment.state, message=assessment.explanation))
-            out = result("needs_input", assessment.explanation,
-                         steps=["回答下方问题后，我再给出确定的材料清单。"],
+            if assessment.explanation:
+                notices.append(Notice(code=assessment.state, message=assessment.explanation))
+            out = result("needs_input", assessment.explanation or "",
                          missing_fields=assessment.missing_fields,
                          follow_up_questions=assessment.questions, notices=notices)
             return self._finish(out, timer, turn.facts, turn.basis, topic)
@@ -172,16 +172,13 @@ class Agent2Runner:
         # Same UX as credit-card: finish condition questions before the materials list.
         # Source conflicts still surface immediately (needs_verification), not behind asks.
         if follow.questions and not package.conflicts:
-            ask_notices = list(notices) + list(follow.notices)
-            ask_notices.append(Notice(code="pending_conditions", message=follow.explanation))
             out = result(
                 "needs_input",
-                follow.explanation or "补充以下信息后，我再给出更准确的材料清单。",
-                steps=["回答下方问题后，我再给出确定的材料清单。"],
+                "",
                 # Must-haves are already satisfied; condition asks live only in follow_ups.
                 missing_fields=[],
                 follow_up_questions=follow.questions,
-                notices=ask_notices,
+                notices=list(notices) + list(follow.notices),
                 next_actions=next_check,
             )
             return self._finish(out, timer, turn.facts, turn.basis, topic, read_id=self.knowledge.read_id)

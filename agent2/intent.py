@@ -126,23 +126,32 @@ INTENTS = [
     ("visa_documents", re.compile(
         r"签证|学签|(?<![a-z])visa(?!\s*卡)(?![a-z])|(?<![a-z])cas(?![a-z])", re.I)),
     ("remittance_tuition", re.compile(
-        r"学费|tuition(?:\s*fees?)?|缴学费|交学费|学费汇", re.I)),
+        r"学费|tuition(?:\s*fees?)?|缴学费|交学费|学费汇"
+        r"|缴费通知|学费账单|录取通知"
+        r"|收款(?:人|信息|账户|账号)|SWIFT|汇款信息"
+        r"|代汇|父母.{0,16}(?:汇|交|付).{0,12}学费"
+        r"|留学购汇|购汇额度|超额购汇|便利化额度|年度(?:购汇)?额度|超年度", re.I)),
     ("remittance_living", re.compile(
         r"生活费|生活开支|生活费汇|living\s*(?:cost|expense|fee)s?"
+        r"|生活费.{0,8}(?:购汇|额度|安全)|孩子.{0,12}生活费"
         r"|(?<!学费)汇款", re.I)),
     ("hsbc_account", _BANK_ACCOUNT),
     ("credit_card", _CREDIT_CARD),
-    # 裸「刷卡」仅在境外/海外语境；换汇/购汇/汇率归外汇咨询
+    # 境外刷卡/换汇；裸「购汇/额度」已由学费/生活费意图优先承接
     ("overseas_spending", re.compile(
         r"境外消费|海外消费|(?:境外|海外).{0,8}刷卡|怎么刷卡"
-        r"|换汇|购汇|结汇|外汇|汇率|foreign\s*exchange|\bfx\b", re.I)),
+        r"|换汇|结汇|外汇|汇率|foreign\s*exchange|\bfx\b|购汇", re.I)),
 ]
+
+
+_ORDER_FLOW = re.compile(r"先后|顺序|先办|再办|先做|下一步", re.I)
 
 
 def find_intent_matches(text: str) -> list[tuple[int, str]]:
     """Return (start, intent) for every INTENTS hit, in first-occurrence order within each pattern."""
     card_usage_update = is_card_usage_profile_statement(text)
     matches: list[tuple[int, str]] = [(0, "credit_card")] if card_usage_update else []
+    order_flow = bool(_ORDER_FLOW.search(text))
     for intent, pattern in INTENTS:
         if card_usage_update and intent in {
                 "credit_card", "overseas_spending", "remittance_tuition", "remittance_living"}:
@@ -153,7 +162,9 @@ def find_intent_matches(text: str) -> list[tuple[int, str]]:
                 continue
             if intent == "credit_card" and (is_ambiguous_bank_card(text)
                                            or is_account_only_card_mention(text)):
-                continue
+                # 「交学费 / 开户 / 办卡先后」允许把办卡算作信用卡域，用于顺序建议。
+                if not (order_flow and re.search(r"办卡|信用卡", text)):
+                    continue
             matches.append((match.start(), intent))
     return matches
 
@@ -173,6 +184,10 @@ _FUNDING = [
     (re.compile(r"奖学金|scholarship", re.I), "scholarship"),
     (re.compile(r"资助|赞助|sponsor", re.I), "sponsor"),
     (re.compile(r"自费|父母(?:出钱|支付|的存款)|家里出钱|自己的存款", re.I), "own_or_parents"),
+]
+_PAYER = [
+    (re.compile(r"父母|家长|爸爸|妈妈|代汇|代办"), "parent"),
+    (re.compile(r"本人|自己(?:汇|付|交)|学生本人|我来(?:汇|付|交)"), "self"),
 ]
 _AGE = re.compile(r"(\d{1,3})\s*(?:岁|周岁)")
 _SCHOOL = re.compile(r"(?:学校(?:改成|换成|改为|是|为)|被)\s*([^\s，。,.!！?？]+?)(?:\s*录取|[，。,.!！?？]|$)")
@@ -224,7 +239,7 @@ def classify(text, *, asked_fields=()):
         intent = "credit_card"
     turn = Turn(intent=intent or "other")
     for code, patterns in (("destination_country", _COUNTRY), ("visa_category", _VISA),
-                           ("funding_source", _FUNDING)):
+                           ("funding_source", _FUNDING), ("payer", _PAYER)):
         value, basis = _first(patterns, text)
         if value:
             turn.facts[code], turn.basis[code] = value, basis
@@ -234,6 +249,11 @@ def classify(text, *, asked_fields=()):
     school = _SCHOOL.search(text)
     if school:
         turn.facts["school"], turn.basis["school"] = school.group(1), school.group(0)
+    # Free-text may already include a tuition deadline date.
+    deadline, deadline_basis = _parse_date(text)
+    if deadline and re.search(r"截止|付款日|缴费日|deadline", text, re.I):
+        turn.facts["payment_deadline"] = deadline
+        turn.basis["payment_deadline"] = deadline_basis
     boolean_asked = [f for f in asked_fields if f in BOOLEAN_FIELDS]
     if len(boolean_asked) == 1 and (_YES.match(text) or _NO.match(text)):
         turn.facts[boolean_asked[0]] = bool(_YES.match(text))

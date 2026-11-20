@@ -805,7 +805,8 @@ class BankAccountWorkflow:
                                    profile_version=request.profile_version)
         if re.search(r"(?:开户|开账户).*(?:必须现在|现在必须|必须先|一定要现在)", request.text):
             return DomainResult(task_id=task.task_id, domain="bank_account", status="answered",
-                                answer=_necessity_answer(region), projection="chat_only")
+                                answer=_necessity_answer(region), projection="chat_only",
+                                evidence_refs=["account-necessity:no-prerequisite"])
         if facts.get("applicant_age_band") == "under_18":
             return DomainResult(
                 task_id=task.task_id, domain="bank_account", status="needs_verification",
@@ -1228,11 +1229,16 @@ class BankAccountWorkflow:
         # account_product is conversational focus, not a durable Profile fact.
         observed_facts = {key: value for key, value in facts.items() if key != "account_product"}
         observed_basis = {key: value for key, value in basis.items() if key != "account_product"}
+        evidence_refs = [item["product"]["account_id"] for item in assessments]
+        # Necessity is a judgement, not a product quote. An empty ref list would
+        # be downgraded to needs_verification and stamped with card-catalog copy.
+        if act == "ask_necessity":
+            evidence_refs.append("account-necessity:no-prerequisite")
         return DomainResult(task_id=task.task_id, domain="bank_account",
                             status="needs_input" if followups else "answered",
                             answer=body, claims=claims, citations=citations,
                             missing_fields=missing_questions,
-                            evidence_refs=[item["product"]["account_id"] for item in assessments],
+                            evidence_refs=evidence_refs,
                             follow_up_questions=followups,
                             next_actions=["查看上述汇丰官网来源，按适用渠道核对最新要求。"],
                             notices=notices, observed_facts=observed_facts,

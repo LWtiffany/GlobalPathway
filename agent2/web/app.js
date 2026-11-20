@@ -2,8 +2,9 @@
 
 const $app = document.getElementById("app");
 const GRID = ["role", "beneficiary", "destination_country", "school", "course", "offer_status",
-  "planned_start_date", "payer", "visa_category"];
-const GRID_LABEL = { destination_country: "目的地", offer_status: "录取状态", planned_start_date: "入学日期" };
+  "planned_start_date", "fee_status", "payment_deadline", "payer", "remittance_purpose", "visa_category"];
+const GRID_LABEL = { destination_country: "目的地", offer_status: "录取状态", planned_start_date: "入学日期",
+  fee_status: "学费档位", payment_deadline: "缴费截止日", remittance_purpose: "汇款用途" };
 const STATUS = {
   answered: { label: "已确认", cls: "ok", why: "" },
   needs_input: { label: "待补充", cls: "", why: "还缺少关键信息，补充后再给出确定答案。" },
@@ -32,7 +33,10 @@ const S = {
 };
 
 // 追问撤销顺序（靠前的可先被「上一步」清掉）。trail 丢失时仍可按档案回退。
+// remittance_purpose 不在此列：它常由消息文本自动解析入档（如「学费怎么汇」），
+// 并非用户回答过的追问步骤，撤销它只会得到一张莫名的变更提案卡。
 const FOLLOW_UNDO_ORDER = [
+  "payment_deadline", "fee_status",
   "want_credit_card", "application_region", "applicant_age_band", "applicant_age",
   "us_hsbc_account_path", "uk_hsbc_account_path", "annual_income_band_hkd", "annual_income_hkd",
   "hk_resident", "hsbc_premier_path", "premier_relationship", "hsbc_relationship_balance_band",
@@ -225,7 +229,37 @@ function safeHttpUrl(raw) {
 
 function safeLink(url) {
   const href = safeHttpUrl(url);
-  return href ? h("a", { href, target: "_blank", rel: "noopener noreferrer" }, href) : "—";
+  return href ? h("a", { class: "text-link", href, target: "_blank", rel: "noopener noreferrer" }, href) : "—";
+}
+
+/** Turn http(s) URLs inside plain text into clickable anchors (keeps surrounding copy). */
+function linkify(text) {
+  const s = String(text ?? "");
+  if (!s) return [""];
+  // Stop before whitespace, quotes, and CJK / full-width punctuation so
+  // 「https://a.com；https://b.com」and 「（https://a.com）。」split correctly.
+  const re = /https?:\/\/[^\s<>"'`\u3000-\u303F\u4E00-\u9FFF\uFF00-\uFFEF）】》」』]+/gi;
+  const out = [];
+  let last = 0;
+  let match;
+  while ((match = re.exec(s))) {
+    let raw = match[0];
+    let trail = "";
+    const trailMatch = raw.match(/[),.;:!?]+$/);
+    if (trailMatch) {
+      trail = trailMatch[0];
+      raw = raw.slice(0, -trail.length);
+    }
+    if (!/^https?:\/\//i.test(raw)) continue;
+    if (match.index > last) out.push(s.slice(last, match.index));
+    out.push(h("a", {
+      class: "text-link", href: raw, target: "_blank", rel: "noopener noreferrer",
+    }, raw));
+    if (trail) out.push(trail);
+    last = match.index + match[0].length;
+  }
+  if (last < s.length) out.push(s.slice(last));
+  return out.length ? out : [s];
 }
 
 function toast(msg, bad) {
@@ -567,12 +601,18 @@ function viewProfile(profile) {
     toast("当前回复还在处理中，完成后即可查看其他档案。", true);
     return;
   }
-  S.collapsed = false;
+  // Same profile: eye icon toggles the plan sheet open / closed.
   if (profile.profile_id === S.pid) {
+    if (!S.collapsed) {
+      closeCurrentProfile();
+      return;
+    }
+    S.collapsed = false;
     if (S.el.sheet) S.el.sheet.classList.remove("collapsed");
-    S.el.side?.querySelector(".pf.on2 .pf-view")?.setAttribute("aria-expanded", "true");
+    drawSide();
     return;
   }
+  S.collapsed = false;
   go("#/chat/" + profile.profile_id);
 }
 
@@ -595,7 +635,8 @@ function closeCurrentProfile() {
   if (!S.el.sheet) return;
   S.collapsed = true;
   S.el.sheet.classList.add("collapsed");
-  S.el.side?.querySelector(".pf.on2 .pf-view")?.setAttribute("aria-expanded", "false");
+  // Refresh sidebar so the eye icon title/aria switches back to「查看」.
+  if (S.el.side) drawSide();
 }
 
 async function loadChatSecondary(profileId) {
@@ -800,8 +841,10 @@ function drawSide() {
             summary.course ? h("span", { class: "pf-course", title: summary.course }, summary.course) : null,
             h("span", { class: "pf-date" }, summary.start))),
         h("div", { class: "pf-actions" },
-          h("button", { class: "pf-view", type: "button", "aria-expanded": String(p.profile_id === S.pid && !S.collapsed),
-            title: `查看${name}档案`, "aria-label": `查看${name}档案`,
+          h("button", { class: "pf-view", type: "button",
+            "aria-expanded": String(p.profile_id === S.pid && !S.collapsed),
+            title: p.profile_id === S.pid && !S.collapsed ? `收起${name}档案` : `查看${name}档案`,
+            "aria-label": p.profile_id === S.pid && !S.collapsed ? `收起${name}档案` : `查看${name}档案`,
             onclick: (event) => { event.stopPropagation(); viewProfile(p); } }, profileActionIcon("view")),
           h("button", { class: "pf-delete", type: "button", title: `删除${name}`,
             "aria-label": `删除${name}`, onclick: (event) => { event.stopPropagation(); deleteProfile(p); } }, profileActionIcon("delete"))));
@@ -873,13 +916,73 @@ function row(k, ...v) {
 
 const empty = () => h("span", { class: "e" }, "—");
 
+/** Shared plan-card primitives — same visual language as credit-card advice. */
+function adviceFact(label, value, { strong = true } = {}) {
+  if (value == null || value === false) return null;
+  const isNode = typeof value === "object";
+  return h("div", { class: "cc-fact" },
+    h("span", null, label),
+    isNode ? h("span", null, value)
+      : strong ? h("strong", null, value) : h("span", null, value));
+}
+
+function adviceOption({ label, title, body, lines, facts, featured = true } = {}) {
+  const textLines = (lines || []).filter((s) => s && !isInternalOutput(s));
+  return h("div", { class: "cc-option" + (featured ? " featured" : "") },
+    label ? h("div", { class: "cc-label" }, label) : null,
+    title ? h("div", { class: "cc-name" }, title) : null,
+    body ? h("p", { class: "cc-reason" },
+      ...(typeof body === "string" ? linkify(body) : [body])) : null,
+    ...textLines.map((line) => h("p", { class: "cc-reason" }, ...linkify(line))),
+    ...(facts || []).filter(Boolean));
+}
+
+function adviceNote(title, text) {
+  if (!text) return null;
+  return h("div", { class: "cc-apply" },
+    h("b", null, title),
+    typeof text === "string" ? h("span", null, text) : text);
+}
+
+function advicePanel(t, { id, status, statusClass = "", flash = "", wide = true, kids }) {
+  // Plan cards always stack full-width so empty modules do not leave a half-blank cell.
+  return h("div", {
+    class: "p topic-advice topic-wide" + flash,
+    id,
+  }, cardHead(t, h("span", { class: "st " + statusClass }, status)), ...kids.filter(Boolean));
+}
+
+function remittancePaymentSteps(pl) {
+  const saved = visibleOutputLines(pl.payment_steps || []);
+  if (saved.length) return saved;
+  const companions = pl.domain_payload?.companion_bubbles || [];
+  const payment = companions.find((c) => c && c.kind === "school_payment");
+  return visibleOutputLines(payment?.steps || []);
+}
+
+function remittanceFxSteps(pl, paymentSteps) {
+  const saved = visibleOutputLines(pl.fx_steps || []);
+  if (saved.length) return saved.filter((s) => !isInternalOutput(s));
+  const pay = new Set(paymentSteps);
+  return visibleOutputLines(pl.steps || []).filter((s) => !pay.has(s) && !isTuitionCardSteps([s]));
+}
+
+function remittancePaymentTitle(steps, fallback) {
+  const first = String(steps[0] || "");
+  const hit = first.match(/^(.+?)\s*学费参考/);
+  if (hit) return hit[1].trim();
+  const school = val(S.profile, "school");
+  return school ? `${valueLabel("school", school) || school}` : fallback;
+}
+
 function remittanceCard(t) {
   const a = S.advice.remittance;
   const flash = S.flash.includes("remittance") ? " flash" : "";
   if (!a) {
-    return h("div", { class: "p" + flash, id: "card-remittance" },
-      cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("用途", empty()), row("材料", empty()), row("来源", empty()));
+    return advicePanel(t, {
+      id: "card-remittance", status: "未开始", flash,
+      kids: [adviceFact("用途", empty()), adviceFact("材料", empty()), adviceFact("来源", empty())],
+    });
   }
   const pl = a.payload || {};
   const purpose = pl.remittance_purpose || pl.fx_mode || pl.domain_payload?.remittance_purpose
@@ -889,12 +992,35 @@ function remittanceCard(t) {
   const mats = pl.materials || pl.domain_payload?.materials || [];
   const cites = pl.citations || pl.domain_payload?.citations || [];
   const req = mats.filter((m) => m.applicability === "required" && !isInternalOutput(m.name_zh));
-  const names = req.slice(0, 2).map((m) => m.name_zh).join("、");
-  return h("div", { class: "p" + flash, id: "card-remittance" },
-    cardHead(t, h("span", { class: "st ok" }, "已确认")),
-    row("用途", purposeLabel),
-    row("必备材料", req.length ? `${names}${req.length > 2 ? " 等" : ""} ${req.length} 项` : empty()),
-    row("来源", sourceRefs(cites)));
+  const materialNames = req.map((m) => m.name_zh).filter(Boolean);
+  const deadline = val(S.profile, "payment_deadline");
+  const paymentSteps = remittancePaymentSteps(pl).filter((s) => !isInternalOutput(s));
+  const fxSteps = remittanceFxSteps(pl, paymentSteps).filter((s) => !isInternalOutput(s));
+  return advicePanel(t, {
+    id: "card-remittance", status: "已确认", statusClass: "ok", flash, wide: true,
+    kids: [
+      paymentSteps.length ? adviceOption({
+        label: "怎么交学费",
+        title: remittancePaymentTitle(paymentSteps, "学校官方缴费"),
+        lines: paymentSteps.slice(0, 8),
+        featured: true,
+      }) : null,
+      fxSteps.length ? adviceOption({
+        label: "购汇与汇款",
+        title: purposeLabel !== "—" ? `汇款用途 · ${purposeLabel}` : "购汇要点",
+        lines: fxSteps.slice(0, 6),
+        featured: false,
+        facts: [
+          deadline ? adviceFact("缴费截止",
+            valueLabel("payment_deadline", deadline) || deadline) : null,
+        ],
+      }) : adviceFact("用途", purposeLabel),
+      adviceFact("必备材料",
+        materialNames.length ? materialNames.join("、") : empty(),
+        { strong: false }),
+      adviceFact("来源", sourceRefs(cites), { strong: false }),
+    ],
+  });
 }
 
 function accountDocumentLabel(doc) {
@@ -945,9 +1071,13 @@ function accountCard(t) {
   const a = S.advice.account;
   const flash = S.flash.includes("account") ? " flash" : "";
   if (!a) {
-    return h("div", { class: "p" + flash, id: "card-account" },
-      cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("地区", empty()), row("产品", empty()), row("材料", empty()), row("门槛", empty()));
+    return advicePanel(t, {
+      id: "card-account", status: "未开始", flash,
+      kids: [
+        adviceFact("地区", empty()), adviceFact("产品", empty()),
+        adviceFact("材料", empty()), adviceFact("门槛", empty()),
+      ],
+    });
   }
   const display = accountAdviceDisplay(a);
   const { pl, dp } = display;
@@ -956,25 +1086,41 @@ function accountCard(t) {
   const identity = display.identity || val(S.profile, "applicant_identity")
     || val(S.profile, "role");
   const productName = customerText(display.productName, "");
-  const names = display.documentNames.slice(0, 2).join("、");
   const eligibility = display.ruleLabels.slice(0, 2).join("；")
     || visibleOutputLines(pl.steps || []).find((s) => String(s).startsWith("公开资格要点："))?.replace("公开资格要点：", "")
-    || empty();
+    || "";
   const warn = display.needsVerification;
   const pending = display.needsInput && !warn;
   const scopes = Object.keys(S.adviceScopes.account || {});
   const scopeNames = scopes.map((key) => ({ "CN-HK": "香港", UK: "英国", US: "美国", CN: "中国内地" }[key] || key));
-  return h("div", { class: "p" + flash, id: "card-account" },
-    cardHead(t, h("span", { class: "st " + (warn || pending ? "warn" : "ok") },
-      warn ? "待核实" : pending ? "待补充" : "已确认")),
-    row("地区", valueLabel("destination_country", region) || region || empty()),
-    row("产品", productName || empty()),
-    row("申请人", valueLabel("applicant_identity", identity) || identity || empty()),
-    row("必备材料", display.documentNames.length
-      ? `${names}${display.documentNames.length > 2 ? " 等" : ""} ${display.documentNames.length} 项` : empty()),
-    row("门槛", eligibility),
-    scopes.length > 1 ? row("已咨询地区", scopeNames.join("、")) : null,
-    row("来源", sourceRefs(pl.citations || dp.citations || [])));
+  const summary = customerText(pl.summary, "");
+  const status = warn ? "待核实" : pending ? "待补充" : "已确认";
+  return advicePanel(t, {
+    id: "card-account",
+    status,
+    statusClass: warn || pending ? "warn" : "ok",
+    flash,
+    wide: !!productName,
+    kids: [
+      adviceOption({
+        label: productName ? "开户方案" : "当前进度",
+        title: productName || "待选定开户产品",
+        body: summary && summary.length < 180 ? summary : null,
+        featured: !!productName,
+        facts: [
+          adviceFact("地区", valueLabel("destination_country", region) || region || empty()),
+          adviceFact("申请人",
+            valueLabel("applicant_identity", identity) || identity || empty()),
+          adviceFact("必备材料",
+            display.documentNames.length ? display.documentNames.join("、") : empty(),
+            { strong: false }),
+          eligibility ? adviceFact("门槛", eligibility, { strong: false }) : adviceFact("门槛", empty()),
+          scopes.length > 1 ? adviceFact("已咨询地区", scopeNames.join("、"), { strong: false }) : null,
+        ],
+      }),
+      adviceFact("来源", sourceRefs(pl.citations || dp.citations || []), { strong: false }),
+    ],
+  });
 }
 
 function planCard(t) {
@@ -1122,14 +1268,18 @@ function savedCardDisplay(advice) {
 }
 
 function cardAdviceOption(card, label, featured) {
-  return h("div", { class: "cc-option" + (featured ? " featured" : "") },
-    h("div", { class: "cc-label" }, customerText(label, "信用卡方案")),
-    h("div", { class: "cc-name" }, card.product_name),
-    card.reason_text ? h("p", { class: "cc-reason" }, customerText(card.reason_text, "")) : null,
-    h("div", { class: "cc-fact" }, h("span", null, "年费及费用"),
-      h("strong", null, customerText(card.fee_text, "请以官网最新条款为准"))),
-    customerText(card.benefits_text) ? h("div", { class: "cc-fact" }, h("span", null, "主要权益"),
-      h("span", null, customerText(card.benefits_text))) : null);
+  return adviceOption({
+    label: customerText(label, "信用卡方案"),
+    title: card.product_name,
+    body: card.reason_text || null,
+    featured,
+    facts: [
+      adviceFact("年费及费用", customerText(card.fee_text, "请以官网最新条款为准")),
+      customerText(card.benefits_text)
+        ? adviceFact("主要权益", customerText(card.benefits_text), { strong: false })
+        : null,
+    ],
+  });
 }
 
 function isBackupCard(card) {
@@ -1141,10 +1291,12 @@ function isBackupCard(card) {
 function creditCardCard(t) {
   const a = S.advice.credit_card;
   const flash = S.flash.includes("credit_card") ? " flash" : "";
-  const base = "p credit-advice" + flash;
-  if (!a) return h("div", { class: base, id: "card-credit_card" },
-    cardHead(t, h("span", { class: "st" }, "未开始")),
-    ...(t.rows || ["产品", "费用 / 限制", "申请条件"]).map((r) => row(r, empty())));
+  if (!a) {
+    return advicePanel(t, {
+      id: "card-credit_card", status: "未开始", flash, wide: true,
+      kids: (t.rows || ["产品", "费用 / 限制", "申请条件"]).map((r) => adviceFact(r, empty())),
+    });
+  }
 
   const pl = a.payload || {};
   const display = savedCardDisplay(a);
@@ -1164,18 +1316,22 @@ function creditCardCard(t) {
     /均要求已有|到英国读书|香港卡可在留学地使用/.test(step));
   const condition = customerText(marketPrereq || first?.application_note,
     "申请资格及最终批核以当地汇丰的官方规定为准。");
-  return h("div", { class: base, id: "card-credit_card" },
-    cardHead(t, h("span", { class: "st " + stateClass }, state)),
-    cards.length ? [
+  return advicePanel(t, {
+    id: "card-credit_card", status: state, statusClass: stateClass, flash, wide: true,
+    kids: cards.length ? [
       cardAdviceOption(first, hasPrimary ? "首选推荐" : "方案一 · 供比较", hasPrimary),
       others.length ? h("div", { class: "cc-others" },
         h("div", { class: "cc-section" }, hasPrimary ? "其他选择" : "一起比较"),
         others.slice(0, 2).map((card, index) => h("div", { class: "cc-secondary" },
           cardAdviceOption(card, card.display_label ||
             (card.role === "supplement" ? "场景搭配" : hasPrimary ? "备选方案" : `方案${index + 2} · 供比较`), false))),
-        others.length > 2 ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`) : null) : null,
-      h("div", { class: "cc-apply" }, h("b", null, "申请前请确认"), h("span", null, condition)),
-    ] : h("p", { class: "cc-empty" }, customerText(pl.summary, "目前还没有可展示的具体卡片。")));
+        others.length > 2
+          ? h("p", { class: "cc-extra" }, `另有 ${others.length - 2} 张卡可在下方回答中查看。`)
+          : null) : null,
+      adviceNote("申请前请确认", condition),
+    ] : [h("p", { class: "cc-empty" },
+      customerText(pl.summary, "目前还没有可展示的具体卡片。"))],
+  });
 }
 
 /** Citations: numbered pills inline; numbered named links in the reference list. */
@@ -1223,16 +1379,26 @@ function citeRef(c) {
 function sourceRefs(citations) {
   const { unique } = buildCiteMap(citations);
   if (!unique.length) return empty();
-  return h("div", { class: "cites-list" }, unique.map((c) => h("div", null, citeRef(c))));
+  // Keep the side-panel compact: show a one-line summary, expand on click.
+  return h("details", { class: "cites-fold" },
+    h("summary", null, `${unique.length} 条官方依据`),
+    h("div", { class: "cites-list" }, unique.map((c) => h("div", null, citeRef(c)))));
 }
 
 function visaCard(t) {
   const a = S.advice.visa;
   const flash = S.flash.includes("visa") ? " flash" : "";
   const visa = val(S.profile, "visa_category");
+  const dest = val(S.profile, "destination_country");
   if (!a) {
-    return h("div", { class: "p" + flash, id: "card-visa" }, cardHead(t, h("span", { class: "st" }, "未开始")),
-      row("类别", visa ? valueLabel("visa_category", visa) : empty()), row("材料", empty()), row("待确认", empty()));
+    return advicePanel(t, {
+      id: "card-visa", status: "未开始", flash,
+      kids: [
+        adviceFact("类别", visa ? valueLabel("visa_category", visa) : empty()),
+        adviceFact("材料", empty()),
+        adviceFact("待确认", empty()),
+      ],
+    });
   }
   const pl = a.payload;
   const mats = (pl.materials || []).filter((m) => !isInternalOutput(m.name_zh)
@@ -1241,14 +1407,42 @@ function visaCard(t) {
   const cond = mats.filter((m) => m.applicability !== "required");
   const unconfirmed = pl.unconfirmed_fields || [];
   const warn = unconfirmed.length || mats.some((m) => m.applicability === "unverified");
-  const names = req.slice(0, 2).map((m) => m.name_zh).join("、");
-  return h("div", { class: "p" + flash, id: "card-visa" },
-    cardHead(t, h("span", { class: "st " + (warn ? "warn" : "ok") }, warn ? "待核实" : "已确认")),
-    row("类别", `${valueLabel("destination_country", val(S.profile, "destination_country"))} · ${valueLabel("visa_category", visa)}`),
-    row("必备材料", req.length ? `${names}${req.length > 2 ? " 等" : ""} ${req.length} 项` : empty()),
-    row("视情况", cond.length ? `${cond.length} 项` : "无"),
-    row("待确认", unconfirmed.length ? h("span", { class: "warn" }, unconfirmed.map(label).join("、")) : "无"),
-    row("来源", sourceRefs(pl.citations)));
+  const reqNames = req.map((m) => m.name_zh).filter(Boolean);
+  const condNames = cond.map((m) => m.name_zh).filter(Boolean);
+  const category = [
+    valueLabel("destination_country", dest),
+    valueLabel("visa_category", visa),
+  ].filter(Boolean).join(" · ") || "签证材料清单";
+  const summary = customerText(pl.summary, "");
+  return advicePanel(t, {
+    id: "card-visa",
+    status: warn ? "待核实" : "已确认",
+    statusClass: warn ? "warn" : "ok",
+    flash,
+    wide: true,
+    kids: [
+      adviceOption({
+        label: "签证方案",
+        title: category,
+        body: summary && summary.length < 180 ? summary : null,
+        featured: true,
+        facts: [
+          adviceFact("必备材料",
+            reqNames.length ? reqNames.join("、") : empty(),
+            { strong: false }),
+          adviceFact("视情况",
+            condNames.length ? condNames.join("、") : "无",
+            { strong: false }),
+          adviceFact("待确认",
+            unconfirmed.length
+              ? h("span", { class: "warn" }, unconfirmed.map(label).join("、"))
+              : "无",
+            { strong: false }),
+        ],
+      }),
+      adviceFact("来源", sourceRefs(pl.citations), { strong: false }),
+    ],
+  });
 }
 
 function todoBox() {
@@ -1369,6 +1563,15 @@ function drawChat({ keep } = {}) {
             });
           } }, "重试"),
           h("button", { onclick: () => { S.pending = null; drawChat(); } }, "放弃"))));
+    } else if (S.pending.phases && S.pending.phases.length > 1) {
+      // Step chain: completed steps get a tick and fade; the active one keeps
+      // the pulse dot and re-renders as the chain advances.
+      const phases = S.pending.phases;
+      const idx = S.pending.phaseIdx || 0;
+      items.push(h("div", { class: "m thinking-chain" },
+        phases.slice(0, idx).map((p) =>
+          h("div", { class: "chain-step done" }, h("span", { class: "tick" }, "✓"), p)),
+        h("div", { class: "chain-step thinking" }, phases[idx])));
     } else {
       items.push(h("div", { class: "m thinking" }, S.pending.phase || "已收到，正在为您核对…"));
     }
@@ -1380,6 +1583,27 @@ function drawChat({ keep } = {}) {
 function isCardRecommendationSteps(steps) {
   return steps.some((s) => s.startsWith("年费："))
     && steps.some((s) => /(?:主推荐|初步选择)：|汇丰.+发行的卡/.test(s));
+}
+
+/** Tuition remittance card picks: "首选 Foo（Bank）：年净收益约 …" */
+function isTuitionCardSteps(steps) {
+  return (steps || []).some((s) => /^(首选|备选|补充)\s+.+\s*（.+）\s*：\s*年净收益约/.test(String(s)));
+}
+
+function renderTuitionCardSteps(steps) {
+  const box = h("div", { class: "card-rec tuition-cards" });
+  for (const s of steps || []) {
+    const m = String(s).match(/^(首选|备选|补充)\s+(.+)$/);
+    if (m) {
+      box.append(h("div", { class: "card-name" },
+        h("span", { class: "role-tag" }, m[1]),
+        h("span", null, ...linkify(m[2]))));
+    } else {
+      box.append(h("div", { class: "card-note" }, ...linkify(s)));
+    }
+  }
+  // Summary already carries the intro; no second "可参考的卡片" heading.
+  return [box];
 }
 
 function cardStepForDisplay(step) {
@@ -1413,11 +1637,14 @@ function renderAnswerSteps(steps) {
   if (multi.length && steps.some((s) => String(s).startsWith("## "))) {
     return multi.map((sec) => h("div", { class: "multi-sec" },
       h("div", { class: "sub-h" }, sec.title),
-      ...sec.lines.map((line) => h("p", null, line))));
+      ...sec.lines.map((line) => h("p", null, ...linkify(line)))));
+  }
+  if (isTuitionCardSteps(steps)) {
+    return renderTuitionCardSteps(steps);
   }
   if (!isCardRecommendationSteps(steps)) {
     return [h("div", { class: "sub-h" }, "给您的建议"),
-      h("ol", { class: "lim" }, steps.map((s) => h("li", null, s)))];
+      h("ol", { class: "lim" }, steps.map((s) => h("li", null, ...linkify(s))))];
   }
   // Card copy is not a procedure — do not number section titles as 1. 2. 3.
   const box = h("div", { class: "card-rec" });
@@ -1432,16 +1659,16 @@ function renderAnswerSteps(steps) {
       const i = s.indexOf("：");
       box.append(h("div", { class: "card-name" },
         h("span", { class: "role-tag" }, s.slice(0, i)),
-        h("span", null, s.slice(i + 1))));
+        h("span", null, ...linkify(s.slice(i + 1)))));
     }
     else if (/^(推荐理由|为什么适合你|为什么适合您|年费|主要权益|您可享|你可享|申请限制|申请前提)：/.test(s)) {
       const i = s.indexOf("：");
       box.append(h("div", { class: `card-detail ${/^(?:推荐理由|为什么适合你|为什么适合您)/.test(s) ? "reason" : ""}` },
-        h("span", { class: "k" }, s.slice(0, i + 1)), s.slice(i + 1)));
-    } else if (s.startsWith("免年费选择：")) box.append(h("div", { class: "card-alt" }, s));
+        h("span", { class: "k" }, s.slice(0, i + 1)), ...linkify(s.slice(i + 1))));
+    } else if (s.startsWith("免年费选择：")) box.append(h("div", { class: "card-alt" }, ...linkify(s)));
     else if (/（(?:Visa|Mastercard|UnionPay|银联卡|威士卡|万事达卡)/.test(s) || /（[A-Za-z]+）$/.test(s)) {
-      box.append(h("div", { class: "card-name" }, s));
-    } else box.append(h("div", { class: "card-note" }, s));
+      box.append(h("div", { class: "card-name" }, ...linkify(s)));
+    } else box.append(h("div", { class: "card-note" }, ...linkify(s)));
   }
   const preview = steps.some((s) => s.startsWith("提前了解："));
   const compare = steps.some((s) => s.startsWith("对比参考："));
@@ -1451,6 +1678,21 @@ function renderAnswerSteps(steps) {
 
 function visibleOutputLines(lines) {
   return (lines || []).filter((line) => !isInternalOutput(line));
+}
+
+/**
+ * Conversational filler the backend attaches to needs_input turns. Follow-up
+ * bubbles show the question, not an advice list, so these never render.
+ */
+const FILLER_STEPS = new Set([
+  "先确认会影响建议方向的关键信息，再给出准备清单。",
+  "选好之后，我就按这一档的学费给您算额度和材料。",
+  "您可以按方便的程度选择，不确定的地方我们也可以先保留。",
+  "若选择了解，我会按留学地优先推荐当地汇丰卡，香港卡仅作备用。",
+  "若这次先不办也没关系；之后直接说「推荐信用卡」即可。",
+]);
+function adviceSteps(lines) {
+  return visibleOutputLines(lines).filter((s) => !FILLER_STEPS.has(String(s).trim()));
 }
 
 function answerBubble(b, latest) {
@@ -1463,12 +1705,15 @@ function answerBubble(b, latest) {
       || (b.follow_up_questions || [])[0];
     if (!question) return null;
     const kids = [];
-    // Multi-intent: show each domain's short summary before the first follow-up.
-    const safeSteps = visibleOutputLines(b.answer?.steps || []);
+    // Follow-up turns show the question, not an advice list: only multi-intent
+    // domain digests (## sections) stay above the first follow-up question.
+    const safeSteps = adviceSteps(b.answer?.steps || []);
     if (b.answer?.summary && !isInternalOutput(b.answer.summary)) {
-      kids.push(h("p", null, b.answer.summary));
+      kids.push(h("p", null, ...linkify(b.answer.summary)));
     }
-    if (safeSteps.length) kids.push(...renderAnswerSteps(safeSteps));
+    if (safeSteps.some((s) => String(s).startsWith("## "))) {
+      kids.push(...renderAnswerSteps(safeSteps));
+    }
     kids.push(followUp({ ...question,
       text: isInternalOutput(question.text) ? "请补充相关信息，我会继续为您核对。" : question.text,
       options: (question.options || []).filter((o) => !isInternalOutput(o.label) && !isInternalOutput(o.message)),
@@ -1498,13 +1743,13 @@ function answerBubble(b, latest) {
   const safeSummary = isInternalOutput(b.answer.summary)
     ? "当前资料不足以支持确定回答，请按页面提示补充信息或核实官方要求。"
     : b.answer.summary;
-  const rawSteps = visibleOutputLines(b.answer.steps).filter((s) => !String(s).startsWith("政策原文："));
+  const rawSteps = adviceSteps(b.answer.steps).filter((s) => !String(s).startsWith("政策原文："));
   const stepList = isCardRecommendationSteps(rawSteps)
     ? rawSteps.map(cardStepForDisplay).filter(Boolean) : rawSteps;
   const multi = multiDomainSections(stepList);
   const cardAnswer = isCardRecommendationSteps(stepList);
   if (!cardAnswer) {
-    kids.push(h("p", null, safeSummary));
+    kids.push(h("p", null, ...linkify(safeSummary)));
   }
   // Multi-intent answers already nest domain copy under ## sections; keep materials
   // out of the top so bank docs do not look like a free-floating visa list.
@@ -1525,11 +1770,11 @@ function answerBubble(b, latest) {
   }
   if ((b.answer.limitations || []).length) {
     const limitations = visibleOutputLines(b.answer.limitations);
-    if (limitations.length) kids.push(h("div", { class: "sub-h" }, "温馨提示"), h("ul", { class: "lim" }, limitations.map((s) => h("li", null, s))));
+    if (limitations.length) kids.push(h("div", { class: "sub-h" }, "温馨提示"), h("ul", { class: "lim" }, limitations.map((s) => h("li", null, ...linkify(s)))));
   }
   if (b.status !== "answered" && (b.next_actions || []).length) {
     const nextActions = visibleOutputLines(b.next_actions);
-    if (nextActions.length) kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, nextActions.map((s) => h("li", null, s))));
+    if (nextActions.length) kids.push(h("div", { class: "sub-h" }, "下一步"), h("ul", { class: "lim" }, nextActions.map((s) => h("li", null, ...linkify(s)))));
   }
   // Hide internal/debug notices (routing audit JSON, etc.) from the customer UI.
   const HIDDEN_NOTICE = new Set([
@@ -1537,7 +1782,7 @@ function answerBubble(b, latest) {
     "llm_routing_low_confidence", "unsupported_intent", "partial_out_of_scope",
   ]);
   (b.notices || []).filter((n) => n && !HIDDEN_NOTICE.has(n.code) && !isInternalOutput(n.message) && !(n.message || "").trim().startsWith("{"))
-    .forEach((n) => kids.push(h("div", { class: "notice" }, n.message)));
+    .forEach((n) => kids.push(h("div", { class: "notice" }, ...linkify(n.message))));
   const open = new Set(S.proposals.map((p) => p.proposal_id));
   // Only propose fields the UI knows how to label (registered profile fields).
   const profileProposals = (b.profile_change_proposals || [])
@@ -1570,14 +1815,30 @@ function currentFollowUpQuestion() {
   return qs.find((q) => val(S.profile, q.field) === undefined) || qs[0] || null;
 }
 
+/** 本会话里真正作为追问问过的字段（自动解析入档的不算「上一步」）。 */
+function askedFollowUpFields() {
+  const asked = new Set();
+  for (const m of S.messages) {
+    const body = (m && m.body) || {};
+    for (const q of body.follow_up_questions || []) {
+      if (q && q.field) asked.add(q.field);
+    }
+  }
+  return asked;
+}
+
 /** 当前问题之前、档案里已确认且可撤销的追问字段（trail 丢了也能继续上一步）。 */
 function undoableFollowFields(currentField) {
   const suppressed = new Set(S.suppressFields || []);
   const trailFields = new Set((S.followTrail || []).map((item) => item.field));
+  const asked = askedFollowUpFields();
   const idx = FOLLOW_UNDO_ORDER.indexOf(currentField);
   const candidates = idx >= 0 ? FOLLOW_UNDO_ORDER.slice(0, idx) : FOLLOW_UNDO_ORDER.slice();
   return candidates.filter((code) => {
     if (suppressed.has(code) || code === currentField) return false;
+    // Only fields this conversation actually asked may be undone — profile
+    // values auto-parsed from message text were never a user step.
+    if (!asked.has(code)) return false;
     if (trailFields.has(code)) return true;
     return val(S.profile, code) !== undefined;
   });
@@ -1839,6 +2100,57 @@ async function feedback(b, kind, note) {
   } catch (e) { toast(userFacingError(e, "反馈暂未提交，请稍后重试。"), true); }
 }
 
+/**
+ * Waiting-bubble step chains that mirror what the agent actually does for each
+ * intent, instead of two generic lines. The active step shows the pulse dot;
+ * earlier steps fade to ticks while the request is in flight.
+ */
+function thinkingPhases(text, isStructured) {
+  const t = String(text || "");
+  if (isStructured) {
+    return [
+      "正在把您的选择记入学生资料…",
+      "正在按新信息重新核对受影响的建议…",
+      "正在整理更新后的建议…",
+    ];
+  }
+  if (/学费|缴费|付款|截止|汇款|购汇|电汇|汇出|换汇|额度|汇到|汇过去|怎么汇/.test(t)) {
+    return [
+      "正在确认您的学校与课程信息…",
+      "正在查询学校官方学费目录…",
+      "正在核对学费档位与缴费要求…",
+      "正在测算购汇额度与所需材料…",
+      "正在起草回答并核对数字…",
+    ];
+  }
+  if (/信用卡|办卡|刷卡|返现|年费|羊毛/.test(t)) {
+    return [
+      "正在确认您的所在地与用卡需求…",
+      "正在比对各行信用卡的年费与权益…",
+      "正在核对每张卡的申请条件…",
+      "正在计算长期持有的综合收益…",
+      "正在起草推荐并核对条款…",
+    ];
+  }
+  if (/开户|账户|借记卡|银行卡/.test(t)) {
+    return [
+      "正在确认您的身份与所在地…",
+      "正在匹配可办理的银行与账户类型…",
+      "正在核对开户门槛与所需证件…",
+      "正在整理开户流程与材料清单…",
+    ];
+  }
+  if (/签证|visa|护照|资金证明|存款证明/.test(t)) {
+    return [
+      "正在确认您的签证类型与目的地…",
+      "正在核对签证材料清单…",
+      "正在核对资金证明等要求…",
+      "正在整理办理流程与时间线…",
+    ];
+  }
+  return ["正在核对与您当前资料相关的条件…", "正在整理适合您的建议，请稍候…"];
+}
+
 async function send(text, retryCid, changed, confirmedFields, expectedProfileVersion, opts = {}) {
   if (S.busy) {
     toast("上一条还在处理中，请稍候再提交");
@@ -1864,19 +2176,27 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
   const pending = { text, cid: retryCid || uuid(), error: null, changed,
     confirmedFields: confirmed, sessionFields, expectedProfileVersion, clearedFields };
   S.pending = pending;
+  // Intent-specific chain: first step shows immediately, then advances while
+  // the request is in flight. Stale pending (switched profile / new message)
+  // stops the chain through the guard below.
+  const phases = thinkingPhases(text, isStructured);
+  pending.phases = phases;
+  pending.phaseIdx = 0;
+  pending.phase = phases[0];
+  let phaseTimer = 0;
+  const advancePhase = (delay) => {
+    phaseTimer = setTimeout(() => {
+      if (S.pending !== pending || S.pid !== context.profileId) return;
+      if (pending.phaseIdx < phases.length - 1) {
+        pending.phaseIdx += 1;
+        pending.phase = phases[pending.phaseIdx];
+        drawChat({ keep: true });
+      }
+      advancePhase(1600);
+    }, delay);
+  };
+  advancePhase(950);
   drawChat();
-  const phaseTimer = setTimeout(() => {
-    if (S.pending === pending && S.pid === context.profileId) {
-      pending.phase = "正在核对与您当前资料相关的条件…";
-      drawChat({ keep: true });
-    }
-  }, 650);
-  const adviceTimer = setTimeout(() => {
-    if (S.pending === pending && S.pid === context.profileId) {
-      pending.phase = "正在整理适合您的建议，请稍候…";
-      drawChat({ keep: true });
-    }
-  }, 2100);
   try {
     const res = await api("POST", `/sessions/${context.conversationId}/messages`,
       { text, client_message_id: pending.cid, confirmed_fields: pending.confirmedFields,
@@ -1920,7 +2240,6 @@ async function send(text, retryCid, changed, confirmedFields, expectedProfileVer
     return null;
   } finally {
     clearTimeout(phaseTimer);
-    clearTimeout(adviceTimer);
     // busy 必须在重绘前清掉，否则「上一步」会带着 disabled 画进 DOM 后一直点不了。
     S.busy = false;
     if (S.pid === context.profileId) {
