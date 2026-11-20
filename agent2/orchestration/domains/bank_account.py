@@ -808,10 +808,17 @@ class BankAccountWorkflow:
                                 answer=_necessity_answer(region), projection="chat_only")
         if facts.get("applicant_age_band") == "under_18":
             return DomainResult(
-                task_id=task.task_id, domain="bank_account", status="answered",
+                task_id=task.task_id, domain="bank_account", status="needs_verification",
                 answer=AnswerBody(summary="未成年人开户需按具体年龄、地区和账户核对，不能直接按成人账户办理。",
                                   steps=["请提供实际年龄，并向银行核对监护人陪同或同意、身份证明及可用申请渠道。"]),
-                projection="chat_only")
+                # An explicit refresh must replace the obsolete adult plan with
+                # this qualification warning. Chat-only results are deliberately
+                # excluded from durable advice, leaving refresh stuck forever.
+                projection="advice" if request.refresh_mode else "chat_only",
+                observed_facts=facts, observed_basis=basis,
+                payload={"account_region": region,
+                         "applicant_identity": facts.get("applicant_identity"),
+                         "applicant_age_band": "under_18"})
         broad_opening = bool(re.fullmatch(
             r"(?:开户地区[:：]?\s*)?(?:英国|美国|香港)(?:开户|账户)?",
             request.text.strip()))
